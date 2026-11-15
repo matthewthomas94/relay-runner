@@ -1,18 +1,18 @@
 #!/bin/bash
 # Evidence-gated cohort and per-project artifact rollout controls.
-
+# Runs `relay-rs artifact-rollout` (RR-487): $RELAY_RS_BIN, the app bundle's copy beside
+# these scripts, then a source checkout's cargo build.
 set -euo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-APP_RUNTIME="$HOME/Library/Application Support/relay-runner/python/bin/python3"
-APP_VENV="$HOME/Library/Application Support/relay-runner/services/.venv/bin/python"
-
-for candidate in "$APP_RUNTIME" "$APP_VENV" /opt/homebrew/bin/python3 /usr/local/bin/python3; do
-    if [[ -x "$candidate" ]] && "$candidate" -c 'import tomllib' >/dev/null 2>&1; then
-        exec "$candidate" "$PROJECT_ROOT/services/artifact_rollout_cli.py" "$@"
+for candidate in "${RELAY_RS_BIN:-}" \
+    "$PROJECT_ROOT/../MacOS/relay-rs" \
+    "$PROJECT_ROOT/rust/target/aarch64-apple-darwin/release/relay-rs" \
+    "$PROJECT_ROOT/rust/target/release/relay-rs" \
+    "$PROJECT_ROOT/rust/target/debug/relay-rs"; do
+    if [[ -n "$candidate" && -f "$candidate" && -x "$candidate" ]]; then
+        exec "$candidate" artifact-rollout "$@"
     fi
 done
-
-echo "relay-artifact-rollout requires Relay's bundled Python or Python 3.11+" >&2
+echo "relay-artifact-rollout requires relay-rs from Relay Runner.app (or build rust/ with cargo)" >&2
 exit 1

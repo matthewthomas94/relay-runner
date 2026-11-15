@@ -7,33 +7,10 @@ import XCTest
 /// claim and command state, so it could not bind the prompt: the received turn
 /// timed out as unacknowledged, blocked the queue, and its reply was refused.
 final class BridgeRestartDeliveryTests: XCTestCase {
-    private static let repositoryRoot = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-
-    /// RR-478: the Python hook the app can be rolled back to, then `relay-rs
-    /// hook`, which it registers by default, from the newest build in `rust/`.
-    private static let hookCommands: [[String]] = {
-        let python = ["/usr/bin/python3", repositoryRoot.appendingPathComponent("services/relay_completion_hook.py").path]
-        let modified = { (path: String) in
-            (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date) ?? .distantPast
-        }
-        let built = ["debug", "release", "aarch64-apple-darwin/release"]
-            .map { repositoryRoot.appendingPathComponent("rust/target/\($0)/relay-rs").path }
-            .filter { FileManager.default.isExecutableFile(atPath: $0) }
-            .max { modified($0) < modified($1) }
-        return [python] + (built.map { [[$0, "hook"]] } ?? [])
-    }()
-
     func testResumedProviderSlowFirstTurnIsAcknowledgedAcrossBridgeRestart() throws {
-        for hook in Self.hookCommands {
-            try assertSlowFirstTurnIsAcknowledgedAcrossBridgeRestart(hook: hook)
-        }
-        try XCTSkipIf(
-            Self.hookCommands.count < 2,
-            "relay-rs is not built, so only the Python hook was checked; run `cargo build` in rust/"
-        )
+        // RR-478: `relay-rs hook`, the hook both providers register.
+        guard let relayRS = BuiltRelayRS.path else { throw XCTSkip(BuiltRelayRS.notBuilt) }
+        try assertSlowFirstTurnIsAcknowledgedAcrossBridgeRestart(hook: [relayRS, "hook"])
     }
 
     private func assertSlowFirstTurnIsAcknowledgedAcrossBridgeRestart(hook: [String]) throws {

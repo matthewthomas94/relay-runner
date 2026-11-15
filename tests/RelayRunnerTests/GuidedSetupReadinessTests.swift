@@ -26,7 +26,7 @@ final class GuidedSetupReadinessTests: XCTestCase {
             microphone: .denied,
             accessibility: .granted,
             screenRecording: .granted,
-            pythonInstalled: false,
+            servicesInstalled: false,
             agentSignedIn: false,
             parentPermissionsReviewed: true
         )
@@ -34,7 +34,8 @@ final class GuidedSetupReadinessTests: XCTestCase {
         XCTAssertEqual(readiness.mode, .blocked)
         XCTAssertFalse(readiness.voiceReady)
         XCTAssertTrue(readiness.detail.contains("Microphone access is required"))
-        XCTAssertTrue(readiness.detail.contains("Python voice environment"))
+        XCTAssertTrue(readiness.detail.contains("Voice and services setup"))
+        XCTAssertFalse(readiness.detail.contains("Python"))
         XCTAssertTrue(readiness.detail.contains("Codex sign-in"))
     }
 
@@ -44,7 +45,7 @@ final class GuidedSetupReadinessTests: XCTestCase {
             microphone: .granted,
             accessibility: .denied,
             screenRecording: .denied,
-            pythonInstalled: true,
+            servicesInstalled: true,
             agentSignedIn: true,
             parentPermissionsReviewed: false
         )
@@ -66,7 +67,7 @@ final class GuidedSetupReadinessTests: XCTestCase {
             microphone: .granted,
             accessibility: .granted,
             screenRecording: .granted,
-            pythonInstalled: true,
+            servicesInstalled: true,
             agentSignedIn: true,
             parentPermissionsReviewed: false
         )
@@ -82,7 +83,7 @@ final class GuidedSetupReadinessTests: XCTestCase {
             microphone: .granted,
             accessibility: .denied,
             screenRecording: .granted,
-            pythonInstalled: true,
+            servicesInstalled: true,
             agentSignedIn: true,
             parentPermissionsReviewed: true
         )
@@ -91,7 +92,7 @@ final class GuidedSetupReadinessTests: XCTestCase {
             microphone: .granted,
             accessibility: .granted,
             screenRecording: .granted,
-            pythonInstalled: true,
+            servicesInstalled: true,
             agentSignedIn: true,
             parentPermissionsReviewed: true
         )

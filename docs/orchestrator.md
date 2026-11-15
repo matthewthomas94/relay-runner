@@ -218,15 +218,14 @@ The full file format is documented at [docs/specs/orchestrator-tickets.md](specs
 | Path | Purpose |
 |---|---|
 | `rust/relay-orchestrator/` | The daemon (HTTP server + SQLite + worker spawn), shipped as `Contents/MacOS/relay-orchestrator` |
-| `services/orchestrator.py` | The Python daemon, the rollback for one release (`RELAY_ORCHESTRATOR_RUNTIME=python`) |
-| `services/messenger.py` | Persistent tool-free Codex/Claude messenger backends and event runtime |
+| `rust/relay-rs/src/messenger/` | Persistent tool-free Codex/Claude messenger backends, run by the voice bridge (`relay-rs bridge`) |
 | `services/orchestrator_workflow.md` | Default workflow template |
 | `services/orchestrator_artifact_workflow.md` | Source-only worker contract for artifact-lifecycle projects |
-| `services/artifact_lifecycle.py` | Artifact claim, snapshot, structured outcome, lease, review, and merge publication coordinator |
-| `services/artifact_migration.py` | Journaled legacy preflight, bootstrap, cutover, Program rebuild, retention preview, and rollback coordinator |
-| `services/artifact_rollout.py` | Evidence-gated per-project/new-project/legacy cohort policy and privacy-safe diagnostics |
-| `services/artifact_verification.py` | Disposable two-device harness and signed installed evidence gate |
-| `services/fresh_install.py` | State-preserving app replacement, profile-gated recoverable reset, and safe evidence capture |
+| `rust/relay-artifacts/src/lifecycle.rs` | Artifact claim, snapshot, structured outcome, lease, review, and merge publication coordinator |
+| `rust/relay-artifacts/src/migration.rs` | Journaled legacy preflight, bootstrap, cutover, Program rebuild, retention preview, and rollback coordinator |
+| `rust/relay-artifacts/src/rollout.rs` | Evidence-gated per-project/new-project/legacy cohort policy and privacy-safe diagnostics |
+| `rust/relay-artifacts/src/verification.rs` | Disposable two-device harness and signed installed evidence gate |
+| `rust/relay-rs/` | `relay-rs fresh-install` (state-preserving app replacement, profile-gated recoverable reset, safe evidence capture) and the other CLIs behind `scripts/relay-*` |
 | `Sources/relay-orchestrator-mcp/` | Swift MCP proxy (HTTP → MCP tools) |
 | `scripts/relay-orchestrator` | Launcher / installer |
 | `scripts/relay-artifact-migrate` | Preview/execute/resume/rollback CLI for RR-270 phase 8 |
@@ -278,12 +277,7 @@ tail /tmp/relay_orchestrator.err
 ```
 Restart with `scripts/relay-orchestrator --start`.
 
-**Daemon runtime.** The LaunchAgent runs the Rust daemon the app bundle ships in `Contents/MacOS/relay-orchestrator` (RR-500), for Claude and Codex workers alike. For one release the Python daemon remains available as a rollback; both use the same data root, so either picks up where the other stopped, with no migration. To switch, set the variable in your launchd session and restart the daemon once no worker is running:
-```bash
-launchctl setenv RELAY_ORCHESTRATOR_RUNTIME python
-scripts/relay-orchestrator --restart-if-idle
-```
-`/tmp/relay_orchestrator.err` names the runtime each launch used. Undo it with `launchctl unsetenv RELAY_ORCHESTRATOR_RUNTIME` and the same restart. The setting lasts until you log out, so set it again after logging in. A build without the Rust binary, such as a source checkout, runs the Python daemon.
+**Daemon runtime.** The LaunchAgent runs the Rust daemon the app bundle ships in `Contents/MacOS/relay-orchestrator` (RR-500), for Claude and Codex workers alike; `/tmp/relay_orchestrator.err` logs `daemon runtime: rust` at each launch. A source checkout runs its cargo build (`rust/target/.../relay-orchestrator`). The Python daemon and its `RELAY_ORCHESTRATOR_RUNTIME=python` rollback were removed in RR-487.
 
 **Installed skills still show older foreground-session guidance.** Every Start Session refreshes the installed command and skill files that are still exactly what Relay installed, and keeps files you edited (Relay records each installed file's hash in `~/Library/Application Support/relay-runner/installed-commands.sha256`). To overwrite edited files with the current repo sources:
 ```bash
@@ -299,11 +293,7 @@ cancel_run --run_id=N --prune_worktree=false
 ```
 Then read `<workspace>/.relay/run.log`. Implementation and review workers have no wall-clock deadline. The daemon performs an advisory health check every 10 minutes by comparing process liveness, worker-log growth, activity, commits, and worktree changes. A live run with no observable progress raises a visible warning but keeps running; only explicit cancellation, process exit/failure, or a separately identified critical condition stops it. Tune the observation interval via `[orchestrator].worker_health_check_seconds` in `config.toml`.
 
-**Daemon uses CPU while idle.** The Python daemon has an opt-in sampling profiler, off by default; the Rust daemon has none. Without `RELAY_ORCHESTRATOR_PROFILE` no profiler thread starts and nothing is written. To profile, stop the launchd job (`scripts/relay-orchestrator --stop`) and run the Python daemon by hand with the variable set to an output file:
-```bash
-RELAY_ORCHESTRATOR_RUNTIME=python RELAY_ORCHESTRATOR_PROFILE=/tmp/orchestrator.folded scripts/relay-orchestrator --run
-```
-Every `RELAY_ORCHESTRATOR_PROFILE_INTERVAL_MS` (default 10, range 1–1000) a profiler thread charges each thread's Python stack with the CPU that thread used since the previous sample. On macOS that per-thread CPU comes from `proc_pidinfo`, so waiting threads drop out; elsewhere each stack is charged wall-clock time. The file is rewritten every 5 s and at shutdown as collapsed stacks (`thread;file.py:function;… <microseconds>`), which `flamegraph.pl` and speedscope read directly. The `(profiler)` line is the profiler's own cost, and `(exited threads)` is CPU from threads that ran and exited between two samples, such as short HTTP request threads. Background processes get coarse timers, so the effective interval can be far longer than requested. When samples are sparse, a short burst is charged to whatever the thread is doing at the next sample. In that case the thread and its loop are reliable, but the deepest frames are approximate. Restart the launchd job with `scripts/relay-orchestrator --start` afterwards.
+**Daemon uses CPU while idle.** The daemon has no built-in profiler. Sample the running process with macOS's own tools, for example `sample "$(pgrep -f 'MacOS/relay-orchestrator( |$)')" 10` or Instruments' Time Profiler.
 
 **Dispatch fails with "ticket not found".** The orchestrator requires `<repo>/.orchestrator/<ticket_id>.md` to exist before dispatching. Either create the ticket via the board UI (or by hand following [the spec](specs/orchestrator-tickets.md)) and commit it, or fix the `ticket_id` argument if it was a typo.
 

@@ -27,11 +27,11 @@ struct OnboardingFlagURLs {
 }
 
 protocol OnboardingRuntimeInstalling: AnyObject {
-    var status: VenvInstaller.Status { get }
+    var status: RelaySetupInstaller.Status { get }
     func install(for provider: GeneralConfig.AgentProvider?)
 }
 
-extension VenvInstaller: OnboardingRuntimeInstalling {}
+extension RelaySetupInstaller: OnboardingRuntimeInstalling {}
 
 /// Owns the intro onboarding presentation and the first-launch flag file.
 ///
@@ -77,7 +77,7 @@ final class OnboardingController {
     private let permissionStatus: (PermissionKind) -> PermissionStatus
     private let permissionLikelyRestricted: (PermissionKind) -> Bool
     private let makeIntroController: () -> any OnboardingIntroPresenting
-    private let makeVenvInstaller: () -> any OnboardingRuntimeInstalling
+    private let makeSetupInstaller: () -> any OnboardingRuntimeInstalling
     private let runtimeAlreadyInstalled: (GeneralConfig.AgentProvider) -> Bool
     private let isAgentAuthenticated: (GeneralConfig.AgentProvider) -> Bool
     /// Rechecks readiness before `isAgentAuthenticated` is read and reports
@@ -104,7 +104,7 @@ final class OnboardingController {
     private var permissionGrantObserver: NSObjectProtocol?
     private var permissionEndedObserver: NSObjectProtocol?
     private var agentSetupState: AgentSetupState?
-    private var venvInstaller: any OnboardingRuntimeInstalling
+    private var setupInstaller: any OnboardingRuntimeInstalling
     private var runtimePollTimer: Timer?
     private var authPollTimer: Timer?
     private var appActivationObserver: NSObjectProtocol?
@@ -150,8 +150,8 @@ final class OnboardingController {
          permissionStatus: ((PermissionKind) -> PermissionStatus)? = nil,
          permissionLikelyRestricted: ((PermissionKind) -> Bool)? = nil,
          makeIntroController: @escaping () -> any OnboardingIntroPresenting = { OnboardingIntroController() },
-         makeVenvInstaller: @escaping () -> any OnboardingRuntimeInstalling = { VenvInstaller() },
-         runtimeAlreadyInstalled: @escaping (GeneralConfig.AgentProvider) -> Bool = { VenvInstaller.alreadyInstalled(for: $0) },
+         makeSetupInstaller: @escaping () -> any OnboardingRuntimeInstalling = { RelaySetupInstaller() },
+         runtimeAlreadyInstalled: @escaping (GeneralConfig.AgentProvider) -> Bool = { RelaySetupInstaller.alreadyInstalled(for: $0) },
          isAgentAuthenticated: @escaping (GeneralConfig.AgentProvider) -> Bool = { AgentAuth.isAuthenticated(for: $0) },
          refreshAgentReadiness: @escaping (GeneralConfig.AgentProvider, @escaping (String?) -> Void) -> Void = { _, done in done(nil) },
          openAgentLoginInTerminal: @escaping (GeneralConfig.AgentProvider) -> Bool = { AgentAuth.openLoginInTerminal(for: $0) },
@@ -198,8 +198,8 @@ final class OnboardingController {
         self.permissionStatus = permissionStatus ?? { permissions.status(for: $0) }
         self.permissionLikelyRestricted = permissionLikelyRestricted ?? { permissions.likelyRestricted.contains($0) }
         self.makeIntroController = makeIntroController
-        self.makeVenvInstaller = makeVenvInstaller
-        self.venvInstaller = makeVenvInstaller()
+        self.makeSetupInstaller = makeSetupInstaller
+        self.setupInstaller = makeSetupInstaller()
         self.runtimeAlreadyInstalled = runtimeAlreadyInstalled
         self.isAgentAuthenticated = isAgentAuthenticated
         self.refreshAgentReadiness = refreshAgentReadiness
@@ -621,7 +621,7 @@ final class OnboardingController {
             } else {
                 beginSessionControlsTutorial(screen: .intro)
             }
-        case .pythonSetup:
+        case .voiceSetup:
             showIntroRuntimePreparation()
         case .agentLogin:
             if runtimeAlreadyInstalled(provider) {
@@ -667,7 +667,7 @@ final class OnboardingController {
             state.providerPersisted = true
         }
         agentSetupState = state
-        venvInstaller = makeVenvInstaller()
+        setupInstaller = makeSetupInstaller()
         OnboardingResumeState.save(
             step: .agentChoice,
             provider: provider,
@@ -681,15 +681,15 @@ final class OnboardingController {
               let intro = introController else { return }
         stopAuthPolling()
         OnboardingResumeState.save(
-            step: .pythonSetup,
+            step: .voiceSetup,
             provider: state.provider,
             parentPermissionsReviewed: true
         )
-        venvInstaller.install(for: state.provider)
+        setupInstaller.install(for: state.provider)
         intro.presentRuntimePrompt(
             OnboardingRuntimePromptPresentation(
                 provider: state.provider,
-                status: venvInstaller.status
+                status: setupInstaller.status
             ),
             retryAction: { [weak self] in self?.retryIntroRuntimePreparation() }
         )
@@ -697,7 +697,7 @@ final class OnboardingController {
     }
 
     private func retryIntroRuntimePreparation() {
-        venvInstaller = makeVenvInstaller()
+        setupInstaller = makeSetupInstaller()
         showIntroRuntimePreparation()
     }
 
@@ -719,11 +719,11 @@ final class OnboardingController {
         intro.presentRuntimePrompt(
             OnboardingRuntimePromptPresentation(
                 provider: provider,
-                status: venvInstaller.status
+                status: setupInstaller.status
             ),
             retryAction: { [weak self] in self?.retryIntroRuntimePreparation() }
         )
-        switch venvInstaller.status {
+        switch setupInstaller.status {
         case .succeeded:
             stopRuntimePolling()
             let delay = reduceMotion() ? 0 : introAdvanceDelay

@@ -3,12 +3,9 @@ import XCTest
 
 final class ProcessManagerLaunchTests: XCTestCase {
 
-    private static let rustHook = ProcessManager.HookRuntime.rust(binary: "/Relay Runner/MacOS/relay-rs")
-    /// RR-478: each runtime with the hook command it registers.
-    private static let hookRuntimes: [(ProcessManager.HookRuntime, String)] = [
-        (rustHook, "'/Relay Runner/MacOS/relay-rs' hook"),
-        (.python, "/usr/bin/python3 '/Relay Runner/services/relay_completion_hook.py'"),
-    ]
+    private static let relayRS = "/Relay Runner/MacOS/relay-rs"
+    /// RR-478: the hook command both providers register.
+    private static let hook = "'/Relay Runner/MacOS/relay-rs' hook"
 
     /// How many lifecycle events register `hook`: Codex as a TOML string per
     /// `-c hooks.*` flag, Claude as a JSON string per event in `--settings`.
@@ -29,7 +26,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
             agentBinary: "/usr/local/bin/claude", config: AppConfig(), voiceDelivery: .appOwned,
             homeDirectory: home, sessionEventPath: "/private/session.events.jsonl")
         let scrubIndex = try XCTUnwrap(script.range(of: ProcessManager.inheritedHostSessionScrub)).lowerBound
-        let gateIndex = try XCTUnwrap(script.range(of: "claude_subscription.py")).lowerBound
+        let gateIndex = try XCTUnwrap(script.range(of: "relay-rs' claude-subscription")).lowerBound
         XCTAssertLessThan(scrubIndex, gateIndex, "scrub runs before the provider and its auth gate")
 
         let process = Process()
@@ -58,12 +55,12 @@ final class ProcessManagerLaunchTests: XCTestCase {
         for target in [ProcessManager.AgentTarget.codex, .claude] {
             var config = AppConfig()
             config.general.provider = target == .codex ? .codex : .claude
-            for (runtime, hook) in Self.hookRuntimes {
+            for (runtime, hook) in [(Self.relayRS, Self.hook)] {
                 for context in [AssistantSessionContext?.none, .some(.general)] {
                     let script = ProcessManager.launchScript(relayBridge: "/Relay Runner/scripts/relay-bridge", target: target,
                         agentBinary: "/Native Provider/bin/provider", config: config, voiceDelivery: .appOwned,
                         sessionContext: context, providerBindingPath: "/private/bindings/transport.json",
-                        hookRuntime: runtime)
+                        relayRS: runtime)
                     XCTAssertEqual(script.contains("\n\(hook) --record-process || {"), context != nil)
                     if target == .codex && context != nil {
                         let process = try XCTUnwrap(script.range(of: "\n\(hook) --record-process"))
@@ -98,7 +95,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
             resolvedCodexEffort: "xhigh"
         )
 
-        XCTAssertTrue(codexScript.contains("'/Relay Runner/relay-bridge' --venv-only"))
+        XCTAssertTrue(codexScript.contains("'/Relay Runner/relay-bridge' --setup-only"))
         XCTAssertTrue(codexScript.contains("rm -f /tmp/voice_bridge_stop_requested"))
         XCTAssertTrue(codexScript.contains("export RELAY_RUNNER_PROVIDER='codex'"))
         XCTAssertTrue(codexScript.contains("export RELAY_RUNNER_APP_SESSION=1"))
@@ -141,13 +138,14 @@ final class ProcessManagerLaunchTests: XCTestCase {
                 target: target,
                 agentBinary: "/usr/local/bin/agent",
                 config: config,
-                voiceDelivery: .appOwned
+                voiceDelivery: .appOwned,
+                relayRS: "/App/Contents/MacOS/relay-rs"
             )
             guard target == .claude else {
-                XCTAssertFalse(script.contains("claude_subscription"))
+                XCTAssertFalse(script.contains("claude-subscription"))
                 continue
             }
-            let gate = script.range(of: "'/App/Contents/SharedSupport/services/claude_subscription.py' --binary '/usr/local/bin/agent' --cwd \"$PWD\"")
+            let gate = script.range(of: "'/App/Contents/MacOS/relay-rs' claude-subscription --binary '/usr/local/bin/agent' --cwd \"$PWD\"")
             let bridge = script.range(of: "--start-daemon")
             let provider = script.range(of: "exec '/usr/local/bin/agent'")
             XCTAssertNotNil(gate)
@@ -158,8 +156,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
     }
 
     func testClaudeSubscriptionGateRefusesAnAPIKeyRouteWithoutPrintingIt() throws {
-        let repo = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        guard let relayRS = BuiltRelayRS.path else { throw XCTSkip(BuiltRelayRS.notBuilt) }
         let temp = FileManager.default.temporaryDirectory
             .appendingPathComponent("relay-subscription-gate-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
@@ -169,7 +166,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         try "#!/bin/sh\ncat \"$(dirname \"$0\")/status.json\"\n".write(to: claude, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: claude.path)
         let gate = ProcessManager.claudeSubscriptionGate(
-            relayBridge: repo.appendingPathComponent("scripts/relay-bridge").path,
+            relayRS: relayRS,
             target: .claude,
             agentBinary: claude.path
         )
@@ -211,9 +208,10 @@ final class ProcessManagerLaunchTests: XCTestCase {
     }
 
     func testProviderLoginRunsOnceAndRechecksBeforeLaunchForBothProviders() throws {
-        let repo = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let relayRS = BuiltRelayRS.path
         for target in [ProcessManager.AgentTarget.claude, .codex] {
+            // The Claude gate runs relay-rs; the Codex gate is shell only.
+            if target == .claude && relayRS == nil { continue }
             for scenario in ["ready", "login", "cancel", "still_missing", "api"] {
                 if target == .claude && scenario == "api" { continue }
                 let temp = FileManager.default.temporaryDirectory
@@ -244,8 +242,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
                 try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: agent.path)
                 let gate = target == .claude
                     ? ProcessManager.claudeSubscriptionGate(
-                        relayBridge: repo.appendingPathComponent("scripts/relay-bridge").path,
-                        target: target, agentBinary: agent.path
+                        relayRS: relayRS!, target: target, agentBinary: agent.path
                     )
                     : ProcessManager.codexLoginGate(target: target, agentBinary: agent.path)
                 let process = Process()
@@ -277,6 +274,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
                 XCTAssertFalse(text.contains("SECRET"))
             }
         }
+        try XCTSkipIf(relayRS == nil, "\(BuiltRelayRS.notBuilt); only the Codex gate was checked")
     }
 
     func testCodexResolvesSelectedModelAfterLoginAndBeforeBridge() throws {
@@ -288,8 +286,10 @@ final class ProcessManagerLaunchTests: XCTestCase {
             relayBridge: "/App/scripts/relay-bridge", target: .codex,
             agentBinary: "/usr/local/bin/codex", config: config, voiceDelivery: .appOwned
         )
+        XCTAssertTrue(script.contains("/usr/bin/plutil -extract resolvedModel raw -o - -"))
+        XCTAssertTrue(script.contains("/usr/bin/plutil -extract resolvedEffort raw -o - -"))
         let login = try XCTUnwrap(script.range(of: "login ||"))
-        let resolver = try XCTUnwrap(script.range(of: "services/codex_model_catalog.py"))
+        let resolver = try XCTUnwrap(script.range(of: "relay-rs' codex-model --command '/usr/local/bin/codex'"))
         let bridge = try XCTUnwrap(script.range(of: "--start-daemon"))
         XCTAssertLessThan(login.lowerBound, resolver.lowerBound)
         XCTAssertLessThan(resolver.lowerBound, bridge.lowerBound)
@@ -298,7 +298,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
     }
 
     func testCodexLauncherResolvesCatalogueAndStopsOnUnavailableFamily() throws {
-        let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        guard let relayRS = BuiltRelayRS.path else { throw XCTSkip(BuiltRelayRS.notBuilt) }
         var config = AppConfig()
         config.general.model = "astra"
         config.general.orchestrator_effort = "ultra"
@@ -308,8 +308,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
             process.executableURL = URL(fileURLWithPath: "/bin/bash")
             process.arguments = ["-c", """
                 \(ProcessManager.codexModelResolutionScript(
-                    relayBridge: repo.appendingPathComponent("scripts/relay-bridge").path,
-                    agentBinary: "/unused/codex", config: config
+                    relayRS: relayRS, agentBinary: "/unused/codex", config: config
                 ))
                 printf '%s\\n' "$relay_codex_model" "$relay_codex_effort"
                 """]
@@ -346,7 +345,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         )
 
         XCTAssertTrue(script.contains("'/Relay Runner/relay-bridge' --start-daemon"))
-        XCTAssertFalse(script.contains("--venv-only"))
+        XCTAssertFalse(script.contains("--setup-only"))
         XCTAssertFalse(script.contains("Use the relay-bridge skill now."))
         XCTAssertFalse(script.contains("\"/relay-bridge\""))
         XCTAssertFalse(script.contains("--suppress-startup-greeting"))
@@ -443,7 +442,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
             config: codexConfig,
             voiceDelivery: .appOwned,
             homeDirectory: home,
-            hookRuntime: Self.rustHook
+            relayRS: Self.relayRS
         )
 
         var claudeConfig = AppConfig()
@@ -455,7 +454,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
             config: claudeConfig,
             voiceDelivery: .appOwned,
             homeDirectory: home,
-            hookRuntime: Self.rustHook
+            relayRS: Self.relayRS
         )
 
         XCTAssertTrue(codexScript.contains("-c 'developer_instructions="))
@@ -516,7 +515,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
             config: codexConfig,
             voiceDelivery: .appOwned,
             homeDirectory: home,
-            hookRuntime: Self.rustHook
+            relayRS: Self.relayRS
         )
 
         var claudeConfig = AppConfig()
@@ -528,7 +527,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
             config: claudeConfig,
             voiceDelivery: .appOwned,
             homeDirectory: home,
-            hookRuntime: Self.rustHook
+            relayRS: Self.relayRS
         )
 
         XCTAssertTrue(codexScript.contains("--enable hooks"))
@@ -540,7 +539,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertTrue(codexScript.contains("hooks.PostCompact="))
         XCTAssertTrue(codexScript.contains("Relay voice prompt binding"))
         XCTAssertTrue(codexScript.contains("Relay voice completion"))
-        XCTAssertEqual(Self.hookRegistrations(in: codexScript, target: .codex, hook: Self.hookRuntimes[0].1), 4)
+        XCTAssertEqual(Self.hookRegistrations(in: codexScript, target: .codex, hook: Self.hook), 4)
         XCTAssertFalse(codexScript.contains("--settings"))
 
         XCTAssertTrue(claudeScript.contains("--settings"))
@@ -549,7 +548,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertTrue(claudeScript.contains("\"StopFailure\""))
         XCTAssertTrue(claudeScript.contains("\"PreCompact\""))
         XCTAssertTrue(claudeScript.contains("\"PostCompact\""))
-        XCTAssertEqual(Self.hookRegistrations(in: claudeScript, target: .claude, hook: Self.hookRuntimes[0].1), 6)
+        XCTAssertEqual(Self.hookRegistrations(in: claudeScript, target: .claude, hook: Self.hook), 6)
         XCTAssertFalse(claudeScript.contains("--dangerously-bypass-hook-trust"))
         for script in [codexScript, claudeScript] {
             XCTAssertFalse(script.contains("relay_completion_hook.py"))
@@ -557,83 +556,62 @@ final class ProcessManagerLaunchTests: XCTestCase {
         }
     }
 
-    /// RR-478: one switch puts both providers back on the Python hook and
-    /// reply helper, which stay in the bundle.
-    func testHookRuntimeRollbackRegistersThePythonHookAndHelperForCodexAndClaude() {
+    /// RR-487: the runtime helpers are the Rust binaries beside the app
+    /// executable, with no Python fallback and no runtime switch.
+    func testRuntimeBinariesResolveBesideTheAppExecutable() {
+        let directory = URL(fileURLWithPath: "/Relay Runner.app/Contents/MacOS", isDirectory: true)
+        XCTAssertEqual(
+            ProcessManager.bundledBinary("relay-rs", executableDirectory: directory),
+            "/Relay Runner.app/Contents/MacOS/relay-rs"
+        )
+        XCTAssertEqual(
+            ProcessManager.bundledBinary("relay-speech", executableDirectory: directory),
+            "/Relay Runner.app/Contents/MacOS/relay-speech"
+        )
+        XCTAssertEqual(
+            ProcessManager.missingBinaryMessage("/Relay Runner.app/Contents/MacOS/relay-rs"),
+            "Relay Runner is missing relay-rs. Reinstall Relay Runner."
+        )
+    }
+
+    /// RR-487: no launch script runs Python or names a `.py` file, for either
+    /// provider, in any delivery mode or session context.
+    func testLaunchScriptsRunNoPythonForCodexAndClaude() {
         let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
         for target in [ProcessManager.AgentTarget.codex, .claude] {
             var config = AppConfig()
             config.general.provider = target == .codex ? .codex : .claude
-            let script = ProcessManager.launchScript(
-                relayBridge: "/Relay Runner/scripts/relay-bridge",
-                target: target,
-                agentBinary: "/usr/local/bin/provider",
-                config: config,
-                voiceDelivery: .appOwned,
-                homeDirectory: home,
-                sessionContext: .general,
-                providerBindingPath: "/private/bindings/transport.json",
-                hookRuntime: .python
-            )
-            let hook = Self.hookRuntimes[1].1
-            XCTAssertEqual(
-                Self.hookRegistrations(in: script, target: target, hook: hook),
-                target == .codex ? 4 : 6,
-                "\(target)"
-            )
-            XCTAssertTrue(script.contains("\n\(hook) --record-process || {"), "\(target)")
-            XCTAssertEqual(script.contains("\n\(hook) --record-codex-startup </dev/null"), target == .codex, "\(target)")
-            XCTAssertTrue(script.contains("export RELAY_REPLY_HELPER='/Relay Runner/services/relay_reply.py'"), "\(target)")
-            // Codex reads the instructions from a TOML string, which escapes quotes.
-            let quote = target == .codex ? "\\\"" : "\""
-            XCTAssertTrue(
-                script.contains("pipe only the final reply text to `/usr/bin/python3 \(quote)$RELAY_REPLY_HELPER\(quote)`"),
-                "\(target)"
-            )
-            XCTAssertFalse(script.contains("relay-rs"), "\(target)")
-            XCTAssertFalse(script.contains("$RELAY_REPLY_HELPER\(quote) reply"), "\(target)")
+            for delivery in [ProcessManager.SessionVoiceDelivery.appOwned, .agentSkill] {
+                for context in [AssistantSessionContext?.none, .some(.general)] {
+                    let script = ProcessManager.launchScript(
+                        relayBridge: "/Relay Runner/scripts/relay-bridge",
+                        target: target,
+                        agentBinary: "/usr/local/bin/provider",
+                        config: config,
+                        voiceDelivery: delivery,
+                        homeDirectory: home,
+                        sessionContext: context,
+                        providerBindingPath: "/private/bindings/transport.json",
+                        relayRS: Self.relayRS
+                    )
+                    let label = "\(target) \(delivery) \(context == nil ? "project" : "general")"
+                    XCTAssertFalse(script.lowercased().contains("python"), label)
+                    XCTAssertFalse(script.contains(".py"), label)
+                    XCTAssertFalse(script.contains(".venv"), label)
+                    XCTAssertFalse(script.contains("--venv-only"), label)
+                    if target == .claude {
+                        XCTAssertTrue(script.contains("'/Relay Runner/MacOS/relay-rs' claude-subscription"), label)
+                    } else {
+                        XCTAssertTrue(script.contains("'/Relay Runner/MacOS/relay-rs' codex-model"), label)
+                    }
+                    if delivery == .appOwned {
+                        XCTAssertTrue(script.contains("export RELAY_REPLY_HELPER='/Relay Runner/MacOS/relay-rs'"), label)
+                    } else {
+                        XCTAssertTrue(script.contains("'/Relay Runner/scripts/relay-bridge' --setup-only"), label)
+                    }
+                }
+            }
         }
-    }
-
-    func testHookRuntimeIsRustUnlessRolledBackOrTheBinaryIsMissing() {
-        let directory = URL(fileURLWithPath: "/Relay Runner.app/Contents/MacOS", isDirectory: true)
-        let binary = "/Relay Runner.app/Contents/MacOS/relay-rs"
-        func resolve(_ environment: [String: String], bundled: Bool = true) -> ProcessManager.HookRuntime {
-            ProcessManager.HookRuntime.resolve(
-                executableDirectory: directory,
-                environment: environment,
-                isExecutable: { bundled && $0 == binary }
-            )
-        }
-        XCTAssertEqual(resolve([:]), .rust(binary: binary))
-        XCTAssertEqual(resolve(["RELAY_HOOK_RUNTIME": "rust"]), .rust(binary: binary))
-        XCTAssertEqual(resolve(["RELAY_HOOK_RUNTIME": "python"]), .python)
-        XCTAssertEqual(resolve([:], bundled: false), .python)
-        XCTAssertEqual(
-            ProcessManager.HookRuntime.resolve(executableDirectory: nil, environment: [:], isExecutable: { _ in true }),
-            .python
-        )
-    }
-
-    func testSpeechRuntimeIsRustUnlessRolledBackOrTheBinaryIsMissing() {
-        let directory = URL(fileURLWithPath: "/Relay Runner.app/Contents/MacOS", isDirectory: true)
-        let binary = "/Relay Runner.app/Contents/MacOS/relay-speech"
-        func resolve(_ environment: [String: String], bundled: Bool = true) -> ProcessManager.SpeechRuntime {
-            ProcessManager.SpeechRuntime.resolve(
-                executableDirectory: directory,
-                environment: environment,
-                isExecutable: { bundled && $0 == binary }
-            )
-        }
-        XCTAssertEqual(resolve([:]), .rust(binary: binary))
-        XCTAssertEqual(resolve(["RELAY_SPEECH_RUNTIME": "rust"]), .rust(binary: binary))
-        XCTAssertEqual(resolve(["RELAY_SPEECH_RUNTIME": "python"]), .python)
-        XCTAssertEqual(resolve(["RELAY_SPEECH_RUNTIME": " Python "]), .python)
-        XCTAssertEqual(resolve([:], bundled: false), .python)
-        XCTAssertEqual(
-            ProcessManager.SpeechRuntime.resolve(executableDirectory: nil, environment: [:], isExecutable: { _ in true }),
-            .python
-        )
     }
 
     func testEmbeddedLaunchUsesProviderNative150KAutomaticCompaction() {
@@ -727,12 +705,12 @@ final class ProcessManagerLaunchTests: XCTestCase {
             config: config,
             voiceDelivery: .agentSkill,
             homeDirectory: home,
-            hookRuntime: Self.rustHook
+            relayRS: Self.relayRS
         )
 
         XCTAssertFalse(script.contains("developer_instructions="))
         XCTAssertFalse(script.contains("--append-system-prompt"))
-        XCTAssertFalse(script.contains("relay-rs"))
+        XCTAssertFalse(script.contains("relay-rs' hook"))
         XCTAssertFalse(script.contains("relay_completion_hook.py"))
         XCTAssertFalse(script.contains("relay_reply.py"))
         XCTAssertFalse(script.contains("RELAY_REPLY_HELPER"))
@@ -1026,7 +1004,7 @@ final class ProcessManagerLaunchTests: XCTestCase {
 
     func testOnboardingUsesTheSameCurrentThenLegacyCodexBundleOrder() {
         XCTAssertEqual(
-            VenvInstaller.codexCLIPaths,
+            RelaySetupInstaller.codexCLIPaths,
             [
                 "/Applications/ChatGPT.app/Contents/Resources/codex",
                 "/Applications/Codex.app/Contents/Resources/codex",

@@ -23,20 +23,14 @@ Both providers use subscription credentials and the same task/run/review contrac
 
 ## Source evaluation
 
-From this checkout, using the repository Python runtime:
+Qualification and command routing now run in Rust (`rust/relay-intents/src/qualification.rs` and `rust/relay-services/src/command_actions.rs`). The command-action unit tests read the development fixtures in `tests/fixtures/intent_qualification.json` and `tests/fixtures/work_style_routing.json`:
 
 ```sh
-python3 scripts/evaluate-intent-qualification.py > /tmp/intent-qualification-development.json
-python3 -m unittest discover -s tests -p 'test_intent_qualification.py'
-python3 -m unittest discover -s tests -p 'test_command_actions.py'
-python3 -m unittest discover -s tests -p 'test_general_work.py'
-python3 -m unittest discover -s tests -p 'test_intent_arbitration.py'
-python3 -m unittest discover -s tests -p 'test_voice_bridge_preemption.py'
-python3 -m unittest discover -s tests -p 'test_messenger.py'
+(cd rust && cargo test -p relay-intents qualification && cargo test -p relay-services command_actions)
 python3 scripts/build-instructions --check
 ```
 
-The evaluator reads the legacy classifier from commit `09b0885b68761156127143debc03031761749e01` via Git and compares it with the current framework. It only classifies text; fixtures cannot send email, open applications, invoke a provider, create tickets or dispatch workers. `--corpus /path/to/corpus.json` permits a separately collected blind evaluation set. `--repeats 100` measures qualification-only p50/p95, excluding STT, provider, transport and action execution. An increase here is not end-to-end voice latency. Results include every prediction, confusion counts, action-kind errors and false Task/Action predictions.
+The measurements below were taken with the Python evaluator (`scripts/evaluate-intent-qualification.py`) that compared the then-current Python framework with the legacy classifier at commit `09b0885b68761156127143debc03031761749e01`. It only classified text; fixtures could not send email, open applications, invoke a provider, create tickets or dispatch workers. RR-487 removed it together with the Python framework.
 
 The initial 2026-09-26 development run on this Mac (Python 3.9.6, 100 repetitions per case) matched 40/40 expected buckets and internal routes, versus 30/40 for the legacy classifier. Legacy had three Discussion-to-Task/Action errors and three Task/Action confusions; this framework had zero on these fixtures. Qualification-only p50/p95 was 0.0178/0.0391 ms versus legacy 0.0123/0.0275 ms. These are local development-fixture measurements, not a production accuracy or latency claim.
 

@@ -16,7 +16,8 @@ Requirements:
 - macOS 14 or later
 - Xcode 16 or later and the Xcode command-line tools
 - Git
-- Python 3.10–3.13 for the Python service tests
+- The pinned Rust toolchain (`rust/rust-toolchain.toml`; see [TESTING.md](TESTING.md#rust-workspace))
+- Python 3.10–3.13 for the contract suites and build tooling (the app itself runs no Python)
 - `dmgbuild` for packaging checks
 
 ```bash

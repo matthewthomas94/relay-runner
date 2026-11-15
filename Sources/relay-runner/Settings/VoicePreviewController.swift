@@ -15,7 +15,7 @@ enum VoicePreviewFailure: LocalizedError {
     }
 }
 
-/// The same advisory lock is held by Python immediately before response playback.
+/// The same advisory lock is held by relay-speech immediately before response playback.
 final class SettingsAudioLease {
     static let supportRoot = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
         .first!.appendingPathComponent("relay-runner", isDirectory: true)

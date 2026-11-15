@@ -69,11 +69,8 @@ final class ProcessManager {
     ]
 
     /// The read-only services directory that ships in the .app bundle (or
-    /// repo, for dev). Holds voice_bridge.py, tts_worker.py, requirements.txt,
-    /// etc. Crucially does NOT hold the venv anymore — the venv lives at a
-    /// user-writable path so non-admin users (or admin-installed bundles
-    /// owned by root) can write to it. Match SERVICES_BUNDLE in
-    /// scripts/relay-bridge.
+    /// repo, for dev). It holds data files such as the orchestrator workflow
+    /// prompts; the runtime itself is the Rust binaries in Contents/MacOS.
     private var bundledServicesDir: URL { Self.servicesDirectory }
 
     static var servicesDirectory: URL {
@@ -103,26 +100,30 @@ final class ProcessManager {
         return URL(fileURLWithPath: "services")
     }
 
-    /// Path to the venv python the install creates. Match SERVICES_DIR/.venv
-    /// in scripts/relay-bridge and `userVenvPython` in VenvInstaller.swift —
-    /// all three must agree or the SwiftUI thinks setup is incomplete while
-    /// the bash side has actually finished it.
-    private static var userVenvPython: String {
-        FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first!
-            .appendingPathComponent("relay-runner/services/.venv/bin/python3")
+    /// RR-487: every runtime helper is a Rust binary beside the app executable
+    /// (Contents/MacOS in the bundle). There is no fallback: a missing
+    /// binary fails with `missingBinaryMessage`.
+    static func bundledBinary(
+        _ name: String,
+        executableDirectory: URL? = Bundle.main.executableURL?.deletingLastPathComponent()
+    ) -> String {
+        (executableDirectory ?? Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS"))
+            .appendingPathComponent(name)
             .path
     }
 
-    private static var servicePython: String {
-        FileManager.default.isExecutableFile(atPath: userVenvPython)
-            ? userVenvPython
-            : "/usr/bin/python3"
+    /// `relay-rs`: completion hook, reply helper, bridge and the small CLIs
+    /// (subscription gate, Codex model catalogue, harness update).
+    static var relayRS: String { bundledBinary("relay-rs") }
+    /// `relay-speech`: the tutorial voice and the Settings voice preview.
+    static var relaySpeech: String { bundledBinary("relay-speech") }
+
+    static func missingBinaryMessage(_ path: String) -> String {
+        "Relay Runner is missing \(URL(fileURLWithPath: path).lastPathComponent). Reinstall Relay Runner."
     }
 
     /// Path to the bundled relay-bridge script — the single source of truth
-    /// for venv install + voice-bridge launch logic. ProcessManager defers
+    /// for setup + voice-bridge launch logic. ProcessManager defers
     /// to it instead of duplicating the install bash inline.
     private var bundledRelayBridge: URL {
         let bundled = Bundle.main.bundleURL
@@ -154,20 +155,14 @@ final class ProcessManager {
         }
 
         let input = Pipe()
-        let process = Process()
-        switch SpeechRuntime.resolve() {
-        case .rust(let binary):
-            process.executableURL = URL(fileURLWithPath: binary)
-            process.arguments = ["tutorial"]
-        case .python:
-            let script = bundledServicesDir.appendingPathComponent("tts_worker.py")
-            guard FileManager.default.fileExists(atPath: script.path) else {
-                NSLog("[ProcessManager] Tutorial TTS worker is missing: \(script.path)")
-                return false
-            }
-            process.executableURL = URL(fileURLWithPath: Self.servicePython)
-            process.arguments = [script.path]
+        let binary = Self.relaySpeech
+        guard FileManager.default.isExecutableFile(atPath: binary) else {
+            NSLog("[ProcessManager] Tutorial TTS unavailable: \(Self.missingBinaryMessage(binary))")
+            return false
         }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: binary)
+        process.arguments = ["tutorial"]
         process.currentDirectoryURL = bundledServicesDir
         process.standardInput = input
         var environment = ProcessInfo.processInfo.environment
@@ -297,7 +292,7 @@ final class ProcessManager {
     private static func voiceBridgeProcessPgrep() -> BridgeProbeResult {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        proc.arguments = ["-f", "voice_bridge[.]py|relay-rs bridge"]
+        proc.arguments = ["-f", "relay-rs bridge"]
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         do {
@@ -956,7 +951,9 @@ final class ProcessManager {
     /// RR-468: one voice target per user. Recovery also stops this user's
     /// bridges from older generations or builds, which the PID file no longer
     /// names; another user's processes are never listed. The pattern is
-    /// bracketed so neither this script nor its subshells match it.
+    /// bracketed so neither this script nor its subshells match it. It still
+    /// matches `voice_bridge.py` only to stop a stale bridge an older release
+    /// left running (RR-487); nothing launches it.
     static func strayBridgeStopScript(listing: String = "ps -U \"$(id -u)\" -o pid=,command=") -> String {
         """
         for stray_pid in $(\(listing) 2>/dev/null | awk '/[v]oice_bridge[.]py|[r]elay-rs bridge/ {print $1}'); do
@@ -997,12 +994,17 @@ final class ProcessManager {
         }
     }
 
-    /// RR-493: scripts/relay-bridge runs `relay-rs bridge` by default and
-    /// `voice_bridge.py` with `RELAY_BRIDGE_RUNTIME=python` (the rollback
-    /// switch for one release), so a bridge process is either command line.
-    /// The shell scripts match the same two with '[v]oice_bridge[.]py|[r]elay-rs bridge'.
+    /// RR-493: the voice bridge is `relay-rs bridge`, the only bridge
+    /// scripts/relay-bridge launches.
     static func isVoiceBridgeCommandLine(_ command: String) -> Bool {
-        command.contains("voice_bridge.py") || command.contains("relay-rs bridge")
+        command.contains("relay-rs bridge")
+    }
+
+    /// RR-487: releases before the Rust bridge ran `voice_bridge.py`. Stopping
+    /// still recognises that command line, only so an upgrade can stop a stale
+    /// bridge an older release left running; liveness never counts it.
+    static func isStoppableVoiceBridgeCommandLine(_ command: String) -> Bool {
+        isVoiceBridgeCommandLine(command) || command.contains("voice_bridge.py")
     }
 
     /// RR-403: stop the bridge by the PID it recorded, never by command-line
@@ -1014,7 +1016,9 @@ final class ProcessManager {
         commandLine: (pid_t) -> String? = processCommandLine,
         signal send: (pid_t) -> Void = { _ = kill($0, SIGTERM) }
     ) -> Bool {
-        guard let pid = recordedBridgePID(pidFile: pidFile, commandLine: commandLine) else { return false }
+        guard let pid = recordedBridgePID(
+            pidFile: pidFile, commandLine: commandLine, isBridge: isStoppableVoiceBridgeCommandLine
+        ) else { return false }
         send(pid)
         return true
     }
@@ -1112,11 +1116,15 @@ final class ProcessManager {
         }
     }
 
-    private static func recordedBridgePID(pidFile: String, commandLine: (pid_t) -> String?) -> pid_t? {
+    private static func recordedBridgePID(
+        pidFile: String,
+        commandLine: (pid_t) -> String?,
+        isBridge: (String) -> Bool = isVoiceBridgeCommandLine
+    ) -> pid_t? {
         guard let raw = try? String(contentsOfFile: pidFile, encoding: .utf8),
               let pid = pid_t(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
               pid > 1,
-              commandLine(pid).map(isVoiceBridgeCommandLine) == true else { return nil }
+              commandLine(pid).map(isBridge) == true else { return nil }
         return pid
     }
 
@@ -1268,9 +1276,9 @@ final class ProcessManager {
     /// terminal remains a normal interactive provider prompt; external/manual
     /// sessions still rely on the installed relay-bridge command/skill loop.
     ///
-    /// The launcher calls `relay-bridge --venv-only` first so the Python venv,
-    /// Kokoro model, and provider CLI are ready before the interactive agent
-    /// starts. Refreshing the skill files here also keeps every launch path on
+    /// The launcher calls `relay-bridge --setup-only` first so the Kokoro
+    /// speech model, skills and provider CLI are ready before the interactive
+    /// agent starts. Refreshing the skill files here also keeps every launch path on
     /// the same shipped relay contract.
     func prepareNewSession(
         config: AppConfig,
@@ -1348,6 +1356,9 @@ final class ProcessManager {
             if let error = Self.claudeLaunchReadinessError(agentBinary: agentBinary) {
                 throw error
             }
+        }
+        guard FileManager.default.isExecutableFile(atPath: Self.relayRS) else {
+            throw SessionLaunchPreparationError.providerUnavailable(Self.missingBinaryMessage(Self.relayRS))
         }
         NSLog("[ProcessManager] launchNewSession: relayBridge=\(relayBridge) agentBinary=\(agentBinary) configPath=\(configPath)")
 
@@ -1497,7 +1508,7 @@ final class ProcessManager {
         publicHandoff: String = "",
         preservesContextAuthorization: Bool = false,
         spool: VoiceSessionSpool = .legacy,
-        hookRuntime: HookRuntime = .resolve()
+        relayRS: String = ProcessManager.relayRS
     ) -> String {
         let effectiveProviderSessionID = voiceDelivery == .appOwned || sessionContext != nil
             ? (providerSessionID ?? UUID().uuidString.lowercased())
@@ -1550,14 +1561,12 @@ final class ProcessManager {
                 voiceDelivery: voiceDelivery,
                 sessionContext: sessionContext,
                 publicHandoff: publicHandoff,
-                reachesRegisteredProjects: !generalAccess.isEmpty,
-                hookRuntime: hookRuntime
+                reachesRegisteredProjects: !generalAccess.isEmpty
             ),
             completionHookFlag: Self.appOwnedCompletionHookFlag(
-                relayBridge: relayBridge,
                 target: target,
                 voiceDelivery: voiceDelivery,
-                hookRuntime: hookRuntime
+                relayRS: relayRS
             ),
             mcpEnvironmentFlag: Self.appOwnedMCPEnvironmentFlag(target: target, voiceDelivery: voiceDelivery),
             voiceDelivery: voiceDelivery,
@@ -1571,7 +1580,7 @@ final class ProcessManager {
         \(Self.inheritedHostSessionScrub)
         \(Self.sessionLifecyclePreamble(eventPath: sessionEventPath))
         \(Self.supportDiagnosticsPreamble())
-        # Ensure venv + deps + speech-model + relay skills are installed. In
+        # Ensure the speech model and relay skills are installed. In
         # embedded sessions, also start the bridge daemon before the provider so
         # voice turns can be injected without a blocking bootstrap prompt.
         rm -f /tmp/voice_bridge_stop_requested
@@ -1600,24 +1609,20 @@ final class ProcessManager {
             voiceDelivery: voiceDelivery,
             sessionEventPath: sessionEventPath
         ))
-        \(Self.appOwnedReplyHelperExport(
-            relayBridge: relayBridge,
-            voiceDelivery: voiceDelivery,
-            hookRuntime: hookRuntime
-        ))
+        \(Self.appOwnedReplyHelperExport(voiceDelivery: voiceDelivery, relayRS: relayRS))
         \(cdLine)
-        \(sessionContext != nil ? "export RELAY_PROVIDER_PROCESS_ID=$$\n" + Self.completionHookCommand(relayBridge: relayBridge, hookRuntime: hookRuntime) + " --record-process || { echo '[Relay Runner] Process ownership could not be saved.'; exit 1; }" : "")
+        \(sessionContext != nil ? "export RELAY_PROVIDER_PROCESS_ID=$$\n" + Self.completionHookCommand(relayRS: relayRS) + " --record-process || { echo '[Relay Runner] Process ownership could not be saved.'; exit 1; }" : "")
         relay_record_session_event launcher_start started
-        \(Self.claudeSubscriptionGate(relayBridge: relayBridge, target: target, agentBinary: agentBinary))
+        \(Self.claudeSubscriptionGate(relayRS: relayRS, target: target, agentBinary: agentBinary))
         \(Self.codexLoginGate(target: target, agentBinary: agentBinary))
-        \(resolvesCodexModel ? Self.codexModelResolutionScript(relayBridge: relayBridge, agentBinary: agentBinary, config: config) : "")
+        \(resolvesCodexModel ? Self.codexModelResolutionScript(relayRS: relayRS, agentBinary: agentBinary, config: config) : "")
         # relay-bridge owns bridge readiness. Agent-skill sessions only bootstrap
-        # here; app-owned sessions wait for the Python bridge's socket.
+        # here; app-owned sessions wait for the bridge's socket.
         \(bridgeStartLine)
         \(Self.appOwnedProviderSessionPublish(effectiveProviderSessionID))
         relay_record_session_event provider_spawn started
         relay_record_support_event provider provider_readiness spawned
-        \(sessionContext != nil && target == .codex ? "export RELAY_PROVIDER_BINARY=" + Self.shellQuoted(agentBinary) + "\n" + Self.completionHookCommand(relayBridge: relayBridge, hookRuntime: hookRuntime) + " --record-codex-startup </dev/null >/dev/null 2>&1 &" : "")
+        \(sessionContext != nil && target == .codex ? "export RELAY_PROVIDER_BINARY=" + Self.shellQuoted(agentBinary) + "\n" + Self.completionHookCommand(relayRS: relayRS) + " --record-codex-startup </dev/null >/dev/null 2>&1 &" : "")
         # Interactive agent session with Relay Runner voice mode pre-fired.
         # Replacing this launcher process keeps the PTY child PID aligned with
         # the agent, so End Session terminates the interactive process cleanly.
@@ -1658,16 +1663,12 @@ final class ProcessManager {
     /// credential is the user's Claude subscription, not an API key or other
     /// metered route. Missing sign-in opens login in this same terminal, then
     /// the gate rechecks before any bridge or model work starts.
-    static func claudeSubscriptionGate(relayBridge: String, target: AgentTarget, agentBinary: String) -> String {
+    static func claudeSubscriptionGate(relayRS: String, target: AgentTarget, agentBinary: String) -> String {
         guard target == .claude else { return "" }
-        let gate = URL(fileURLWithPath: relayBridge)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("services/claude_subscription.py")
-            .path
+        let gate = "\(shellQuoted(relayRS)) claude-subscription"
         return """
         relay_claude_auth_status=0
-        \(shellQuoted(servicePython)) \(shellQuoted(gate)) --binary \(shellQuoted(agentBinary)) --cwd "$PWD" --signal-login-required || relay_claude_auth_status=$?
+        \(gate) --binary \(shellQuoted(agentBinary)) --cwd "$PWD" --signal-login-required || relay_claude_auth_status=$?
         if [ "$relay_claude_auth_status" -eq 77 ]; then
             relay_record_session_event provider_login started
             echo '[Relay Runner] Sign in with your Claude subscription to continue.'
@@ -1676,7 +1677,7 @@ final class ProcessManager {
                 exit \(claudeSubscriptionGateExitCode)
             fi
             relay_claude_auth_status=0
-            \(shellQuoted(servicePython)) \(shellQuoted(gate)) --binary \(shellQuoted(agentBinary)) --cwd "$PWD" || relay_claude_auth_status=$?
+            \(gate) --binary \(shellQuoted(agentBinary)) --cwd "$PWD" || relay_claude_auth_status=$?
             if [ "$relay_claude_auth_status" -eq 0 ]; then
                 relay_record_session_event provider_login completed
             else
@@ -1716,14 +1717,11 @@ final class ProcessManager {
 
     /// The account's catalogue is available only after sign-in. Resolve the
     /// selected versionless family here, before starting the voice bridge.
-    static func codexModelResolutionScript(relayBridge: String, agentBinary: String, config: AppConfig) -> String {
-        let resolver = URL(fileURLWithPath: relayBridge)
-            .deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("services/codex_model_catalog.py").path
-        return """
-        relay_codex_selection="$(\(shellQuoted(servicePython)) \(shellQuoted(resolver)) --command \(shellQuoted(agentBinary)) --family \(shellQuoted(GeneralConfig.normalizeCodexFamily(config.general.model))) --effort \(shellQuoted(config.general.effectiveOrchestratorEffort)))" || exit 1
-        relay_codex_model="$(printf '%s' "$relay_codex_selection" | \(shellQuoted(servicePython)) -c 'import json,sys; print(json.load(sys.stdin)["resolvedModel"])')" || exit 1
-        relay_codex_effort="$(printf '%s' "$relay_codex_selection" | \(shellQuoted(servicePython)) -c 'import json,sys; print(json.load(sys.stdin)["resolvedEffort"])')" || exit 1
+    static func codexModelResolutionScript(relayRS: String, agentBinary: String, config: AppConfig) -> String {
+        """
+        relay_codex_selection="$(\(shellQuoted(relayRS)) codex-model --command \(shellQuoted(agentBinary)) --family \(shellQuoted(GeneralConfig.normalizeCodexFamily(config.general.model))) --effort \(shellQuoted(config.general.effectiveOrchestratorEffort)))" || exit 1
+        relay_codex_model="$(printf '%s' "$relay_codex_selection" | /usr/bin/plutil -extract resolvedModel raw -o - -)" || exit 1
+        relay_codex_effort="$(printf '%s' "$relay_codex_selection" | /usr/bin/plutil -extract resolvedEffort raw -o - -)" || exit 1
         """
     }
 
@@ -1770,7 +1768,7 @@ final class ProcessManager {
         """
     }
 
-    private static func supportDiagnosticsPreamble() -> String {
+    static func supportDiagnosticsPreamble() -> String {
         """
         relay_support_file_mtime() {
             stat -f '%m' "$1" 2>/dev/null || stat --format='%Y' "$1" 2>/dev/null || echo 0
@@ -1951,7 +1949,7 @@ final class ProcessManager {
     static let claudeSubscriptionFallbackMessage =
         "Relay Runner couldn't confirm Claude is using your Claude subscription. Run `claude auth login` and sign in with your Claude.ai subscription account."
 
-    /// Run services/claude_subscription.py after the same shell profile the
+    /// Run `relay-rs claude-subscription` after the same shell profile the
     /// launcher sources, so an API key or gateway exported there blocks
     /// readiness exactly as it would block the launch. Blocking; call it off
     /// the main thread.
@@ -1959,15 +1957,17 @@ final class ProcessManager {
         agentBinary: String,
         workingDirectory: String,
         shellPrelude: String = shellProfileSource(),
-        pythonPath: String = servicePython,
-        gatePath: String = servicesDirectory.appendingPathComponent("claude_subscription.py").path,
+        relayRS: String = ProcessManager.relayRS,
         environment: [String: String]? = nil,
         timeout: TimeInterval = 45
     ) -> ClaudeSubscriptionCheck {
+        guard FileManager.default.isExecutableFile(atPath: relayRS) else {
+            return .unavailable(missingBinaryMessage(relayRS))
+        }
         let script = """
         \(shellPrelude)
         export PATH="$HOME/.local/bin:$PATH"
-        exec \(shellQuoted(pythonPath)) \(shellQuoted(gatePath)) --binary \(shellQuoted(agentBinary)) --cwd \(shellQuoted(workingDirectory))
+        exec \(shellQuoted(relayRS)) claude-subscription --binary \(shellQuoted(agentBinary)) --cwd \(shellQuoted(workingDirectory))
         """
         guard let result = runShell(script, environment: environment, timeout: timeout) else {
             return .unavailable(claudeSubscriptionFallbackMessage)
@@ -1989,11 +1989,14 @@ final class ProcessManager {
     static func updateHarness(config: AppConfig) throws -> String {
         let target = target(for: config.general.provider)
         let binary = resolveAgentBinary(config.general.command, target: target)
+        guard FileManager.default.isExecutableFile(atPath: relayRS) else {
+            throw SessionLaunchPreparationError.providerUnavailable(missingBinaryMessage(relayRS))
+        }
         let script = """
         \(shellProfileSource())
         export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
         \(cdLine(config.general.working_directory)) || exit 1
-        exec \(shellQuoted(servicePython)) \(shellQuoted(servicesDirectory.appendingPathComponent("harness_update.py").path)) --provider \(shellQuoted(target.providerMetadataValue)) --command \(shellQuoted(binary))
+        exec \(shellQuoted(relayRS)) harness-update --provider \(shellQuoted(target.providerMetadataValue)) --command \(shellQuoted(binary))
         """
         guard let result = runShell(script, timeout: 420),
               let line = result.stdout.split(separator: "\n").last,
@@ -2144,7 +2147,7 @@ final class ProcessManager {
     Resolve each command as non-work/control, direct action, ticket creation/refinement, ticket update, worker dispatch, or clarification. Raw Relay command captures are private metadata and must not appear in visible .orchestrator tickets. Do not implement substantial project work inline unless the user explicitly asks.
     Public internet research is available by default. Use it only to read public evidence; it does not authorize messages, publishing, uploads of private workspace data, purchases, or unrelated mutations. Pin public-repository evidence to a commit when conclusions depend on source code, and report provider/network failure explicitly instead of claiming the source was assessed.
     Use mcp__relay-app__* for Relay Runner's own status, pages, settings, sessions, Relay Remote pairing and Keep Awake, mcp__relay-desktop__snapshot and act to read and operate apps through accessibility, mcp__relay-actions__* for physical screen manipulation, and mcp__relay-vision__screenshot only when pixels matter; never use native computer-use fallbacks for those capabilities, and do not call propose_action.
-    The messenger is tool-free and not authoritative. Mirror only bounded public provider-visible reasoning summaries/progress/lifecycle updates through __TRACE__ messages on /tmp/voice_in.fifo. A Relay-owned completion hook will recover a non-empty final provider message at turn Stop. Do not write reply JSON or reply envelopes to /tmp/voice_in.fifo directly. If an explicit current reply is needed, pipe only the final reply text to `\(HookRuntime.rustReplyInvocation)`; that shared helper binds and checks the claimed seq/id and is the sole app-owned __ORCHESTRATOR_REPLY__ encoder. Its accepted reply remains authoritative and deduplicates the later completion hook. Never expose hidden chain-of-thought, secrets, raw tool output, transcript dumps, or setup prose.
+    The messenger is tool-free and not authoritative. Mirror only bounded public provider-visible reasoning summaries/progress/lifecycle updates through __TRACE__ messages on /tmp/voice_in.fifo. A Relay-owned completion hook will recover a non-empty final provider message at turn Stop. Do not write reply JSON or reply envelopes to /tmp/voice_in.fifo directly. If an explicit current reply is needed, pipe only the final reply text to `\(replyHelperInvocation)`; that shared helper binds and checks the claimed seq/id and is the sole app-owned __ORCHESTRATOR_REPLY__ encoder. Its accepted reply remains authoritative and deduplicates the later completion hook. Never expose hidden chain-of-thought, secrets, raw tool output, transcript dumps, or setup prose.
     Provider responses, reasoning summaries, tool calls, progress, and final output should remain visible in this terminal.
     """
 
@@ -2157,17 +2160,10 @@ final class ProcessManager {
         voiceDelivery: SessionVoiceDelivery,
         sessionContext: AssistantSessionContext? = nil,
         publicHandoff: String = "",
-        reachesRegisteredProjects: Bool = false,
-        hookRuntime: HookRuntime
+        reachesRegisteredProjects: Bool = false
     ) -> String {
         guard voiceDelivery == .appOwned else { return "" }
         var instructions = appOwnedRelayInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
-        if hookRuntime == .python {
-            instructions = instructions.replacingOccurrences(
-                of: HookRuntime.rustReplyInvocation,
-                with: HookRuntime.pythonReplyInvocation
-            )
-        }
         if let sessionContext {
             instructions += "\nActive context: \(sessionContext.displayName) (\(sessionContext.kind.rawValue)). Execution is bound to \(sessionContext.workingDirectory). A context change requires Relay Runner to replace or resume the provider; never claim that a chat instruction changed your cwd or project mutation authority."
             if reachesRegisteredProjects {
@@ -2236,16 +2232,13 @@ final class ProcessManager {
     /// disappear during a switch and cannot establish parent work authority.
     static func contextContinuationAuthority(operation: String, source: [String: String],
                                              submissionID: String? = nil, destination: [String: String]? = nil,
-                                             hookRuntime: HookRuntime = .resolve()) throws -> [String: Any] {
-        let process = Process()
-        switch hookRuntime {
-        case .rust(let binary):
-            process.executableURL = URL(fileURLWithPath: binary)
-            process.arguments = ["hook", "--context-continuation"]
-        case .python:
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-            process.arguments = [servicesDirectory.appendingPathComponent("relay_completion_hook.py").path, "--context-continuation"]
+                                             relayRS: String = ProcessManager.relayRS) throws -> [String: Any] {
+        guard FileManager.default.isExecutableFile(atPath: relayRS) else {
+            throw NSError(domain: "RelayContinuation", code: 6, userInfo: [NSLocalizedDescriptionKey: missingBinaryMessage(relayRS)])
         }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: relayRS)
+        process.arguments = ["hook", "--context-continuation"]
         let input = Pipe(), output = Pipe()
         process.standardInput = input
         process.standardOutput = output
@@ -2270,88 +2263,17 @@ final class ProcessManager {
         return reply
     }
 
-    /// RR-478: the completion hook and reply helper a session registers.
-    /// `relay-rs hook` and `relay-rs reply` are the default. Setting
-    /// `RELAY_HOOK_RUNTIME=python` in the app's environment registers the
-    /// bundled Python scripts instead, for both providers; so does a build
-    /// with no relay-rs beside the app executable. scripts/relay-bridge makes
-    /// the same choice for the skills it installs.
-    enum HookRuntime: Equatable {
-        case rust(binary: String)
-        case python
-
-        static let environmentName = "RELAY_HOOK_RUNTIME"
-        static let binaryName = "relay-rs"
-        /// How the app-owned instructions tell the provider to publish a reply.
-        static let rustReplyInvocation = "\"$RELAY_REPLY_HELPER\" reply"
-        static let pythonReplyInvocation = "/usr/bin/python3 \"$RELAY_REPLY_HELPER\""
-
-        static func resolve(
-            executableDirectory: URL? = Bundle.main.executableURL?.deletingLastPathComponent(),
-            environment: [String: String] = ProcessInfo.processInfo.environment,
-            isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
-        ) -> HookRuntime {
-            guard environment[environmentName] != "python",
-                  let binary = executableDirectory?.appendingPathComponent(binaryName).path,
-                  isExecutable(binary) else { return .python }
-            return .rust(binary: binary)
-        }
-    }
-
-    /// RR-481: the speech the app runs itself, the tutorial voice and the
-    /// Settings voice preview. `relay-speech tutorial` and `relay-speech
-    /// preview` are the default. Setting `RELAY_SPEECH_RUNTIME=python` in the
-    /// app's environment runs the bundled Python scripts instead, the fallback
-    /// for one release; so does a build with no relay-speech beside the app
-    /// executable. The voice bridge makes the same choice for the speech service.
-    enum SpeechRuntime: Equatable {
-        case rust(binary: String)
-        case python
-
-        static let environmentName = "RELAY_SPEECH_RUNTIME"
-        static let binaryName = "relay-speech"
-
-        static func resolve(
-            executableDirectory: URL? = Bundle.main.executableURL?.deletingLastPathComponent(),
-            environment: [String: String] = ProcessInfo.processInfo.environment,
-            isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
-        ) -> SpeechRuntime {
-            let requested = environment[environmentName]?.trimmingCharacters(in: .whitespaces).lowercased()
-            guard requested != "python",
-                  let binary = executableDirectory?.appendingPathComponent(binaryName).path,
-                  isExecutable(binary) else { return .python }
-            return .rust(binary: binary)
-        }
-    }
-
-    private static func completionHookScriptPath(relayBridge: String) -> String {
-        URL(fileURLWithPath: relayBridge)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("services/relay_completion_hook.py")
-            .path
-    }
-
-    private static func replyHelperScriptPath(relayBridge: String) -> String {
-        URL(fileURLWithPath: relayBridge)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("services/relay_reply.py")
-            .path
-    }
+    /// RR-478: the completion hook and reply helper a session registers are
+    /// `relay-rs hook` and `relay-rs reply`, for both providers. This is how
+    /// the app-owned instructions tell the provider to publish a reply.
+    static let replyHelperInvocation = "\"$RELAY_REPLY_HELPER\" reply"
 
     private static func appOwnedReplyHelperExport(
-        relayBridge: String,
         voiceDelivery: SessionVoiceDelivery,
-        hookRuntime: HookRuntime
+        relayRS: String
     ) -> String {
         guard voiceDelivery == .appOwned else { return "" }
-        let helper: String
-        switch hookRuntime {
-        case .rust(let binary): helper = binary
-        case .python: helper = Self.replyHelperScriptPath(relayBridge: relayBridge)
-        }
-        return "export RELAY_REPLY_HELPER=" + Self.shellQuoted(helper)
+        return "export RELAY_REPLY_HELPER=" + Self.shellQuoted(relayRS)
     }
 
     private static func appOwnedProviderSessionExport(_ providerSessionID: String?) -> String {
@@ -2441,13 +2363,8 @@ final class ProcessManager {
         """
     }
 
-    private static func completionHookCommand(relayBridge: String, hookRuntime: HookRuntime) -> String {
-        switch hookRuntime {
-        case .rust(let binary):
-            return "\(Self.shellQuoted(binary)) hook"
-        case .python:
-            return "/usr/bin/python3 \(Self.shellQuoted(Self.completionHookScriptPath(relayBridge: relayBridge)))"
-        }
+    private static func completionHookCommand(relayRS: String) -> String {
+        "\(Self.shellQuoted(relayRS)) hook"
     }
 
     private static func codexCompletionHookFlag(event: String, command: String, statusMessage: String) -> String {
@@ -2465,13 +2382,12 @@ final class ProcessManager {
     }
 
     private static func appOwnedCompletionHookFlag(
-        relayBridge: String,
         target: AgentTarget,
         voiceDelivery: SessionVoiceDelivery,
-        hookRuntime: HookRuntime
+        relayRS: String
     ) -> String {
         guard voiceDelivery == .appOwned else { return "" }
-        let command = Self.completionHookCommand(relayBridge: relayBridge, hookRuntime: hookRuntime)
+        let command = Self.completionHookCommand(relayRS: relayRS)
         switch target {
         case .codex:
             return "--enable hooks --dangerously-bypass-hook-trust "
@@ -2561,7 +2477,7 @@ final class ProcessManager {
                 : ""
             return "\(Self.shellQuoted(relayBridge)) --start-daemon\(greetingFlag) || { echo '[Relay Runner] Voice bridge failed.'; exit 1; }"
         case .agentSkill:
-            return "\(Self.shellQuoted(relayBridge)) --venv-only || { relay_record_support_event shell setup failed; echo '[Relay Runner] Setup failed.'; exit 1; }"
+            return "\(Self.shellQuoted(relayBridge)) --setup-only || { relay_record_support_event shell setup failed; echo '[Relay Runner] Setup failed.'; exit 1; }"
         }
     }
 
@@ -2610,34 +2526,15 @@ final class ProcessManager {
     /// Build an owned preview process. The caller drains stderr, bounds its
     /// lifetime and plays the output locally; it never enters the response queue.
     func voicePreviewProcess(name: String, text: String, output: URL) throws -> Process {
-        let arguments = ["--voice", name, "--text", text, "--output", output.path]
-        if case .rust(let binary) = SpeechRuntime.resolve() {
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: binary)
-            proc.arguments = ["preview"] + arguments
-            proc.standardOutput = FileHandle.nullDevice
-            return proc
-        }
-        let python = Self.userVenvPython
-        let script = bundledServicesDir.appendingPathComponent("preview_voice.py").path
-
-        guard FileManager.default.isExecutableFile(atPath: python) else {
+        let binary = Self.relaySpeech
+        guard FileManager.default.isExecutableFile(atPath: binary) else {
             throw NSError(domain: "ProcessManager.previewVoice", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Voice preview unavailable — finish onboarding to install Python first."
+                NSLocalizedDescriptionKey: "Voice preview unavailable. \(Self.missingBinaryMessage(binary))"
             ])
         }
-        guard FileManager.default.fileExists(atPath: script) else {
-            throw NSError(domain: "ProcessManager.previewVoice", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "Voice preview script not found in app bundle."
-            ])
-        }
-
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: python)
-        proc.arguments = [script] + arguments
-        var environment = ProcessInfo.processInfo.environment
-        environment["PYTHONDONTWRITEBYTECODE"] = "1"
-        proc.environment = environment
+        proc.executableURL = URL(fileURLWithPath: binary)
+        proc.arguments = ["preview", "--voice", name, "--text", text, "--output", output.path]
         proc.standardOutput = FileHandle.nullDevice
         return proc
     }
@@ -2687,7 +2584,7 @@ final class ProcessManager {
     }
 
     /// Returns shell commands to source the user's profile so PATH includes
-    /// tools like claude, python, etc. that aren't on the default app PATH.
+    /// tools like claude, codex, etc. that aren't on the default app PATH.
     private static func shellProfileSource() -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         // Try zprofile/zshrc first (macOS default), then bash

@@ -49,7 +49,7 @@ The decision is recorded in `[stt] phonon_migration` (`completed`, `rolled_back`
 - **Chime** — optional system sound before speech.
 - **Notification** — optional macOS notification.
 
-Kokoro model and voice files download during setup to `~/.local/share/kokoro/`. The Python venv lives under Relay Runner's Application Support directory, outside the signed app bundle.
+Kokoro model and voice files download during setup to `~/.local/share/kokoro/`.
 
 ## Awareness
 

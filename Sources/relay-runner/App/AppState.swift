@@ -4468,7 +4468,7 @@ final class AppState {
     private func startOverlay() {
         guard overlayController == nil else { return }
 
-        // State event bus (listens for Python service state)
+        // State event bus (listens for voice service state)
         let bus = StateEventBus(
             stateMachine: stateMachine,
             shouldHandleServiceEvent: { [weak self] source, tutorial in

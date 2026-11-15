@@ -2,17 +2,17 @@
 //!
 //! The contract case replays `ProgramAndFollowupTests.test_capture_status_and_dashboard`
 //! of `tests/contract/test_orchestrator_contract_sessions.py` against the
-//! library with Rust alone. The interop cases check that a Rust and a Python
-//! daemon commit the same Program events, project the same graph and read
-//! each other's events: one fixture is captured into by both, then ingested
-//! by both into separate `graphify.db` files that must hold the same rows.
+//! library. The fixture cases capture into an artifact project, ingest it
+//! into `graphify.db` (again without change), check that identical captures
+//! commit identical events, track input identities, and export and rebuild
+//! legacy captures.
 
 mod common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use relay_artifacts::store::{ARTIFACT_REF, ArtifactStore, StoreOptions};
+use relay_artifacts::store::{ARTIFACT_REF, ArtifactStore, Mutation, Operation, StoreOptions};
 use relay_intents::json::{self, Dict, Value};
 use relay_services::program::artifacts::{
     DurableEvent, canonical_program_event, durable_program_event, expected_graph_manifest,
@@ -31,7 +31,7 @@ use relay_services::program_status::{
 use relay_store::graphify::{GraphifyStore, NODE_DECISION, NODE_PROJECT};
 use rusqlite::Connection;
 
-use common::{TempRoot, git, make_repo, python, run_python};
+use common::{TempRoot, git, make_repo};
 
 const DEVICE: &str = "contract-device";
 const OCCURRED_AT: f64 = 1_785_819_600.25;
@@ -189,7 +189,7 @@ fn contract_capture_commits_one_decision() {
     assert!(message.contains("Relay-Provider: claude"));
 
     // Repeating the capture with the same time is idempotent; another time
-    // is a different event under the same identity, which Python refuses too.
+    // is a different event under the same identity, which is refused.
     let mut repeat = request.clone();
     repeat.capture_id = Some(Value::Str("capture-2".to_string()));
     repeat.occurred_at = Some(OCCURRED_AT);
@@ -254,7 +254,7 @@ fn contract_capture_commits_one_decision() {
 }
 
 #[test]
-fn capture_refusals_name_the_python_errors() {
+fn capture_refusals_name_their_errors() {
     let root = TempRoot::new("program-refusals");
     let graph = GraphifyStore::open(&root.data_root().join("graphify.db")).unwrap();
     let refuse = |entries: Value| {
@@ -319,74 +319,82 @@ fn capture_refusals_name_the_python_errors() {
     );
 }
 
-// -- Python interop -----------------------------------------------------------
+// -- the program fixture ------------------------------------------------------
+
+/// A ticket file as the artifact board writes it.
+fn ticket_markdown(id: &str, title: &str, status: &str, deps: &str, body: &str) -> Vec<u8> {
+    format!(
+        "---\nid: {id}\nartifact_id: ticket-{}-artifact\ntitle: {title}\n\
+         status: {status}\npriority: high\nexecution_mode: implementation\n\
+         depends_on: {deps}\nrun_id: null\ncanceled: false\n\
+         activity_at: 2026-08-04T05:00:00Z\nworker_model: balanced\nworker_effort: medium\n\
+         ---\n## Description\n\n{body}\n",
+        id.to_lowercase()
+    )
+    .into_bytes()
+}
 
 /// Builds an artifact project with two live tickets and one archived ticket,
-/// the way the Python store and retention write them.
-const PYTHON_FIXTURE: &str = r#"
-import json, subprocess, sys
-from pathlib import Path
-from artifact_store import (ArchiveIndexWrite, ArtifactMutation, ArtifactStore, TicketDelete,
-                            TicketWrite)
-repo, state, project_id = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
-store = ArtifactStore(repo, project_id, state, enabled=True)
-store.initialize(device_id="contract-device", actor_type="migration")
-def ticket(tid, title, status, deps, body):
-    return (f"---\nid: {tid}\nartifact_id: ticket-{tid.lower()}-artifact\ntitle: {title}\n"
-            f"status: {status}\npriority: high\nexecution_mode: implementation\n"
-            f"depends_on: {deps}\nrun_id: null\ncanceled: false\n"
-            f"activity_at: 2026-08-04T05:00:00Z\nworker_model: balanced\nworker_effort: medium\n"
-            f"---\n## Description\n\n{body}\n").encode()
-first = store.mutate(ArtifactMutation(
-    event_id="fixture-1", actor_type="pm", device_id="contract-device", operations=(
-        TicketWrite("CT-1", "ticket-ct-1-artifact",
-                    ticket("CT-1", "Ship the parser", "done", "[]", "Edit src/main.rs.")),
-        TicketWrite("CT-2", "ticket-ct-2-artifact",
-                    ticket("CT-2", "Follow up", "backlog", "[CT-1, CT-9]", "Read README.md.")),
-        TicketWrite("CT-9", "ticket-ct-9-artifact",
-                    ticket("CT-9", "Old work", "done", "[]", "Done long ago.")),
-    )))
-blob = subprocess.check_output(
-    ["git", "-C", str(repo), "rev-parse", f"{first.commit_id}:.orchestrator/CT-9.md"],
-    text=True).strip()
-entry = {"schema_version": 1, "artifact_id": "ticket-ct-9-artifact", "ticket_id": "CT-9",
-         "title": "Old work", "status": "done", "activity_at": "2026-08-04T05:00:00Z",
-         "dependencies": [], "state": "archived", "ticket_path": ".orchestrator/CT-9.md",
-         "ticket_blob": blob, "ticket_size": 0, "attachments": [],
-         "source_commit": first.commit_id, "archived_at": "2026-08-05T00:00:00Z",
-         "restored_at": None, "deleted_at": None}
-store.mutate(ArtifactMutation(
-    event_id="fixture-2", actor_type="pm", device_id="contract-device", operations=(
-        TicketDelete("CT-9"),
-        ArchiveIndexWrite((json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n")
-                          .encode()),
-    )))
-"#;
-
-const PYTHON_CAPTURE: &str = r#"
-import json, sys
-from artifact_store import ArtifactStore
-from graphify_core import GraphifyCoreStore
-from session_capture import capture_session_review
-graph, repo, state, project_id, entries, capture_id, occurred, artifact = sys.argv[1:9]
-artifact_store = ArtifactStore(repo, project_id, state, enabled=True) if artifact == "1" else None
-result = capture_session_review(
-    GraphifyCoreStore(graph), repo_path=repo, entries=json.loads(entries), provider="Claude Code",
-    capture_id=capture_id or None, occurred_at=float(occurred), ticket_id="CT-1", run_id="1",
-    artifact_store=artifact_store,
-    artifact_device_id="contract-device" if artifact_store else None)
-print(json.dumps(result))
-"#;
-
-const PYTHON_INGEST: &str = r#"
-import json, sys
-from graphify_core import GraphifyCoreStore
-from graphify_ingest import ingest_registered_projects
-graph, registry, runs, index = sys.argv[1:5]
-print(json.dumps(ingest_registered_projects(
-    GraphifyCoreStore(graph), registry_path=registry, runs_db_path=runs or None,
-    index_files=index == "1")))
-"#;
+/// the way the store and retention write them.
+fn write_artifact_fixture(repo: &Path, state_root: &Path, project_id: &str) {
+    let store = open_store(repo, project_id, state_root);
+    store.initialize(DEVICE, "migration").unwrap();
+    let write =
+        |id: &str, title: &str, status: &str, deps: &str, body: &str| Operation::TicketWrite {
+            ticket_id: id.to_string(),
+            artifact_id: format!("ticket-{}-artifact", id.to_lowercase()),
+            markdown: ticket_markdown(id, title, status, deps, body),
+        };
+    let first = store
+        .mutate(&Mutation::new(
+            "fixture-1",
+            "pm",
+            DEVICE,
+            vec![
+                write("CT-1", "Ship the parser", "done", "[]", "Edit src/main.rs."),
+                write(
+                    "CT-2",
+                    "Follow up",
+                    "backlog",
+                    "[CT-1, CT-9]",
+                    "Read README.md.",
+                ),
+                write("CT-9", "Old work", "done", "[]", "Done long ago."),
+            ],
+        ))
+        .unwrap();
+    let blob = git(
+        repo,
+        &[
+            "rev-parse",
+            &format!("{}:.orchestrator/CT-9.md", first.commit_id),
+        ],
+    );
+    let entry = parse(&format!(
+        r#"{{"schema_version": 1, "artifact_id": "ticket-ct-9-artifact", "ticket_id": "CT-9",
+            "title": "Old work", "status": "done", "activity_at": "2026-08-04T05:00:00Z",
+            "dependencies": [], "state": "archived", "ticket_path": ".orchestrator/CT-9.md",
+            "ticket_blob": "{blob}", "ticket_size": 0, "attachments": [],
+            "source_commit": "{}", "archived_at": "2026-08-05T00:00:00Z",
+            "restored_at": null, "deleted_at": null}}"#,
+        first.commit_id
+    ));
+    store
+        .mutate(&Mutation::new(
+            "fixture-2",
+            "pm",
+            DEVICE,
+            vec![
+                Operation::TicketDelete {
+                    ticket_id: "CT-9".to_string(),
+                },
+                Operation::ArchiveIndexWrite {
+                    content: format!("{}\n", json::dumps_compact_sorted(&entry)).into_bytes(),
+                },
+            ],
+        ))
+        .unwrap();
+}
 
 /// Runs that exercise each provider source and program state.
 fn write_runs(path: &Path, repo: &Path, log: &Path) {
@@ -491,7 +499,7 @@ struct Fixture {
 
 /// The registered artifact project (`contract-program`) beside a legacy
 /// board (`contract-legacy`), a registry and a runs database.
-fn fixture(python: &Path, label: &str) -> Fixture {
+fn fixture(label: &str) -> Fixture {
     let root = TempRoot::new(label);
     let repo = make_repo(&root.path.join("program"));
     fs::create_dir_all(repo.join("src")).unwrap();
@@ -500,16 +508,7 @@ fn fixture(python: &Path, label: &str) -> Fixture {
     fs::write(repo.join("binary.json"), b"{\0}").unwrap();
     fs::create_dir_all(repo.join("node_modules")).unwrap();
     fs::write(repo.join("node_modules/skip.js"), "skipped").unwrap();
-    run_python(
-        python,
-        &root.path,
-        PYTHON_FIXTURE,
-        &[
-            &repo.to_string_lossy(),
-            &root.state_root().to_string_lossy(),
-            "contract-program",
-        ],
-    );
+    write_artifact_fixture(&repo, &root.state_root(), "contract-program");
     let legacy = make_repo(&root.path.join("legacy"));
     fs::create_dir_all(legacy.join(".orchestrator")).unwrap();
     fs::write(
@@ -548,45 +547,6 @@ fn rust_ingest(fixture: &Fixture, graph_path: &Path, index_files: bool) -> Dict 
         },
     )
     .unwrap()
-}
-
-fn python_ingest(python: &Path, fixture: &Fixture, graph_path: &Path, index: bool) -> String {
-    run_python(
-        python,
-        &fixture.root.path,
-        PYTHON_INGEST,
-        &[
-            &graph_path.to_string_lossy(),
-            &fixture.registry.to_string_lossy(),
-            &fixture.runs.to_string_lossy(),
-            if index { "1" } else { "0" },
-        ],
-    )
-}
-
-fn python_capture(
-    python: &Path,
-    fixture: &Fixture,
-    graph_path: &Path,
-    entries: &Value,
-    capture_id: &str,
-    artifact: bool,
-) -> Value {
-    parse(&run_python(
-        python,
-        &fixture.root.path,
-        PYTHON_CAPTURE,
-        &[
-            &graph_path.to_string_lossy(),
-            &fixture.repo.to_string_lossy(),
-            &fixture.root.state_root().to_string_lossy(),
-            "contract-program",
-            &json::dumps(entries),
-            capture_id,
-            &json::float_repr(OCCURRED_AT),
-            if artifact { "1" } else { "0" },
-        ],
-    ))
 }
 
 fn rust_capture(
@@ -628,75 +588,52 @@ fn mixed_entries() -> Value {
     )
 }
 
-/// Both daemons capture into one project's ref (each reading what the
-/// other wrote), then both ingest it; the graphs hold the same rows and the
-/// counts agree.
+/// Two captures into one project's ref (the second validating the first's
+/// events), then ingest; ingesting again over the same graph changes
+/// nothing and reuses its file manifests.
 #[test]
-fn rust_and_python_ingest_each_others_events_identically() {
-    let Some(python) = python() else { return };
-    let fixture = fixture(&python, "program-ingest");
+fn captured_events_ingest_and_reingest_unchanged() {
+    let fixture = fixture("program-ingest");
     let scratch = fixture.root.path.join("scratch");
     fs::create_dir_all(&scratch).unwrap();
 
-    // Rust first, Python second: the second writer validates the first's events.
-    let rust = rust_capture(
+    let first = rust_capture(
         &fixture,
-        &scratch.join("rust-capture.db"),
+        &scratch.join("first-capture.db"),
         &mixed_entries(),
-        "rust-capture",
+        "first-capture",
         true,
     );
-    let python_result = python_capture(
-        &python,
+    let second = rust_capture(
         &fixture,
-        &scratch.join("python-capture.db"),
+        &scratch.join("second-capture.db"),
         &decision_entries(),
-        "python-capture",
+        "second-capture",
         true,
     );
+    assert_eq!(show(dict(&second).get("artifact_idempotent")), "false");
     assert_eq!(
-        show(dict(&python_result).get("artifact_idempotent")),
-        "false"
-    );
-    assert_eq!(
-        json::dumps(dict(&rust).get("counts").unwrap()),
+        json::dumps(dict(&first).get("counts").unwrap()),
         r#"{"ProgramEvent": 1, "Decision": 1, "Risk": 1, "Idea": 1, "Status": 1}"#
     );
 
     for index_files in [false, true] {
-        let rust_graph = scratch.join(format!("rust-{index_files}.db"));
-        let python_graph = scratch.join(format!("python-{index_files}.db"));
-        let rust_counts = rust_ingest(&fixture, &rust_graph, index_files);
-        let python_counts = python_ingest(&python, &fixture, &python_graph, index_files);
+        let graph = scratch.join(format!("graph-{index_files}.db"));
+        let counts = rust_ingest(&fixture, &graph, index_files);
+        assert_eq!(counts.get("program_events").unwrap().py_int(), Some(6));
+        assert_eq!(counts.get("archived_tickets").unwrap().py_int(), Some(1));
+        let rows = graph_rows(&graph);
+        let again = rust_ingest(&fixture, &graph, index_files);
+        assert_eq!(again.get("tickets_deleted").unwrap().py_int(), Some(0));
+        assert_eq!(again.get("files_indexed").unwrap().py_int(), Some(0));
         assert_eq!(
-            json::dumps(&Value::Dict(rust_counts.clone())),
-            python_counts.trim(),
-            "ingest counts (index_files={index_files})"
-        );
-        assert_eq!(rust_counts.get("program_events").unwrap().py_int(), Some(6));
-        assert_eq!(
-            rust_counts.get("archived_tickets").unwrap().py_int(),
-            Some(1)
-        );
-        assert_eq!(
-            graph_rows(&rust_graph),
-            graph_rows(&python_graph),
+            graph_rows(&graph),
+            rows,
             "graph rows (index_files={index_files})"
         );
-        // Ingesting again over the other daemon's graph changes nothing, and
-        // each reuses the other's file manifests.
-        let python_again = python_ingest(&python, &fixture, &rust_graph, index_files);
-        let rust_again = rust_ingest(&fixture, &python_graph, index_files);
-        assert_eq!(
-            json::dumps(&Value::Dict(rust_again.clone())),
-            python_again.trim()
-        );
-        assert_eq!(rust_again.get("tickets_deleted").unwrap().py_int(), Some(0));
-        assert_eq!(rust_again.get("files_indexed").unwrap().py_int(), Some(0));
-        assert_eq!(graph_rows(&rust_graph), graph_rows(&python_graph));
     }
     // The index skipped vendored, binary and dotted directories.
-    let files: Vec<String> = graph_rows(&scratch.join("rust-true.db"))
+    let files: Vec<String> = graph_rows(&scratch.join("graph-true.db"))
         .into_iter()
         .filter(|row| row.starts_with("file "))
         .collect();
@@ -709,27 +646,20 @@ fn rust_and_python_ingest_each_others_events_identically() {
 /// The same capture into two identical projects commits the same tree and
 /// message, and answers with the same response.
 #[test]
-fn rust_and_python_capture_commits_are_identical() {
-    let Some(python) = python() else { return };
-    let ours = fixture(&python, "program-capture-rust");
-    let theirs = fixture(&python, "program-capture-python");
+fn capture_commits_are_reproducible() {
+    let ours = fixture("program-capture-a");
+    let theirs = fixture("program-capture-b");
     for artifact in [true, false] {
         let capture_id = format!("same-{artifact}");
-        let rust = rust_capture(
-            &ours,
-            &ours.root.path.join(format!("g-{artifact}.db")),
-            &mixed_entries(),
-            &capture_id,
-            artifact,
-        );
-        let python_result = python_capture(
-            &python,
-            &theirs,
-            &theirs.root.path.join(format!("g-{artifact}.db")),
-            &mixed_entries(),
-            &capture_id,
-            artifact,
-        );
+        let capture = |fixture: &Fixture| {
+            rust_capture(
+                fixture,
+                &fixture.root.path.join(format!("g-{artifact}.db")),
+                &mixed_entries(),
+                &capture_id,
+                artifact,
+            )
+        };
         // Commit ids carry each fixture's own history; the rest must match.
         let normalize = |value: &Value, fixture: &Fixture| {
             let mut value = value.as_dict().unwrap().clone();
@@ -738,8 +668,8 @@ fn rust_and_python_capture_commits_are_identical() {
                 .replace(&fixture.root.path.to_string_lossy().into_owned(), "<ROOT>")
         };
         assert_eq!(
-            normalize(&rust, &ours),
-            normalize(&python_result, &theirs),
+            normalize(&capture(&ours), &ours),
+            normalize(&capture(&theirs), &theirs),
             "capture response (artifact={artifact})"
         );
     }
@@ -758,36 +688,23 @@ fn rust_and_python_capture_commits_are_identical() {
         |fixture: &Fixture| git(&fixture.repo, &["log", "-1", "--format=%B", ARTIFACT_REF]);
     assert_eq!(tree(&ours), tree(&theirs));
     assert_eq!(message(&ours), message(&theirs));
-    // A derived capture id is the same in both.
-    let derived_rust = rust_capture(
+    // A derived capture id starts with the capture time in milliseconds.
+    let derived = rust_capture(
         &ours,
         &ours.root.path.join("d.db"),
         &decision_entries(),
         "",
         false,
     );
-    let derived_python = python_capture(
-        &python,
-        &theirs,
-        &theirs.root.path.join("d.db"),
-        &decision_entries(),
-        "",
-        false,
-    );
-    let id = |value: &Value| dict(value).get("capture_id").unwrap().py_str();
-    let rust_id = id(&derived_rust);
-    assert!(rust_id.starts_with("1785819600250-"), "{rust_id}");
-    // The derivation hashes the repository path, which differs between the
-    // two fixtures, so only the shape can be compared here.
-    assert_eq!(rust_id.len(), id(&derived_python).len());
+    let derived = dict(&derived).get("capture_id").unwrap().py_str();
+    assert!(derived.starts_with("1785819600250-"), "{derived}");
 }
 
 /// Input identities move only when an input does, and a reused project keeps
 /// its graph.
 #[test]
 fn input_state_tracks_board_and_ref_changes() {
-    let Some(python) = python() else { return };
-    let fixture = fixture(&python, "program-inputs");
+    let fixture = fixture("program-inputs");
     let graph_path = fixture.root.path.join("graph.db");
     let first = registered_projects_input_state(&fixture.registry, Some(&fixture.runs))
         .unwrap()
@@ -846,8 +763,7 @@ fn input_state_tracks_board_and_ref_changes() {
 /// rebuild reproduces its manifest.
 #[test]
 fn legacy_captures_export_and_rebuild() {
-    let Some(python) = python() else { return };
-    let fixture = fixture(&python, "program-export");
+    let fixture = fixture("program-export");
     let graph_path = fixture.root.data_root().join("graphify.db");
     let graph = GraphifyStore::open(&graph_path).unwrap();
     rust_ingest(&fixture, &graph_path, false);

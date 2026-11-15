@@ -114,7 +114,7 @@ class ShellSupportDiagnosticsTests(unittest.TestCase):
                 for value in adversarial:
                     self.assertNotIn(value, journal)
 
-    def test_python_and_both_shell_writers_share_cross_process_lock(self):
+    def test_both_shell_writers_share_cross_process_lock(self):
         function_names = (
             "support_file_mtime",
             "support_file_size",
@@ -127,7 +127,6 @@ class ShellSupportDiagnosticsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             env = {
                 **os.environ,
-                "PYTHONPATH": str(ROOT),
                 "RELAY_DIAGNOSTICS_DIR": temp,
                 "RELAY_APP_SESSION_ID": "11111111-1111-4111-8111-111111111111",
                 "RELAY_CORRELATION_ID": "22222222-2222-4222-8222-222222222222",
@@ -138,16 +137,11 @@ class ShellSupportDiagnosticsTests(unittest.TestCase):
                 source = (ROOT / relative_path).read_text()
                 harness = "\n".join(shell_function(source, name) for name in function_names)
                 harnesses.append(harness + "\nrecord_support_event shell setup started codex\n")
-            python_writer = (
-                "from services.support_diagnostics import record_event; "
-                "record_event(process='orchestrator', phase='orchestrator_launch', outcome='started')"
-            )
             processes = []
             for _ in range(10):
                 processes.extend([
                     subprocess.Popen(["/bin/bash", "-c", harnesses[0]], env=env),
                     subprocess.Popen(["/bin/bash", "-c", harnesses[1]], env=env),
-                    subprocess.Popen(["python3", "-c", python_writer], env=env),
                 ])
             for process in processes:
                 self.assertEqual(process.wait(timeout=20), 0)
@@ -155,7 +149,7 @@ class ShellSupportDiagnosticsTests(unittest.TestCase):
             rows = []
             for path in Path(temp).glob("events-v1-*.jsonl"):
                 rows.extend(json.loads(line) for line in path.read_text().splitlines())
-            self.assertEqual(len(rows), 30)
+            self.assertEqual(len(rows), 20)
             self.assertFalse((Path(temp) / ".journal.lock").exists())
 
 

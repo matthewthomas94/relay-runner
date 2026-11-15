@@ -22,10 +22,10 @@ struct PermissionsSettingsTab: View {
     @Bindable var appState: AppState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @State private var venvPresent: Bool = false
+    @State private var servicesPresent: Bool = false
     @State private var bridgeAlive: Bool = false
     /// Nudged every 1s so we re-read state that isn't observable on its own
-    /// (venv files on disk, bridge process). Cheap — both checks are one
+    /// (setup files on disk, bridge process). Cheap — both checks are one
     /// stat + one pgrep. Faster cadence keeps the tab feeling live when
     /// the user is actively flipping toggles in System Settings.
     @State private var refreshTrigger = UUID()
@@ -67,7 +67,7 @@ struct PermissionsSettingsTab: View {
             }
 
             SettingsSection("Runtime") {
-                pythonEnvRow
+                voiceServicesRow
                 SettingsDivider()
                 sttModelRow
                 SettingsDivider()
@@ -136,13 +136,13 @@ struct PermissionsSettingsTab: View {
         )
     }
 
-    private var pythonEnvRow: some View {
+    private var voiceServicesRow: some View {
         statusRow(
-            label: "Python environment",
-            state: venvPresent ? .ok : .idle,
-            detail: venvPresent
-                ? "Installed in Application Support"
-                : "Not yet installed — will be created on first session",
+            label: "Voice model & services",
+            state: servicesPresent ? .ok : .idle,
+            detail: servicesPresent
+                ? "Speech model, skills and orchestrator installed"
+                : "Not yet installed — will be installed on first session",
             action: nil
         )
     }
@@ -323,16 +323,16 @@ struct PermissionsSettingsTab: View {
 
     private func refresh() {
         refreshTrigger = UUID()
-        venvPresent = Self.venvExists()
+        servicesPresent = Self.servicesInstalled()
         bridgeAlive = appState.processManager.bridgeAlive()
     }
 
-    private static func venvExists() -> Bool {
-        // Defer to VenvInstaller.alreadyInstalled — it's the single source
-        // of truth for "is the install fully done", and checks both the
-        // venv interpreter AND the Kokoro speech-model files. If either is
-        // missing, the relay-bridge bash side will run the install, so the
-        // Settings row should reflect that the install isn't really done.
-        VenvInstaller.alreadyInstalled
+    private static func servicesInstalled() -> Bool {
+        // Defer to RelaySetupInstaller.alreadyInstalled — it's the single source
+        // of truth for "is the install fully done": the Kokoro speech-model
+        // files, the skills and the orchestrator. If any is missing, the
+        // relay-bridge bash side will run the install, so the Settings row
+        // should reflect that the install isn't really done.
+        RelaySetupInstaller.alreadyInstalled
     }
 }

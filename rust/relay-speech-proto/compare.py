@@ -2,11 +2,11 @@
 """Render the corpus with the Python speech stack and the Rust prototype,
 measure both, and write a side-by-side listening page (RR-479).
 
-Run it with the services venv's interpreter, which has kokoro_onnx, after
+Run it with a Python that has kokoro_onnx installed (Relay Runner no longer
+ships one since RR-487), after
 `cargo build --release --locked --target aarch64-apple-darwin` in this directory:
 
-    "$HOME/Library/Application Support/relay-runner/services/.venv/bin/python" \\
-        rust/relay-speech-proto/compare.py --out /a/directory/outside/the/repo
+    python3 rust/relay-speech-proto/compare.py --out /a/directory/outside/the/repo
 
 Stages, all run by default and each resumable (a finished run is not repeated):
 

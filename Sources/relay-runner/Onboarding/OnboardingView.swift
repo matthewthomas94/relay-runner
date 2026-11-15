@@ -115,10 +115,10 @@ struct OnboardingView: View {
     let onHostDismissed: () -> Void
 
     @State private var step: Step
-    /// Drives the Python venv bootstrap. Held at view scope so the
+    /// Drives the voice and services setup. Held at view scope so the
     /// provider-choice CTA can start the guided setup run, and the
-    /// pythonSetup step can surface live progress.
-    @State private var venvInstaller = VenvInstaller()
+    /// voiceSetup step can surface live progress.
+    @State private var setupInstaller = RelaySetupInstaller()
     /// Cached "is the configured agent signed in" state. Polled by a
     /// 1-second timer while on the agentLogin step so we can auto-advance
     /// the moment the provider's local auth marker appears.
@@ -214,7 +214,7 @@ struct OnboardingView: View {
             requiresParentPermissionGuidance: requiresParentPermissionGuidance,
             parentPermissionsReviewed: startingParentReviewed,
             permissionStatus: { permissions.status(for: $0) },
-            venvInstalled: VenvInstaller.alreadyInstalled,
+            servicesInstalled: RelaySetupInstaller.alreadyInstalled,
             agentSignedIn: AgentAuth.isAuthenticated(for: startingProvider),
             fullFlowInitialStep: initialStepOverride ?? .welcome
         )
@@ -234,7 +234,7 @@ struct OnboardingView: View {
         case microphone
         case parentAccessibility
         case parentScreenRecording
-        case pythonSetup
+        case voiceSetup
         case agentLogin
         case ready
 
@@ -258,7 +258,7 @@ struct OnboardingView: View {
             case .microphone:        return .microphone
             case .parentAccessibility: return .parentAccessibility
             case .parentScreenRecording: return .parentScreenRecording
-            case .pythonSetup:       return .pythonSetup
+            case .voiceSetup:        return .voiceSetup
             case .agentLogin:        return .agentLogin
             case .ready:             return .ready
             }
@@ -274,7 +274,7 @@ struct OnboardingView: View {
                 self = .parentAccessibility
             case .parentScreenRecording:
                 self = .parentScreenRecording
-            case .pythonSetup:       self = .pythonSetup
+            case .voiceSetup:        self = .voiceSetup
             case .agentLogin:        self = .agentLogin
             case .ready:             self = .ready
             case .tutorialIntro,
@@ -335,7 +335,7 @@ struct OnboardingView: View {
             // so start the automatable setup work there without another user
             // decision.
             if simplified && step != .agentChoice {
-                venvInstaller.install()
+                setupInstaller.install()
             }
             advancePastGrantedPermissionIfNeeded()
             syncSurfaceVisibility()
@@ -345,8 +345,8 @@ struct OnboardingView: View {
             cancelPermissionSetup(.onboarding)
             autoAdvancedPermissionKinds.removeAll()
             persistResume()
-            if new == .pythonSetup {
-                venvInstaller.install()
+            if new == .voiceSetup {
+                setupInstaller.install()
             }
             advancePastGrantedPermissionIfNeeded()
             syncSurfaceVisibility()
@@ -407,10 +407,10 @@ struct OnboardingView: View {
             syncSurfaceVisibility()
             publishPresentation()
         }
-        .onChange(of: venvInstaller.status) { _, new in
-            // Auto-advance off pythonSetup as soon as the bootstrap
+        .onChange(of: setupInstaller.status) { _, new in
+            // Auto-advance off voiceSetup as soon as the bootstrap
             // succeeds so the user doesn't have to click through.
-            if step == .pythonSetup, case .succeeded = new {
+            if step == .voiceSetup, case .succeeded = new {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { advance() }
             }
             publishPresentation()
@@ -452,7 +452,7 @@ struct OnboardingView: View {
         case .microphone:       permissionView(for: .microphone)
         case .parentAccessibility: permissionView(for: .accessibility)
         case .parentScreenRecording: permissionView(for: .screenRecording)
-        case .pythonSetup:      pythonSetupView
+        case .voiceSetup:       voiceSetupView
         case .agentLogin:       agentLoginView
         case .ready:            readyView
         }
@@ -819,30 +819,30 @@ struct OnboardingView: View {
         ParentPermissionGuidance.appTargets(for: selectedAgentProvider)
     }
 
-    private var pythonSetupView: some View {
+    private var voiceSetupView: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 10) {
                 ZStack {
-                    pythonStatusBadge
+                    voiceSetupStatusBadge
                 }
-                Text("Python environment")
+                Text("Voice & Services")
                     .font(AppTypography.font(.screenTitle))
             }
 
             ZStack(alignment: .topLeading) {
-                pythonStatusDetail
+                voiceSetupStatusDetail
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .animation(
             RelayMotion.change(reduceMotion: reduceMotion),
-            value: Self.pythonStatusPhase(for: venvInstaller.status)
+            value: Self.voiceSetupStatusPhase(for: setupInstaller.status)
         )
     }
 
     @ViewBuilder
-    private var pythonStatusBadge: some View {
-        switch venvInstaller.status {
+    private var voiceSetupStatusBadge: some View {
+        switch setupInstaller.status {
         case .succeeded:
             LucideImage(.circleCheck, size: 20)
                 .foregroundStyle(.green)
@@ -858,8 +858,8 @@ struct OnboardingView: View {
     }
 
     @ViewBuilder
-    private var pythonStatusDetail: some View {
-        switch venvInstaller.status {
+    private var voiceSetupStatusDetail: some View {
+        switch setupInstaller.status {
         case .idle:
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
@@ -896,7 +896,7 @@ struct OnboardingView: View {
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: progress == nil)
             .transition(.relayReplacing(.element))
         case .succeeded:
-            Text("Done — Python environment ready.")
+            Text("Done — speech model, skills and orchestrator ready.")
                 .font(AppTypography.font(.body))
                 .foregroundStyle(.green)
                 .transition(.relayReplacing(.text))
@@ -1230,14 +1230,14 @@ struct OnboardingView: View {
 
     /// Coarse installer phase that decides when setup content swaps. Streamed
     /// progress lines stay within `.running` so they update in place.
-    enum PythonStatusPhase: Hashable {
+    enum VoiceSetupStatusPhase: Hashable {
         case idle
         case running
         case succeeded
         case failed
     }
 
-    static func pythonStatusPhase(for status: VenvInstaller.Status) -> PythonStatusPhase {
+    static func voiceSetupStatusPhase(for status: RelaySetupInstaller.Status) -> VoiceSetupStatusPhase {
         switch status {
         case .idle: return .idle
         case .running: return .running
@@ -1300,8 +1300,8 @@ struct OnboardingView: View {
             ) { beginGuidedSetup() }
         case .microphone, .parentAccessibility, .parentScreenRecording:
             return nil
-        case .pythonSetup:
-            return pythonPrimaryAction
+        case .voiceSetup:
+            return voiceSetupPrimaryAction
         case .agentLogin:
             return agentLoginPrimaryAction
         case .ready:
@@ -1436,8 +1436,8 @@ struct OnboardingView: View {
         startPermissionSetup(kind, purpose: permissionExplanation(for: kind))
     }
 
-    private var pythonPrimaryAction: OnboardingFooterAction {
-        switch venvInstaller.status {
+    private var voiceSetupPrimaryAction: OnboardingFooterAction {
+        switch setupInstaller.status {
         case .succeeded:
             return footerAction(
                 title: "Continue",
@@ -1451,7 +1451,7 @@ struct OnboardingView: View {
                 icon: .refreshCw,
                 prominence: .primary,
                 shortcut: .default
-            ) { venvInstaller.install() }
+            ) { setupInstaller.install() }
         case .idle, .running:
             return footerAction(
                 title: "Continue",
@@ -1565,7 +1565,7 @@ struct OnboardingView: View {
         )
         persistWorkingDirectoryIfNeeded()
         agentSignedIn = AgentAuth.isAuthenticated(for: selectedAgentProvider)
-        venvInstaller.install()
+        setupInstaller.install()
         advance()
     }
 
@@ -1624,8 +1624,8 @@ struct OnboardingView: View {
     }
 
     /// The next Settings-hosted step (after `from`) that still needs the
-    /// user's attention — provider choice, pythonSetup if the venv hasn't been
-    /// bootstrapped, or agentLogin if the configured agent isn't signed in.
+    /// user's attention — provider choice, voiceSetup if setup hasn't
+    /// finished, or agentLogin if the configured agent isn't signed in.
     /// Used by the simplified re-prompt flow to skip already-done items.
     private func nextMissingStep(after from: Step) -> Step? {
         Self.nextStepAfter(
@@ -1634,7 +1634,7 @@ struct OnboardingView: View {
             requiresParentPermissionGuidance: requiresParentPermissionGuidance,
             parentPermissionsReviewed: parentPermissionsReviewed,
             permissionStatus: { permissions.status(for: $0) },
-            venvInstalled: VenvInstaller.alreadyInstalled,
+            servicesInstalled: RelaySetupInstaller.alreadyInstalled,
             agentSignedIn: AgentAuth.isAuthenticated(for: selectedAgentProvider)
         )
     }
@@ -1644,7 +1644,7 @@ struct OnboardingView: View {
                               requiresParentPermissionGuidance: Bool,
                               parentPermissionsReviewed: Bool,
                               permissionStatus: (PermissionKind) -> PermissionStatus,
-                              venvInstalled: Bool,
+                              servicesInstalled: Bool,
                               agentSignedIn: Bool) -> Step? {
         let remaining = Step.allCases.filter {
             $0.rawValue > from.rawValue
@@ -1656,7 +1656,7 @@ struct OnboardingView: View {
             if candidate.kind != nil {
                 continue
             }
-            if candidate == .pythonSetup, !venvInstalled {
+            if candidate == .voiceSetup, !servicesInstalled {
                 return candidate
             }
             if candidate == .agentLogin, !agentSignedIn {
@@ -1675,7 +1675,7 @@ struct OnboardingView: View {
     }
 
     private static func nextFullFlowStep(after step: Step) -> Step? {
-        let steps: [Step] = [.welcome, .agentChoice, .pythonSetup, .agentLogin, .ready]
+        let steps: [Step] = [.welcome, .agentChoice, .voiceSetup, .agentLogin, .ready]
         guard let index = steps.firstIndex(of: step) else {
             return nextStepAfter(
                 step,
@@ -1683,7 +1683,7 @@ struct OnboardingView: View {
                 requiresParentPermissionGuidance: false,
                 parentPermissionsReviewed: true,
                 permissionStatus: { _ in .granted },
-                venvInstalled: false,
+                servicesInstalled: false,
                 agentSignedIn: false
             )
         }
@@ -1701,7 +1701,7 @@ struct OnboardingView: View {
         case .microphone:       return "Microphone"
         case .parentAccessibility: return "Accessibility"
         case .parentScreenRecording: return "Screen Recording"
-        case .pythonSetup:      return "Python Environment"
+        case .voiceSetup:       return "Voice & Services"
         case .agentLogin:       return "\(provider.displayName) Account"
         case .ready:            return "Setup Complete"
         }
@@ -1715,8 +1715,8 @@ struct OnboardingView: View {
             return "Provider, model, effort, and workspace"
         case .microphone, .parentAccessibility, .parentScreenRecording:
             return "Privacy permission setup"
-        case .pythonSetup:
-            return "Local runtime preparation"
+        case .voiceSetup:
+            return "Speech model, skills, and orchestrator"
         case .agentLogin:
             return "Agent authentication"
         case .ready:
@@ -1725,7 +1725,7 @@ struct OnboardingView: View {
     }
 
     private var progressLabel: String? {
-        // Full Settings flow visits provider choice, python setup, and agent
+        // Full Settings flow visits provider choice, voice setup, and agent
         // login. Privacy permissions are handled by the intro surface or
         // Status settings, not this progress count.
         Self.progressLabel(
@@ -1734,7 +1734,7 @@ struct OnboardingView: View {
             requiresAgentChoice: requiresAgentChoice,
             requiresParentPermissionGuidance: requiresParentPermissionGuidance,
             permissionStatus: { permissions.status(for: $0) },
-            venvInstalled: VenvInstaller.alreadyInstalled,
+            servicesInstalled: RelaySetupInstaller.alreadyInstalled,
             agentSignedIn: AgentAuth.isAuthenticated(for: selectedAgentProvider),
             parentPermissionsReviewed: parentPermissionsReviewed
         )
@@ -1745,7 +1745,7 @@ struct OnboardingView: View {
                               requiresAgentChoice: Bool,
                               requiresParentPermissionGuidance: Bool = false,
                               permissionStatus: (PermissionKind) -> PermissionStatus,
-                              venvInstalled: Bool,
+                              servicesInstalled: Bool,
                               agentSignedIn: Bool,
                               parentPermissionsReviewed: Bool = true) -> String? {
         let steps = progressSteps(
@@ -1753,7 +1753,7 @@ struct OnboardingView: View {
             requiresAgentChoice: requiresAgentChoice,
             requiresParentPermissionGuidance: requiresParentPermissionGuidance,
             permissionStatus: permissionStatus,
-            venvInstalled: venvInstalled,
+            servicesInstalled: servicesInstalled,
             agentSignedIn: agentSignedIn,
             parentPermissionsReviewed: parentPermissionsReviewed
         )
@@ -1768,13 +1768,13 @@ struct OnboardingView: View {
                                       requiresAgentChoice: Bool,
                                       requiresParentPermissionGuidance: Bool,
                                       permissionStatus: (PermissionKind) -> PermissionStatus,
-                                      venvInstalled: Bool,
+                                      servicesInstalled: Bool,
                                       agentSignedIn: Bool,
                                       parentPermissionsReviewed: Bool) -> [Step] {
         if !simplified {
             return [
                 .agentChoice,
-                .pythonSetup,
+                .voiceSetup,
                 .agentLogin,
             ]
         }
@@ -1786,7 +1786,7 @@ struct OnboardingView: View {
             if s.kind != nil {
                 continue
             }
-            if s == .pythonSetup, !venvInstalled {
+            if s == .voiceSetup, !servicesInstalled {
                 steps.append(s)
             }
             if s == .agentLogin, !agentSignedIn {
@@ -1863,7 +1863,7 @@ struct OnboardingView: View {
                             requiresParentPermissionGuidance: Bool,
                             parentPermissionsReviewed: Bool,
                             permissionStatus: (PermissionKind) -> PermissionStatus,
-                            venvInstalled: Bool,
+                            servicesInstalled: Bool,
                             agentSignedIn: Bool,
                             fullFlowInitialStep: Step = .welcome) -> Step {
         if let resumeStep, let step = Step(resumeID: resumeStep), step.kind == nil {
@@ -1877,7 +1877,7 @@ struct OnboardingView: View {
             requiresParentPermissionGuidance: requiresParentPermissionGuidance,
             parentPermissionsReviewed: parentPermissionsReviewed,
             permissionStatus: permissionStatus,
-            venvInstalled: venvInstalled,
+            servicesInstalled: servicesInstalled,
             agentSignedIn: agentSignedIn
         ) ?? .ready
     }
@@ -1886,7 +1886,7 @@ struct OnboardingView: View {
                                      requiresParentPermissionGuidance: Bool,
                                      parentPermissionsReviewed: Bool,
                                      permissionStatus: (PermissionKind) -> PermissionStatus,
-                                     venvInstalled: Bool,
+                                     servicesInstalled: Bool,
                                      agentSignedIn: Bool) -> Step? {
         for s in Step.allCases {
             if s == .agentChoice, requiresAgentChoice {
@@ -1895,7 +1895,7 @@ struct OnboardingView: View {
             if s.kind != nil {
                 continue
             }
-            if s == .pythonSetup, !venvInstalled {
+            if s == .voiceSetup, !servicesInstalled {
                 return s
             }
             if s == .agentLogin, !agentSignedIn {
@@ -1921,17 +1921,17 @@ struct OnboardingView: View {
             microphone: permissions.microphone,
             accessibility: permissions.accessibility,
             screenRecording: permissions.screenRecording,
-            pythonInstalled: venvReady,
+            servicesInstalled: servicesReady,
             agentSignedIn: agentSignedIn,
             parentPermissionsReviewed: parentPermissionsReviewed
         )
     }
 
-    private var venvReady: Bool {
-        if case .succeeded = venvInstaller.status {
+    private var servicesReady: Bool {
+        if case .succeeded = setupInstaller.status {
             return true
         }
-        return VenvInstaller.alreadyInstalled
+        return RelaySetupInstaller.alreadyInstalled
     }
 
     private static var relayRunnerAppTarget: PermissionAppTarget {

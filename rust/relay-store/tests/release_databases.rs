@@ -1,8 +1,8 @@
 //! The RR-485 database contract, against the Rust stores: databases written
 //! by the previous release (`tests/contract/fixtures/orchestrator/v0.5.4/`)
 //! open in place, keep their version, tables and columns, and serve their
-//! rows unchanged; earlier schema versions migrate as the Python stores
-//! migrate them; a newer one is refused and left alone.
+//! rows unchanged; earlier schema versions migrate in place; a newer one is
+//! refused and left alone.
 
 mod common;
 

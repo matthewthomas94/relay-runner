@@ -1,14 +1,8 @@
-//! The continuity lane against `services/continuity_*.py` and the daemon's
-//! `ContinuityLifecycleAdapter` (RR-499).
-//!
-//! Each case runs one scenario through the Python modules (`DRIVER` below,
-//! one phase per case) and through the Rust port, and compares the two as
-//! sorted JSON: lifecycle classifications and emitted envelopes, live
-//! recovery validations, sanitized bundles, reports and proposals, broker
-//! outcomes, lane audits and prompts, execution contexts, child
-//! environments, Codex and Claude launch lines, audit-file bytes, and report
-//! rows written by one side and read by the other. Each case skips when no
-//! Python can import `services/`.
+//! The continuity lane and the daemon's `ContinuityLifecycleAdapter`
+//! (RR-499): lifecycle classifications and the incidents they emit, the
+//! agent lane's outcomes for both providers, execution contexts, child
+//! environments, Codex and Claude launch lines, the audit file and the
+//! report store.
 
 mod common;
 
@@ -30,210 +24,13 @@ use relay_services::continuity::providers::{
     plan_provider_session,
 };
 use relay_services::continuity::recovery::{
-    CAPABILITY_POLICIES, ComponentOwnedRecoveryBroker, HEALTH_CHECK, ProductionRecoveryCapability,
-    RecoveryActionRequest, RecoveryActionResult, RecoveryActionValidation,
-    RecoveryExecutionContext, RecoveryOwners, production_recovery_owners, recovery_request,
+    RecoveryActionRequest, RecoveryActionValidation, RecoveryExecutionContext, recovery_request,
 };
 use relay_services::continuity::{Event, reports};
 use relay_services::providers::catalog;
 use relay_store::continuity::ContinuityReportStore;
 
-use common::{TempRoot, python, run_python};
-
-const DRIVER: &str = r#"
-import dataclasses, json, threading
-from pathlib import Path
-import continuity_agent as ca
-import continuity_recovery as cr
-import continuity_reports as rep
-
-phase = sys.argv[1]
-data = json.loads(Path(sys.argv[2]).read_text())
-
-def classification(result):
-    return {"state": result.state, "fingerprint": result.fingerprint,
-            "suppression_reason": result.suppression_reason,
-            "incident": result.envelope.as_dict() if result.envelope is not None else None}
-
-def attempt(function):
-    try:
-        return {"ok": function()}
-    except (ValueError, RuntimeError) as error:
-        return {"error": str(error)}
-
-def health(value):
-    return ca.RecoveryHealthEvidence(value["objective_restored"], value["stable_for_seconds"],
-                                     tuple(value["evidence_codes"]))
-
-def validation_dict(validation):
-    value = dataclasses.asdict(validation)
-    value["health"].pop("stable_for_seconds")
-    return value
-
-out = None
-if phase == "adapter":
-    from orchestrator import ContinuityLifecycleAdapter
-    emitted = []
-    adapter = ContinuityLifecycleAdapter(emit=emitted.append)
-    steps = []
-    for step in data["steps"]:
-        if "sample" in step:
-            steps.append(attempt(lambda: [classification(r) for r in adapter.sample(observed_at=step["sample"])]))
-        else:
-            steps.append(attempt(lambda: classification(adapter.observe(step["event"]))))
-    requests = []
-    for envelope in emitted:
-        for capability in data["capabilities"]:
-            request = cr.ComponentOwnedRecoveryBroker._request(
-                None, capability, cr.CAPABILITY_POLICIES[capability], envelope,
-                "continuity-" + "a" * 32, envelope["recovery_generation"], 1, 1.0e12)
-            if isinstance(request, str):
-                requests.append({"code": request})
-            else:
-                requests.append({"request": dataclasses.asdict(request),
-                                 "validation": validation_dict(adapter.recovery_validation(request))})
-    out = {"steps": steps, "emitted": emitted, "requests": requests}
-elif phase == "sanitize":
-    out = {
-        "bundles": [attempt(lambda: ca.sanitize_incident_bundle(item)) for item in data["incidents"]],
-        "reports": [attempt(lambda: rep.build_report(item, result))
-                    for item in data["incidents"] for result in data["results"]],
-        "defaults": [attempt(lambda: rep._default_proposal(item)) for item in data["defaults"]],
-        "proposals": [attempt(lambda: rep.sanitize_proposal(item)) for item in data["proposals"]],
-    }
-elif phase == "broker":
-    clock = [0.0]
-    spec = data["spec"]
-    def make(capability):
-        entry = spec.get(capability, {})
-        def inspect(request):
-            fields = dict(data["default_validation"], **entry.get("validation", {}))
-            fields["expected_postcondition"] = fields.pop("postcondition", request.expected_postcondition)
-            fields["health"] = health(fields["health"])
-            return cr.RecoveryActionValidation(**fields)
-        def execute(request, validation, cancel):
-            fields = dict(data["default_result"], **entry.get("result", {}))
-            fields["health"] = health(fields["health"])
-            return cr.RecoveryActionResult(**fields)
-        def cleanup(request):
-            return entry.get("cleanup", False)
-        return cr.ProductionRecoveryCapability(inspect, execute, cleanup)
-    capabilities = {name: make(name) for name in cr.CAPABILITY_POLICIES if name != "check_processing_health"}
-    owners = cr.production_recovery_owners(lambda request: health(data["probe_health"]), capabilities=capabilities)
-    if data.get("owners") is not None:
-        owners = {name: owners[name] for name in data["owners"]}
-    broker = cr.ComponentOwnedRecoveryBroker(owners, monotonic=lambda: clock[0])
-    results = []
-    for call in data["calls"]:
-        clock[0] = call["now"]
-        cancel = threading.Event()
-        if call.get("cancel"):
-            cancel.set()
-        incident = data["incidents"][call["incident"]]
-        results.append({
-            "capabilities": list(broker.capabilities(incident)),
-            "outcome": broker.perform(call["capability"], incident=incident,
-                process_identity=call["process_identity"], recovery_generation=call["generation"],
-                attempt=call["attempt"], deadline=call["deadline"], cancel_event=cancel).as_dict(),
-        })
-    out = results
-elif phase == "lane":
-    results = []
-    for scenario in data["scenarios"]:
-        prompts, calls, audits, finals = [], [], [], []
-        decisions = list(scenario["decisions"])
-        outcomes = list(scenario["outcomes"])
-        class Session:
-            provider = scenario["provider"]
-            def decide(self, prompt, timeout):
-                prompts.append(prompt)
-                if not decisions:
-                    raise RuntimeError("no decision")
-                return decisions.pop(0)
-            def interrupt(self): pass
-            def shutdown(self): pass
-        class Broker:
-            def capabilities(self, incident):
-                return tuple(scenario["capabilities"])
-            def perform(self, capability, *, incident, process_identity, recovery_generation,
-                        attempt, deadline, cancel_event):
-                calls.append([capability, attempt, recovery_generation])
-                item = outcomes.pop(0)
-                return ca.RecoveryBrokerOutcome(item["capability"], item["status"], item["outcome_code"],
-                                                health(item["health"]))
-        def factory(process_identity, incident_id, generation):
-            if scenario.get("fail_launch"):
-                raise OSError("no provider")
-            return Session()
-        def audit(record):
-            record = dict(record)
-            record.pop("recorded_at")
-            assert record.pop("process_identity").startswith("continuity-")
-            audits.append(record)
-        lane = ca.ContinuityAgentLane(factory, Broker(), on_audit=audit,
-            on_result=lambda incident, result: finals.append(result),
-            config=ca.ContinuityAgentConfig(**scenario["config"]),
-            monotonic=lambda: 0.0, wait=lambda seconds: False)
-        first = lane.submit(data["incident"])
-        assert lane.wait_until_idle(10)
-        second = lane.submit(data["incident"])
-        results.append({"submitted": [first, second], "prompts": prompts, "calls": calls,
-                        "audits": audits, "finals": finals})
-    out = results
-elif phase == "context":
-    out = [attempt(lambda: cr.RecoveryExecutionContext.from_mapping(item).as_dict()) for item in data]
-elif phase == "environment":
-    out = [attempt(lambda: ca.continuity_agent_environment(
-        "continuity-" + "b" * 32, "inc-0123456789ab", item["generation"],
-        parent=data["parent"], provider=item["provider"])) for item in data["cases"]]
-elif phase == "backends":
-    import os
-    os.environ["RELAY_CODEX_MODEL_LIST_JSON"] = data["models"]
-    results = []
-    for config in data["configs"]:
-        create = ca.create_provider_session_factory(config, cwd=data["cwd"])
-        session = create("continuity-" + "c" * 32, "inc-0123456789ab", "4")
-        if isinstance(session, ca.UnavailableContinuitySession):
-            results.append({"provider": session.provider, "unavailable": session.reason_code})
-            continue
-        backend = session._backend
-        results.append({
-            "provider": session.provider,
-            "spawn": backend.spawn_command(),
-            "thread": backend.thread_start_params() if session.provider == "codex" else None,
-        })
-    out = results
-elif phase == "audit":
-    for record in data["records"]:
-        ca.append_audit_record(Path(data["path"]), record)
-    out = True
-elif phase == "store_write":
-    store = rep.ContinuityReportStore(Path(data["path"]))
-    first, _ = store.record_unresolved(data["incidents"][0], "circuit_open")
-    store.update_draft(first["report_id"], first["proposals"][0]["id"], {"title": "Edited by Python"})
-    second, _ = store.record_unresolved(data["incidents"][1], "Provider_Failed",
-                                        proposals=[data["proposal"]])
-    store.reject(second["report_id"], second["proposals"][0]["id"])
-    out = [first["report_id"], second["report_id"]]
-elif phase == "store_read":
-    store = rep.ContinuityReportStore(Path(data["path"]))
-    out = [store.get(report_id) for report_id in data["ids"]]
-print(json.dumps(out, sort_keys=True))
-"#;
-
-/// Runs one driver phase over `input`; `None` without a Python.
-fn python_phase(root: &TempRoot, phase: &str, input: &Value) -> Option<Value> {
-    let python = python()?;
-    let path = root.path.join(format!("{phase}.json"));
-    fs::write(&path, json::dumps(input)).unwrap();
-    let output = run_python(
-        &python,
-        &root.path,
-        DRIVER,
-        &[phase, path.to_str().unwrap()],
-    );
-    Some(json::parse(output.trim()).expect("driver JSON"))
-}
+use common::TempRoot;
 
 fn parse(text: &str) -> Value {
     json::parse(text).unwrap_or_else(|| panic!("bad JSON: {text}"))
@@ -241,23 +38,6 @@ fn parse(text: &str) -> Value {
 
 fn dict(value: &Value) -> Dict {
     value.as_dict().cloned().expect("object")
-}
-
-fn assert_same(label: &str, rust: &Value, python: &Value) {
-    let (ours, theirs) = (json::dumps_sorted(rust), json::dumps_sorted(python));
-    if ours != theirs {
-        let position = ours
-            .chars()
-            .zip(theirs.chars())
-            .position(|(a, b)| a != b)
-            .unwrap_or(ours.len().min(theirs.len()));
-        let start = position.saturating_sub(120);
-        panic!(
-            "{label} differs at {position}:\n rust:   …{}\n python: …{}",
-            ours.chars().skip(start).take(400).collect::<String>(),
-            theirs.chars().skip(start).take(400).collect::<String>(),
-        );
-    }
 }
 
 fn ok(value: impl Into<Value>) -> Value {
@@ -465,29 +245,14 @@ const CAPABILITIES: [&str; 4] = [
 ];
 
 #[test]
-fn the_lifecycle_adapter_matches_the_daemon() {
+fn the_lifecycle_adapter_emits_incidents_for_the_scenario() {
     let steps = parse(ADAPTER_STEPS);
-    let (rust, emitted) = rust_adapter(&steps, &CAPABILITIES);
+    let (_, emitted) = rust_adapter(&steps, &CAPABILITIES);
     assert!(
         emitted.len() >= 5,
         "the scenario emits incidents: {}",
         emitted.len()
     );
-    let root = TempRoot::new("continuity-adapter");
-    let mut input = Dict::new();
-    input.insert("steps", steps);
-    input.insert(
-        "capabilities",
-        list(CAPABILITIES.iter().map(|c| Value::from(*c)).collect()),
-    );
-    let Some(python) = python_phase(&root, "adapter", &Value::Dict(input)) else {
-        return;
-    };
-    assert!(
-        json::dumps(&python).len() > 20_000,
-        "the Python scenario ran"
-    );
-    assert_same("adapter", &rust, &python);
 }
 
 /// The RR-485 contract case `test_continuity_observation_and_messenger_routes`,
@@ -515,205 +280,7 @@ fn contract_continuity_observation() {
     );
 }
 
-// -- sanitising, reports and proposals --------------------------------------
-
-fn incident_variants(base: &Dict) -> Vec<Value> {
-    let mut variants = vec![Value::Dict(base.clone())];
-    let edit = |change: &dyn Fn(&mut Dict)| {
-        let mut copy = base.clone();
-        change(&mut copy);
-        Value::Dict(copy)
-    };
-    let timing = |key: &'static str, value: Value| {
-        move |copy: &mut Dict| {
-            let mut timing = dict(copy.get("timing").unwrap());
-            timing.insert(key, value.clone());
-            copy.insert("timing", timing);
-        }
-    };
-    variants.push(edit(&|c| {
-        c.insert("transcript", "private transcript canary");
-        c.insert("prompt", "secret");
-    }));
-    variants.push(edit(&|c| c.insert("schema_version", true)));
-    variants.push(edit(&|c| c.insert("schema_version", 1.0)));
-    variants.push(edit(&|c| c.insert("schema_version", 2)));
-    variants.push(edit(&|c| c.insert("classification", "transient")));
-    variants.push(edit(&|c| c.insert("classification", "recurring")));
-    variants.push(edit(&|c| c.insert("command_id", 5)));
-    variants.push(edit(&|c| c.insert("recovery_generation", 3)));
-    variants.push(edit(&|c| c.insert("recovery_generation", true)));
-    variants.push(edit(&|c| c.insert("health", "healthy")));
-    variants.push(edit(&|c| c.insert("provider", "gemini")));
-    variants.push(edit(&|c| c.insert("incident_id", "inc-xyz")));
-    variants.push(edit(&|c| c.insert("fingerprint", "")));
-    variants.push(edit(&|c| {
-        c.remove("timing");
-    }));
-    variants.push(edit(&|c| {
-        let mut objective = Dict::new();
-        objective.insert("unavailable_capability", "made up");
-        c.insert("recovery_objective", objective);
-    }));
-    variants.push(edit(&timing("post_grace_samples", Value::Bool(true))));
-    variants.push(edit(&timing("post_grace_samples", Value::Int(-1))));
-    variants.push(edit(&timing("failed_native_recovery", Value::Int(1))));
-    variants.push(edit(&timing("first_observed_at", Value::from("1"))));
-    variants.push(edit(&timing("cooldown_until", Value::Bool(false))));
-    variants.push(edit(&timing("grace_deadline", Value::Float(f64::INFINITY))));
-    variants.push(Value::List(vec![]));
-    variants
-}
-
-fn proposal_variants() -> Vec<Value> {
-    let base = reports::default_proposal(&dict(&parse(
-        r#"{"component": "foreground_provider", "provider": "codex", "incident_id": "inc-0123456789ab"}"#,
-    )));
-    let mut variants = vec![Value::Dict(base.clone())];
-    let edit = |pairs: &[(&str, Value)]| {
-        let mut copy = base.clone();
-        for (key, value) in pairs {
-            copy.insert(key, value.clone());
-        }
-        Value::Dict(copy)
-    };
-    variants.push(edit(&[(
-        "title",
-        Value::from(format!("  {}\n\t end ", "x".repeat(130))),
-    )]));
-    variants.push(edit(&[(
-        "depends_on",
-        parse(r#"[" rr-1 ", "", null, 7, "gen-ß"]"#),
-    )]));
-    variants.push(edit(&[("depends_on", Value::from("RR-1"))]));
-    variants.push(edit(&[("depends_on", Value::Null)]));
-    variants.push(edit(&[("acceptance_criteria", parse("[]"))]));
-    variants.push(edit(&[("acceptance_criteria", parse(r#"["ok", "  "]"#))]));
-    variants.push(edit(&[("priority", Value::from(" URGENT "))]));
-    variants.push(edit(&[("priority", Value::from("someday"))]));
-    variants.push(edit(&[
-        ("priority", Value::Null),
-        ("worker_effort", Value::from("")),
-    ]));
-    variants.push(edit(&[("worker_effort", Value::from("max"))]));
-    variants.push(edit(&[
-        ("worker_effort", Value::from("MAX")),
-        ("worker_model", Value::from("Claude:opus")),
-    ]));
-    variants.push(edit(&[("worker_effort", Value::from("ultra"))]));
-    variants.push(edit(&[("worker_model", Value::Null)]));
-    variants.push(edit(&[(
-        "description",
-        Value::from("Read the chain-of-thought."),
-    )]));
-    variants.push(edit(&[(
-        "worker_provider_notes",
-        Value::from("token ghp-abcdefghijklmnop"),
-    )]));
-    variants.push(edit(&[("worker_sizing_rationale", Value::from("   "))]));
-    variants.push(edit(&[("title", Value::Int(42))]));
-    variants.push(Value::from("not an object"));
-    variants
-}
-
-#[test]
-fn sanitising_reports_and_proposals_match_python() {
-    let (_, emitted) = rust_adapter(&parse(ADAPTER_STEPS), &[]);
-    let incidents: Vec<Value> = incident_variants(&emitted[0])
-        .into_iter()
-        .chain(emitted.iter().skip(1).cloned().map(Value::Dict))
-        .collect();
-    let results = ["circuit_open", " Canceled ", "restored", ""];
-    let defaults: Vec<Value> = emitted
-        .iter()
-        .cloned()
-        .map(Value::Dict)
-        .chain([parse(
-            r#"{"component": "x_y_z", "provider": "none", "incident_id": 3}"#,
-        )])
-        .collect();
-    let proposals = proposal_variants();
-
-    let mut rust = Dict::new();
-    rust.insert(
-        "bundles",
-        list(
-            incidents
-                .iter()
-                .map(|i| attempt(agent::sanitize_incident_bundle(i)))
-                .collect(),
-        ),
-    );
-    let mut built = Vec::new();
-    for incident in &incidents {
-        for result in results {
-            built.push(attempt(reports::build_report(incident, result)));
-        }
-    }
-    rust.insert("reports", list(built));
-    rust.insert(
-        "defaults",
-        list(
-            defaults
-                .iter()
-                .map(|item| ok(reports::default_proposal(&dict(item))))
-                .collect(),
-        ),
-    );
-    rust.insert(
-        "proposals",
-        list(
-            proposals
-                .iter()
-                .map(|p| attempt(reports::sanitize_proposal(p)))
-                .collect(),
-        ),
-    );
-
-    let root = TempRoot::new("continuity-sanitize");
-    let mut input = Dict::new();
-    input.insert("incidents", list(incidents));
-    input.insert(
-        "results",
-        list(results.iter().map(|r| Value::from(*r)).collect()),
-    );
-    input.insert("defaults", list(defaults));
-    input.insert("proposals", list(proposals));
-    let Some(python) = python_phase(&root, "sanitize", &Value::Dict(input)) else {
-        return;
-    };
-    assert_same("sanitize", &Value::Dict(rust), &python);
-}
-
-// -- the component-owned broker ---------------------------------------------
-
-const BROKER_SPEC: &str = r#"{
- "default_validation": {"validation_token": "fixed_probe", "exact_target_owned": true,
-   "liveness": "confirmed_dead", "incident_active": true, "generation_matches": true,
-   "command_phase": "none", "command_phase_matches": true, "idempotency_state": "new",
-   "compensation_available": false, "cooldown_remaining": 0,
-   "health": {"objective_restored": false, "stable_for_seconds": 0.0, "evidence_codes": []}},
- "default_result": {"status": "applied", "outcome_code": "component_restarted",
-   "ephemeral_state_created": false, "health_worsened": false,
-   "health": {"objective_restored": true, "stable_for_seconds": 3.5,
-     "evidence_codes": ["bridge_process_alive", "bridge_heartbeat_fresh", "command_delivered"]}},
- "probe_health": {"objective_restored": true, "stable_for_seconds": 1.0,
-   "evidence_codes": ["bridge_process_alive"]},
- "spec": {
-   "reconnect_ipc": {"validation": {"exact_target_owned": false}},
-   "restore_session_registration": {"validation": {"cooldown_remaining": 2.5}},
-   "release_dead_ownership": {"validation": {"liveness": "slow"}},
-   "launch_foreground_provider": {"validation": {"liveness": "stalled", "compensation_available": true},
-     "result": {"status": "failed", "outcome_code": "launch_failed", "ephemeral_state_created": true},
-     "cleanup": true},
-   "restart_daemon": {"result": {"health_worsened": true}},
-   "reinitialize_speech_capture": {"validation": {"idempotency_state": "applied"}},
-   "reinitialize_transcription_delivery": {"validation": {"command_phase": "claimed"}},
-   "restart_messenger": {"validation": {"postcondition": "something_else"},
-     "result": {"status": "noop", "outcome_code": "already_running", "ephemeral_state_created": true,
-       "health_worsened": true}}
- }
-}"#;
+// -- incidents ------------------------------------------------------------
 
 fn incident_for(events: &str) -> Dict {
     let emitted: Arc<Mutex<Vec<Dict>>> = Arc::default();
@@ -767,185 +334,6 @@ fn broker_incidents() -> Vec<Value> {
                 {"source": "session", "event": "process_exit", "session_id": "o1", "provider": "codex", "observed_at": 46.0}]"#,
         )),
     ]
-}
-
-fn broker_calls(incidents: &[Value]) -> Value {
-    let mut calls = Vec::new();
-    let mut call = |incident: usize, capability: &str, now: f64, extra: &[(&str, Value)]| {
-        let generation = dict(&incidents[incident]).string("recovery_generation");
-        let mut entry = Dict::new();
-        entry.insert("incident", incident as i64);
-        entry.insert("capability", capability);
-        entry.insert("now", now);
-        entry.insert("generation", generation);
-        entry.insert("attempt", 1);
-        entry.insert("deadline", 1000.0);
-        entry.insert("process_identity", PROCESS);
-        for (key, value) in extra {
-            entry.insert(key, value.clone());
-        }
-        calls.push(Value::Dict(entry));
-    };
-    call(0, "restart_bridge", 1.0, &[]);
-    call(0, "restart_bridge", 2.0, &[]);
-    call(0, "restart_bridge", 3.0, &[]);
-    call(0, "reconnect_ipc", 4.0, &[]);
-    call(0, "edit_source", 4.0, &[]);
-    call(0, "restart_messenger", 4.0, &[]);
-    call(0, HEALTH_CHECK, 4.0, &[]);
-    call(0, HEALTH_CHECK, 4.0, &[("generation", Value::from("99"))]);
-    call(0, HEALTH_CHECK, 4.0, &[("generation", Value::from("-x"))]);
-    call(
-        0,
-        HEALTH_CHECK,
-        4.0,
-        &[("process_identity", Value::from("continuity-xyz"))],
-    );
-    call(0, HEALTH_CHECK, 4.0, &[("attempt", Value::Int(0))]);
-    call(0, "reinitialize_transcription_delivery", 4.0, &[]);
-    call(0, HEALTH_CHECK, 4.0, &[("cancel", Value::Bool(true))]);
-    call(0, HEALTH_CHECK, 2000.0, &[]);
-    call(1, "release_dead_ownership", 5.0, &[]);
-    call(1, "launch_foreground_provider", 5.0, &[]);
-    call(1, "reconnect_ipc", 5.0, &[]);
-    call(2, "restart_daemon", 6.0, &[]);
-    call(2, "reconnect_ipc", 6.0, &[]);
-    call(3, "restart_messenger", 7.0, &[]);
-    call(3, "reconnect_ipc", 7.0, &[]);
-    call(4, "reinitialize_speech_capture", 8.0, &[]);
-    call(5, "reinitialize_transcription_delivery", 9.0, &[]);
-    call(6, "restore_session_registration", 9.0, &[]);
-    call(6, "launch_foreground_provider", 9.0, &[]);
-    call(6, "release_dead_ownership", 9.0, &[]);
-    Value::List(calls)
-}
-
-fn rust_broker(spec: &Dict, incidents: &[Value], calls: &Value, owners: Option<&[&str]>) -> Value {
-    let clock = Arc::new(Mutex::new(0.0_f64));
-    let mut capabilities = BTreeMap::new();
-    let entries = dict(spec.get("spec").unwrap());
-    for (name, _) in CAPABILITY_POLICIES
-        .iter()
-        .filter(|(n, _)| *n != HEALTH_CHECK)
-    {
-        let entry = entries
-            .get(name)
-            .and_then(Value::as_dict)
-            .cloned()
-            .unwrap_or_default();
-        let mut validation = dict(spec.get("default_validation").unwrap());
-        if let Some(over) = entry.get("validation").and_then(Value::as_dict) {
-            validation.update(over);
-        }
-        let mut result = dict(spec.get("default_result").unwrap());
-        if let Some(over) = entry.get("result").and_then(Value::as_dict) {
-            result.update(over);
-        }
-        let cleanup = entry.get("cleanup").is_some_and(Value::truthy);
-        let inspect = move |request: &RecoveryActionRequest| {
-            let v = &validation;
-            RecoveryActionValidation {
-                validation_token: v.string("validation_token"),
-                exact_target_owned: v.get("exact_target_owned").unwrap().truthy(),
-                liveness: v.string("liveness"),
-                incident_active: v.get("incident_active").unwrap().truthy(),
-                generation_matches: v.get("generation_matches").unwrap().truthy(),
-                command_phase: v.string("command_phase"),
-                command_phase_matches: v.get("command_phase_matches").unwrap().truthy(),
-                idempotency_state: v.string("idempotency_state"),
-                compensation_available: v.get("compensation_available").unwrap().truthy(),
-                cooldown_remaining: v.get("cooldown_remaining").unwrap().py_float().unwrap(),
-                expected_postcondition: v
-                    .get("postcondition")
-                    .map_or_else(|| request.expected_postcondition.clone(), Value::py_str),
-                health: health_from(v.get("health").unwrap()),
-            }
-            .validated()
-        };
-        let execute = move |_: &RecoveryActionRequest, _: &RecoveryActionValidation, _: &Event| {
-            RecoveryActionResult {
-                status: result.string("status"),
-                outcome_code: result.string("outcome_code"),
-                health: health_from(result.get("health").unwrap()),
-                ephemeral_state_created: result.get("ephemeral_state_created").unwrap().truthy(),
-                health_worsened: result.get("health_worsened").unwrap().truthy(),
-            }
-            .validated()
-        };
-        capabilities.insert(
-            name.to_string(),
-            ProductionRecoveryCapability {
-                inspect: Arc::new(inspect),
-                execute: Arc::new(execute),
-                cleanup: Some(Arc::new(move |_: &RecoveryActionRequest| Ok(cleanup))),
-            },
-        );
-    }
-    let probe = health_from(spec.get("probe_health").unwrap());
-    let mut registry: RecoveryOwners =
-        production_recovery_owners(Arc::new(move |_| Ok(probe.clone())), &capabilities).unwrap();
-    if let Some(names) = owners {
-        registry.retain(|name, _| names.contains(&name.as_str()));
-    }
-    let reader = Arc::clone(&clock);
-    let broker = ComponentOwnedRecoveryBroker::new(
-        registry,
-        Some(Arc::new(move || *reader.lock().unwrap())),
-    )
-    .unwrap();
-    let mut results = Vec::new();
-    for call in calls.as_list().unwrap() {
-        let call = dict(call);
-        *clock.lock().unwrap() = call.get("now").unwrap().py_float().unwrap();
-        let cancel = Event::new();
-        if call.get("cancel").is_some_and(Value::truthy) {
-            cancel.set();
-        }
-        let incident = dict(&incidents[call.get("incident").unwrap().py_int().unwrap() as usize]);
-        let offered = broker.capabilities(&incident).unwrap();
-        let outcome = broker
-            .perform(
-                &call.string("capability"),
-                BrokerCall {
-                    incident: incident.clone(),
-                    process_identity: call.string("process_identity"),
-                    recovery_generation: call.string("generation"),
-                    attempt: call.get("attempt").unwrap().py_int().unwrap(),
-                    deadline: call.get("deadline").unwrap().py_float().unwrap(),
-                    cancel,
-                },
-            )
-            .unwrap();
-        let mut entry = Dict::new();
-        entry.insert("capabilities", strings(&offered));
-        entry.insert("outcome", outcome.as_dict());
-        results.push(Value::Dict(entry));
-    }
-    Value::List(results)
-}
-
-#[test]
-fn the_component_owned_broker_matches_python() {
-    let spec = dict(&parse(BROKER_SPEC));
-    let incidents = broker_incidents();
-    let calls = broker_calls(&incidents);
-    let root = TempRoot::new("continuity-broker");
-    for owners in [None, Some(&["app"][..])] {
-        let rust = rust_broker(&spec, &incidents, &calls, owners);
-        let mut input = spec.clone();
-        input.insert("incidents", list(incidents.clone()));
-        input.insert("calls", calls.clone());
-        input.insert(
-            "owners",
-            owners.map_or(Value::Null, |names| {
-                list(names.iter().map(|n| Value::from(*n)).collect())
-            }),
-        );
-        let Some(python) = python_phase(&root, "broker", &Value::Dict(input)) else {
-            return;
-        };
-        assert_same("broker", &rust, &python);
-    }
 }
 
 // -- the agent lane ---------------------------------------------------------
@@ -1150,7 +538,7 @@ fn rust_lane(scenario: &Dict, incident: &Dict) -> Value {
 }
 
 #[test]
-fn the_agent_lane_matches_python_for_both_providers() {
+fn the_agent_lane_finishes_each_scenario_for_both_providers() {
     let incident = dict(&broker_incidents()[0]);
     let scenarios = parse(LANE_SCENARIOS);
     let rust = list(
@@ -1181,14 +569,6 @@ fn the_agent_lane_matches_python_for_both_providers() {
             "circuit_open",
         ]
     );
-    let root = TempRoot::new("continuity-lane");
-    let mut input = Dict::new();
-    input.insert("scenarios", scenarios);
-    input.insert("incident", incident);
-    let Some(python) = python_phase(&root, "lane", &Value::Dict(input)) else {
-        return;
-    };
-    assert_same("lane", &rust, &python);
 }
 
 #[test]
@@ -1232,7 +612,7 @@ fn the_lane_queues_a_distinct_incident_and_refuses_an_invalid_one() {
 // -- execution contexts, environments and launch lines ----------------------
 
 #[test]
-fn execution_contexts_parse_like_python() {
+fn execution_contexts_parse_a_valid_payload() {
     let (_, emitted) = rust_adapter(&parse(ADAPTER_STEPS), &[]);
     let incident = &emitted[0];
     let request = recovery_request(
@@ -1297,11 +677,6 @@ fn execution_contexts_parse_like_python() {
             .collect(),
     );
     assert!(dict(&rust.as_list().unwrap()[0]).get("ok").is_some());
-    let root = TempRoot::new("continuity-context");
-    let Some(python) = python_phase(&root, "context", &list(payloads)) else {
-        return;
-    };
-    assert_same("context", &rust, &python);
 }
 
 #[test]
@@ -1353,31 +728,6 @@ fn child_environments_carry_only_the_launched_providers_login() {
     let claude = dict(dict(&rust.as_list().unwrap()[1]).get("ok").unwrap());
     assert!(claude.get("CLAUDE_CODE_OAUTH_TOKEN").is_some());
     assert!(claude.get("CODEX_HOME").is_none() && claude.get("ANTHROPIC_API_KEY").is_none());
-    let mut input = Dict::new();
-    let mut parent_dict = Dict::new();
-    for (key, value) in &parent {
-        parent_dict.insert(key, value.as_str());
-    }
-    input.insert("parent", parent_dict);
-    input.insert(
-        "cases",
-        list(
-            cases
-                .iter()
-                .map(|(provider, generation)| {
-                    let mut case = Dict::new();
-                    case.insert("provider", *provider);
-                    case.insert("generation", *generation);
-                    Value::Dict(case)
-                })
-                .collect(),
-        ),
-    );
-    let root = TempRoot::new("continuity-environment");
-    let Some(python) = python_phase(&root, "environment", &Value::Dict(input)) else {
-        return;
-    };
-    assert_same("environment", &rust, &python);
 }
 
 const MODELS: &str = r#"{"data": [
@@ -1415,7 +765,7 @@ fn fake_executable(directory: &Path, name: &str) -> String {
 }
 
 #[test]
-fn codex_and_claude_launch_lines_match_python() {
+fn codex_and_claude_launch_lines_run_as_the_continuity_agent() {
     let root = TempRoot::new("continuity-backends");
     let bin = root.path.join("bin with space");
     fs::create_dir_all(&bin).unwrap();
@@ -1486,20 +836,25 @@ fn codex_and_claude_launch_lines_match_python() {
             })
             .collect(),
     );
-    let mut input = Dict::new();
-    input.insert("configs", configs);
-    input.insert("cwd", cwd.as_str());
-    input.insert("models", MODELS);
-    let Some(python) = python_phase(&root, "backends", &Value::Dict(input)) else {
-        return;
-    };
-    assert_same("backends", &rust, &python);
+    let launched: Vec<String> = rust
+        .as_list()
+        .unwrap()
+        .iter()
+        .map(dict)
+        .filter(|out| out.get("spawn").is_some())
+        .map(|out| out.string("provider"))
+        .collect();
+    assert!(
+        launched.iter().any(|provider| provider == "codex")
+            && launched.iter().any(|provider| provider == "claude"),
+        "{launched:?}"
+    );
 }
 
-// -- files and rows shared with the Python daemon ----------------------------
+// -- the audit file and the report store -----------------------------------
 
 #[test]
-fn audit_lines_are_byte_identical() {
+fn audit_lines_are_appended_owner_only() {
     let incident = dict(&broker_incidents()[0]);
     let outcome = RecoveryBrokerOutcome::new(
         "restart_bridge",
@@ -1552,70 +907,71 @@ fn audit_lines_are_byte_identical() {
         fs::metadata(&ours).unwrap().permissions().mode() & 0o777,
         0o600
     );
-    let theirs = root.path.join("python/continuity_agent_events.jsonl");
-    let mut input = Dict::new();
-    input.insert("path", theirs.to_string_lossy().as_ref());
-    input.insert(
-        "records",
-        list(records.into_iter().map(Value::Dict).collect()),
-    );
-    if python_phase(&root, "audit", &Value::Dict(input)).is_none() {
-        return;
-    }
-    assert_eq!(fs::read(&ours).unwrap(), fs::read(&theirs).unwrap());
-    assert_eq!(
-        fs::metadata(&theirs).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    // Each record is one line that reads back as written.
+    let lines: Vec<String> = fs::read_to_string(&ours)
+        .unwrap()
+        .lines()
+        .map(|line| json::dumps_sorted(&parse(line)))
+        .collect();
+    let written: Vec<String> = records
+        .into_iter()
+        .map(|record| json::dumps_sorted(&Value::Dict(record)))
+        .collect();
+    assert_eq!(lines, written);
 }
 
 #[test]
-fn reports_written_by_either_daemon_read_the_same() {
+fn reports_are_recorded_edited_and_accepted() {
     let incidents = broker_incidents();
     let root = TempRoot::new("continuity-reports");
     let path = root.data_root().join("continuity_reports.db");
-    let proposal = Value::Dict(reports::default_proposal(&dict(&incidents[1])));
+    let proposal = reports::default_proposal(&dict(&incidents[1]));
 
-    // Python writes; Rust reads what Python reads.
-    let mut write = Dict::new();
-    write.insert("path", path.to_string_lossy().as_ref());
-    write.insert("incidents", list(incidents[..2].to_vec()));
-    write.insert("proposal", proposal);
-    let Some(ids) = python_phase(&root, "store_write", &Value::Dict(write)) else {
-        return;
+    // Two reports: one with an edited default draft, one with a rejected
+    // explicit proposal. A reopened store reads them back.
+    let ids = {
+        let store = ContinuityReportStore::open(&path).unwrap();
+        let (first, _) =
+            reports::record_unresolved(&store, &incidents[0], "circuit_open", None).unwrap();
+        let first_id = first.string("report_id");
+        let first_proposal =
+            dict(&first.get("proposals").unwrap().as_list().unwrap()[0]).string("id");
+        let mut title = Dict::new();
+        title.insert("title", "Edited before reopening");
+        reports::update_draft(&store, &first_id, &first_proposal, &title).unwrap();
+        let (second, _) = reports::record_unresolved(
+            &store,
+            &incidents[1],
+            "Provider_Failed",
+            Some(&[Value::Dict(proposal)]),
+        )
+        .unwrap();
+        let second_id = second.string("report_id");
+        let second_proposal =
+            dict(&second.get("proposals").unwrap().as_list().unwrap()[0]).string("id");
+        store.reject(&second_id, &second_proposal).unwrap();
+        [first_id, second_id]
     };
-    let mut read = Dict::new();
-    read.insert("path", path.to_string_lossy().as_ref());
-    read.insert("ids", ids.clone());
-    let python_view = python_phase(&root, "store_read", &Value::Dict(read.clone())).unwrap();
     let store = ContinuityReportStore::open(&path).unwrap();
-    let rust_view = list(
-        ids.as_list()
-            .unwrap()
-            .iter()
-            .map(|id| Value::Dict(store.get(&id.py_str()).unwrap().unwrap()))
-            .collect(),
-    );
-    assert_same("python-written reports", &rust_view, &python_view);
-    let first = dict(&rust_view.as_list().unwrap()[0]);
+    let first = store.get(&ids[0]).unwrap().unwrap();
     let draft = dict(
         dict(&first.get("proposals").unwrap().as_list().unwrap()[0])
             .get("draft")
             .unwrap(),
     );
-    assert_eq!(draft.string("title"), "Edited by Python");
+    assert_eq!(draft.string("title"), "Edited before reopening");
+    assert!(store.get(&ids[1]).unwrap().is_some());
 
-    // Rust writes over the same file; Python reads what Rust reads.
+    // A third report is idempotent, refuses private material and accepts.
     let (report, recorded) =
         reports::record_unresolved(&store, &incidents[2], " CANCELED", None).unwrap();
     assert!(recorded);
     let (again, recorded) =
         reports::record_unresolved(&store, &incidents[2], "canceled", None).unwrap();
     assert!(!recorded);
-    assert_same(
-        "idempotent report",
-        &Value::Dict(again),
-        &Value::Dict(report.clone()),
+    assert_eq!(
+        json::dumps_sorted(&Value::Dict(again)),
+        json::dumps_sorted(&Value::Dict(report.clone()))
     );
     let report_id = report.string("report_id");
     let proposal_id = dict(&report.get("proposals").unwrap().as_list().unwrap()[0]).string("id");
@@ -1641,15 +997,11 @@ fn reports_written_by_either_daemon_read_the_same() {
             .message,
         "continuity report requires an unresolved recovery result"
     );
-    let mut all_ids = ids.as_list().unwrap().to_vec();
-    all_ids.push(Value::from(report_id.as_str()));
-    read.insert("ids", list(all_ids.clone()));
-    let python_view = python_phase(&root, "store_read", &Value::Dict(read)).unwrap();
-    let rust_view = list(
-        all_ids
-            .iter()
-            .map(|id| Value::Dict(store.get(&id.py_str()).unwrap().unwrap()))
-            .collect(),
-    );
-    assert_same("rust-written reports", &rust_view, &python_view);
+    let accepted = store.get(&report_id).unwrap().unwrap();
+    let accepted = dict(&accepted.get("proposals").unwrap().as_list().unwrap()[0]);
+    assert_eq!(accepted.string("state"), "accepted");
+    assert_eq!(accepted.string("ticket_id"), "RR-9");
+    let draft = dict(accepted.get("draft").unwrap());
+    assert_eq!(draft.string("title"), "Edited by Rust");
+    assert_eq!(json::dumps(draft.get("depends_on").unwrap()), r#"["RR-3"]"#);
 }

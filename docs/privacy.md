@@ -24,7 +24,7 @@ Relay Runner does not provide a hosted speech, repository, or ticket service.
 - Relay Actions results, orchestrator summaries, and public worker progress can become provider context.
 - Git content leaves the Mac when the user or an agent explicitly pushes or syncs it.
 - Project-note transcripts are intentional Git-backed project content and can leave the Mac through the project's configured artifact sync. Starting capture does not itself start a provider or send transcript text to one.
-- First-run setup downloads provider tools when missing, Python packages, Kokoro files, and Parakeet models. Sparkle checks the configured GitHub update feed.
+- First-run setup downloads provider tools when missing, Kokoro files, and Parakeet models. Sparkle checks the configured GitHub update feed.
 
 OpenAI and Anthropic process data under their own product settings and terms. Relay Runner cannot change provider retention, training, organization, or regional settings.
 

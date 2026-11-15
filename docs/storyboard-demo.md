@@ -18,10 +18,11 @@ The installed and demo copies share runtime sockets and must run one at a time:
 open -n 'dist/Relay Runner.app' --args --storyboard-demo
 ```
 
-Use Relay's existing Python runtime to prepare the three spoken lines:
+Prepare the three spoken lines with any local `python3` (the demo script is a
+developer tool; Relay Runner itself ships no Python):
 
 ```sh
-DEMO_PYTHON="$HOME/Library/Application Support/relay-runner/services/.venv/bin/python3"
+DEMO_PYTHON=python3
 "$DEMO_PYTHON" scripts/relay-storyboard-demo prepare
 "$DEMO_PYTHON" scripts/relay-storyboard-demo serve --asset /absolute/path/to/asset
 ```

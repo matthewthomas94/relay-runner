@@ -602,6 +602,7 @@ name = "relay-rs"
 version = "0.0.0"
 dependencies = [
  "libc",
+ "relay-artifacts",
  "relay-intents",
  "relay-services",
  "rusqlite",

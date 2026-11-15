@@ -153,6 +153,41 @@ impl ErrorKind {
         }
     }
 
+    /// The kind whose `python_class` is `class`.
+    pub fn from_python_class(class: &str) -> Option<ErrorKind> {
+        [
+            ErrorKind::TicketParse,
+            ErrorKind::Value,
+            ErrorKind::TomlDecode,
+            ErrorKind::NoteContract,
+            ErrorKind::CatalogSemantic,
+            ErrorKind::Overflow,
+            ErrorKind::Type,
+            ErrorKind::Attribute,
+            ErrorKind::Runtime,
+            ErrorKind::Store,
+            ErrorKind::StoreDisabled,
+            ErrorKind::Validation,
+            ErrorKind::Identity,
+            ErrorKind::ConcurrentUpdate,
+            ErrorKind::EventCollision,
+            ErrorKind::MaterializationConflict,
+            ErrorKind::InjectedFailure,
+            ErrorKind::Io,
+            ErrorKind::Sqlite,
+            ErrorKind::DependencyHistoryUnavailable,
+            ErrorKind::Rollout,
+            ErrorKind::RolloutBlocked,
+            ErrorKind::Migration,
+            ErrorKind::MigrationBlocked,
+            ErrorKind::MigrationReconciliationRequired,
+            ErrorKind::MigrationInjectedFailure,
+            ErrorKind::Verification,
+        ]
+        .into_iter()
+        .find(|kind| kind.python_class() == class)
+    }
+
     /// Whether Python's `except ArtifactValidationError` catches this kind.
     pub fn is_validation(self) -> bool {
         matches!(

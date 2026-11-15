@@ -142,10 +142,12 @@ pub const SOURCE_MATRIX: [(&str, &str, &[&str]); 11] = [
     ),
     (
         "fresh_install_and_reset",
-        "tests/test_fresh_install.py",
+        // The Rust port's tests (RR-487); Python's were in
+        // tests/test_fresh_install.py with a `test_` prefix.
+        "rust/relay-rs/src/fresh_install.rs",
         &[
-            "test_normal_reinstall_requires_execute_and_preserves_all_state_and_registered_repositories",
-            "test_deliberate_reset_moves_only_owned_state_to_trash_and_restore_is_exact",
+            "normal_reinstall_requires_execute_and_preserves_all_state_and_registered_repositories",
+            "deliberate_reset_moves_only_owned_state_to_trash_and_restore_is_exact",
         ],
     ),
     (

@@ -9,7 +9,7 @@ final class ClaudeOnboardingReadinessTests: XCTestCase {
     func testHomebrewClaudePassesSetupSignInAndLaunch() {
         let isExecutable: (String) -> Bool = { $0 == self.homebrewClaude }
 
-        XCTAssertTrue(VenvInstaller.cliInstalled(
+        XCTAssertTrue(RelaySetupInstaller.cliInstalled(
             for: .claude,
             isExecutable: isExecutable,
             claudeShellLookup: { nil }
@@ -61,7 +61,7 @@ final class ClaudeOnboardingReadinessTests: XCTestCase {
             ClaudeAuth.resolveBinary(isExecutable: { $0 == npm }, shellLookup: { npm }),
             npm
         )
-        XCTAssertTrue(VenvInstaller.cliInstalled(
+        XCTAssertTrue(RelaySetupInstaller.cliInstalled(
             for: .claude,
             isExecutable: { $0 == npm },
             claudeShellLookup: { npm }
@@ -77,7 +77,7 @@ final class ClaudeOnboardingReadinessTests: XCTestCase {
             shellLookup: { nil }
         )
         XCTAssertEqual(error?.errorDescription, ClaudeAuth.notInstalledMessage)
-        XCTAssertFalse(VenvInstaller.cliInstalled(
+        XCTAssertFalse(RelaySetupInstaller.cliInstalled(
             for: .claude,
             isExecutable: { _ in false },
             claudeShellLookup: { nil }
@@ -373,14 +373,12 @@ private final class GateFixture {
     ) throws -> ProcessManager.ClaudeSubscriptionCheck {
         defer { try? FileManager.default.removeItem(at: home.appendingPathComponent("status.json")) }
         try status.write(to: home.appendingPathComponent("status.json"), atomically: true, encoding: .utf8)
-        let repo = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        guard let relayRS = BuiltRelayRS.path else { throw XCTSkip(BuiltRelayRS.notBuilt) }
         return ProcessManager.checkClaudeSubscription(
             agentBinary: claude.path,
             workingDirectory: home.path,
             shellPrelude: prelude,
-            pythonPath: "/usr/bin/python3",
-            gatePath: repo.appendingPathComponent("services/claude_subscription.py").path,
+            relayRS: relayRS,
             environment: ["HOME": home.path, "PATH": "/usr/bin:/bin"].merging(environment) { $1 }
         )
     }

@@ -1,9 +1,8 @@
 //! Personal storage against an in-memory GitHub (RR-499): configure a
 //! private repository, publish approved files with their proofs, migrate the
 //! global notes library into personal storage, evict a synchronized copy and
-//! read it back from the remote, as `services/personal_file_storage.py`
-//! does. The transport is replaced at `GitHubApi`, the seam Python's tests
-//! replace `GitHubFiles` at; nothing reaches the network.
+//! read it back from the remote. The transport is replaced at `GitHubApi`;
+//! nothing reaches the network.
 
 mod common;
 

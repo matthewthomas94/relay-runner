@@ -1,29 +1,10 @@
-//! `relay-rs messenger`: the persistent voice messenger's provider backends,
-//! the Rust form of the backend half of `services/messenger.py` (RR-490).
+//! The persistent voice messenger's provider backends (RR-490), run
+//! in-process by `relay-rs bridge`.
 //!
 //! Both providers move together: the Codex `app-server` JSON-RPC backend and
 //! the Claude stream-json backend, with the model and effort resolution, the
 //! Claude subscription gate, warm-up, re-binding to the focused session and
-//! interruption. The provider-neutral runtime (prompts, realization, speech)
-//! stays in Python until the bridge itself is ported; it reaches these
-//! backends through `services/rust_messenger.py` over this process's stdio.
-//!
-//! The protocol is one JSON object per line each way. A request is
-//! `{"id": <int>, "op": <op>, ...}`; the reply is `{"id": <int>, "result": {...}}`
-//! or `{"id": <int>, "error": "<message>"}`, and an `ask` may first send one
-//! `{"id": <int>, "partial": "<first sentence>"}`. The ops:
-//!
-//! - `configure` with `general` (the app config's `[general]` table) and
-//!   `cwd`: resolves the provider command, model and effort and answers the
-//!   resolved `enabled`, `provider`, `command`, `model`, `effort`, `cwd` and
-//!   `unavailable` (the reason the backend cannot start, or null).
-//! - `start`: warm the provider process.
-//! - `ask` with `prompt`, `timeout` (seconds) and `partial` (whether to send
-//!   the first speakable sentence early): answers `{"text": ...}`.
-//! - `rebind` with `partition`: move to a focused session's own context.
-//! - `interrupt`, `shutdown`.
-//!
-//! End of input shuts the backend down and exits.
+//! interruption.
 
 pub mod claude;
 pub mod codex;
@@ -33,12 +14,10 @@ pub mod config;
 pub use relay_services::providers::catalog;
 use relay_services::providers::{process, subscription};
 
-use std::io::{self, BufRead, Write};
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::sync::Arc;
 use std::time::Duration;
 
-use crate::json::{self, Dict, Value, py_is_space};
+use crate::json::py_is_space;
 
 pub use config::Config;
 
@@ -203,134 +182,10 @@ pub fn first_semantic_response(text: &str, complete: bool) -> Option<String> {
     (complete && count_tokens(&cleaned) >= 3).then_some(cleaned)
 }
 
-// -- the stdio server ---------------------------------------------------------
-
-type Output = Arc<Mutex<io::Stdout>>;
-
-fn send(output: &Output, message: Dict) {
-    let mut stdout = output.lock().unwrap();
-    let _ = writeln!(stdout, "{}", json::dumps_compact(&Value::Dict(message)));
-    let _ = stdout.flush();
-}
-
-fn reply(output: &Output, id: &Value, outcome: Result<Dict, String>) {
-    let mut message = Dict::new();
-    message.insert("id", id.clone());
-    match outcome {
-        Ok(result) => message.insert("result", result),
-        Err(error) => message.insert("error", error),
-    }
-    send(output, message);
-}
-
-fn configure(request: &Dict) -> (Arc<dyn Backend>, Dict) {
-    let general = request
-        .get("general")
-        .and_then(Value::as_dict)
-        .cloned()
-        .unwrap_or_default();
-    let requested = Config::from_general(&general, &request.string("cwd"));
-    let (backend, config, unavailable) = if requested.enabled {
-        create(requested)
-    } else {
-        let reason = "messenger is disabled".to_string();
-        let backend: Arc<dyn Backend> = Arc::new(Unavailable(reason.clone()));
-        (backend, requested, Some(reason))
-    };
-    let mut result = Dict::new();
-    result.insert("enabled", config.enabled);
-    result.insert("provider", config.provider);
-    result.insert("command", config.command);
-    result.insert("model", config.model);
-    result.insert("effort", config.effort);
-    result.insert("cwd", config.cwd);
-    result.insert("unavailable", unavailable);
-    (backend, result)
-}
-
-/// `relay-rs messenger`. Always exits 0 once its input ends.
-pub fn run() -> u8 {
-    let output: Output = Arc::new(Mutex::new(io::stdout()));
-    let mut backend: Arc<dyn Backend> = Arc::new(Unavailable("messenger is not configured".into()));
-    for line in io::stdin().lock().lines() {
-        let Ok(line) = line else { break };
-        let Some(Value::Dict(request)) = json::parse(&line) else {
-            continue;
-        };
-        let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let op = request.string("op");
-        match op.as_str() {
-            "configure" => {
-                backend.shutdown();
-                let (configured, result) = configure(&request);
-                backend = configured;
-                reply(&output, &id, Ok(result));
-            }
-            "interrupt" => {
-                backend.interrupt();
-                reply(&output, &id, Ok(Dict::new()));
-            }
-            "shutdown" => {
-                backend.shutdown();
-                reply(&output, &id, Ok(Dict::new()));
-            }
-            "start" | "rebind" | "ask" => {
-                let backend = Arc::clone(&backend);
-                let output = Arc::clone(&output);
-                thread::spawn(move || {
-                    let outcome = match op.as_str() {
-                        "start" => backend.start().map(|()| Dict::new()),
-                        "rebind" => backend
-                            .rebind(&request.string("partition"))
-                            .map(|()| Dict::new()),
-                        _ => ask(&*backend, &request, &id, &output),
-                    };
-                    reply(&output, &id, outcome);
-                });
-            }
-            _ => reply(&output, &id, Err(format!("unknown op {op:?}"))),
-        }
-    }
-    backend.shutdown();
-    0
-}
-
-fn ask(backend: &dyn Backend, request: &Dict, id: &Value, output: &Output) -> Result<Dict, String> {
-    let timeout = request
-        .get("timeout")
-        .and_then(Value::py_float)
-        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
-        .unwrap_or(60.0);
-    let on_partial: Option<Partial> = request.truthy("partial").map(|_| {
-        let (id, output) = (id.clone(), Arc::clone(output));
-        Box::new(move |text: String| {
-            let mut message = Dict::new();
-            message.insert("id", id);
-            message.insert("partial", text);
-            send(&output, message);
-        }) as Partial
-    });
-    let text = backend.ask(
-        &request.string("prompt"),
-        Duration::from_secs_f64(timeout),
-        on_partial,
-    )?;
-    let mut result = Dict::new();
-    result.insert("text", text);
-    Ok(result)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_system_prompt_is_the_python_messengers_word_for_word() {
-        let source = include_str!("../../../../services/messenger.py");
-        let start = source.find("MESSENGER_SYSTEM_PROMPT = \"\"\"").unwrap() + 29;
-        let end = start + source[start..].find("\"\"\"").unwrap();
-        assert_eq!(&source[start..end], MESSENGER_SYSTEM_PROMPT);
-    }
+    use crate::json;
 
     #[test]
     fn the_first_sentence_needs_three_tokens() {

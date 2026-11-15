@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import shlex
@@ -18,239 +17,39 @@ SERVICES = ROOT / "services"
 
 
 class FirstRunStartupTests(unittest.TestCase):
-    def test_canonical_app_bundle_imports_orchestrator_from_neutral_directory(self):
+    def test_app_bundle_ships_no_python(self):
+        """RR-487: the bundle copies only the worker prompt templates from
+        services/, and the build fails if any Python file reaches it."""
         build_script = (ROOT / "scripts" / "build-dmg.sh").read_text()
-        service_copy_block = build_script.split("# Python services", 1)[1].split(
-            "; do", 1
-        )[0]
-        service_names = shlex.split(
-            service_copy_block.split("for f in", 1)[1].replace("\\\n", " ")
-        )
-        supported_python = next(
-            (
-                path
-                for path in (
-                    shutil.which("python3.13"),
-                    shutil.which("python3.12"),
-                    shutil.which("python3.11"),
-                    shutil.which("python3.10"),
-                )
-                if path
-            ),
-            None,
-        )
-        self.assertIsNotNone(supported_python, "Python 3.10-3.13 is required")
-
-        with tempfile.TemporaryDirectory() as temp:
-            temp_root = Path(temp)
-            shared_support = (
-                temp_root / "Relay Runner.app" / "Contents" / "SharedSupport"
-            )
-            bundled_services = shared_support / "services"
-            neutral_directory = temp_root / "neutral"
-            bundled_services.mkdir(parents=True)
-            neutral_directory.mkdir()
-            for name in service_names:
-                shutil.copy2(SERVICES / name, bundled_services / name)
-
-            env = os.environ.copy()
-            env["PYTHONPATH"] = str(shared_support)
-            env["PYTHONSAFEPATH"] = "1"
-            result = subprocess.run(
-                [
-                    supported_python,
-                    "-s",
-                    "-c",
-                    "import services.orchestrator; "
-                    "import services.toml_compat; "
-                    "print(services.toml_compat.__file__)",
-                ],
-                cwd=neutral_directory,
-                env=env,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(
-                Path(result.stdout.strip()).resolve(),
-                (bundled_services / "toml_compat.py").resolve(),
-            )
-
-    def test_toml_compat_parses_with_current_supported_runtime(self):
-        sys.path.insert(0, str(SERVICES))
-        try:
-            module = importlib.import_module("toml_compat")
-            self.assertEqual(module.tomllib.loads("value = 3")["value"], 3)
-        finally:
-            sys.path.remove(str(SERVICES))
-            sys.modules.pop("toml_compat", None)
-
-        requirements = (SERVICES / "requirements.txt").read_text()
-        self.assertIn('tomli>=2,<3; python_version < "3.11"', requirements)
+        copy_block = build_script.split("# Worker prompt templates", 1)[1].split("; do", 1)[0]
+        names = shlex.split(copy_block.split("for f in", 1)[1].replace("\\\n", " "))
+        self.assertEqual(names, ["orchestrator_workflow.md", "orchestrator_artifact_workflow.md"])
+        for name in names:
+            self.assertTrue((SERVICES / name).is_file(), name)
+        self.assertIn("the app bundle must not contain Python files", build_script)
+        self.assertNotIn("setup-venv.sh", build_script)
 
     def test_onboarding_runs_health_checked_orchestrator_install(self):
-        source = (
-            ROOT / "Sources" / "relay-runner" / "Onboarding" / "VenvInstaller.swift"
-        ).read_text()
+        source = "\n".join(
+            path.read_text() for path in (ROOT / "Sources" / "relay-runner" / "Onboarding").glob("*.swift")
+        )
         self.assertIn('proc.arguments = ["--install"]', source)
         self.assertIn("relayOrchestratorScriptPath", source)
         self.assertIn("orchestratorReady", source)
 
-    def test_retained_unsupported_venv_is_recreated_before_dependency_short_circuit(self):
+    def test_fresh_setup_downloads_the_speech_model_without_python(self):
+        """RR-487: first-run setup needs no Python: it downloads the Kokoro
+        model with curl and creates no venv."""
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            scripts = root / "scripts"
-            services = root / "services"
-            fake_bin = root / "bin"
-            home = root / "home"
-            scripts.mkdir()
-            services.mkdir()
-            fake_bin.mkdir()
-            home.mkdir()
-
-            source = (ROOT / "scripts" / "relay-bridge").read_text()
-            start = source.index("find_codex_bin() {")
-            end = source.index("\n}\n", start) + 3
-            source = source[:start] + 'find_codex_bin() {\n    echo ""\n}\n' + source[end:]
-            source = source.replace(
-                "/opt/homebrew/bin/python3.13 /usr/local/bin/python3.13 python3.13",
-                "python3.13",
-            )
-            launcher = scripts / "relay-bridge"
-            launcher.write_text(source)
-            launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR)
-            (services / "requirements.txt").write_text("placeholder\n")
-
-            for relative in (
-                ".claude/skills/relay-bridge/SKILL.md",
-                ".claude/skills/relay-stop/SKILL.md",
-                ".claude/skills/relay-dispatch/SKILL.md",
-                ".claude/skills/relay-workflow/SKILL.md",
-                ".codex/skills/relay-bridge/SKILL.md",
-                ".codex/skills/relay-stop/SKILL.md",
-                ".codex/skills/relay-dispatch/SKILL.md",
-                ".codex/skills/relay-workflow/SKILL.md",
-                ".local/share/kokoro/kokoro-v1.0.onnx",
-                ".local/share/kokoro/voices-v1.0.bin",
-                "Library/LaunchAgents/com.relay.orchestrator.plist",
-            ):
-                path = home / relative
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("ready\n")
-            (home / ".local/bin").mkdir(parents=True, exist_ok=True)
-            self.write_executable(home / ".local/bin/claude", "#!/bin/bash\nexit 0\n")
-
-            venv_bin = home / "Library/Application Support/relay-runner/services/.venv/bin"
-            venv_bin.mkdir(parents=True)
+            scripts, fake_bin, home = (root / name for name in ("scripts", "bin", "home"))
+            for directory in (scripts, fake_bin, home):
+                directory.mkdir()
+            launcher = self.bridge_launcher(scripts)
+            self.mark_ready(home, include_models=False)
             self.write_executable(
-                venv_bin / "python3",
+                fake_bin / "curl",
                 """#!/bin/bash
-case "${2:-}" in
-  *'sys.exit(0 if (3,10)'*) exit 1 ;;
-  *'print(".".join'*) echo 3.9; exit 0 ;;
-  *'import numpy'*) exit 0 ;;
-esac
-exit 0
-""",
-            )
-
-            created = root / "venv-created"
-            self.write_executable(
-                fake_bin / "python3.13",
-                """#!/bin/bash
-if [ "${1:-}" = "--version" ]; then echo 'Python 3.13.7'; exit 0; fi
-if [ "${1:-}" = "-m" ] && [ "${2:-}" = "venv" ]; then
-  mkdir -p "$3/bin"
-  cp "$0" "$3/bin/python3"
-  cp "$0" "$3/bin/python"
-  printf '#!/bin/bash\nexit 0\n' > "$3/bin/pip"
-  chmod +x "$3/bin/python3" "$3/bin/python" "$3/bin/pip"
-  touch "$FAKE_VENV_CREATED"
-  exit 0
-fi
-exit 0
-""",
-            )
-            env = {
-                **os.environ,
-                "HOME": str(home),
-                "PATH": f"{fake_bin}:/usr/bin:/bin",
-                "FAKE_VENV_CREATED": str(created),
-                "RELAY_DIAGNOSTICS_DIR": str(root / "diagnostics"),
-            }
-
-            result = subprocess.run(
-                [str(launcher), "--venv-only"],
-                env=env,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertTrue(created.exists(), result.stdout + result.stderr)
-            self.assertIn("Existing venv uses Python 3.9", result.stdout)
-            self.assertIn("Venv ready (--venv-only)", result.stdout)
-
-    def test_fresh_setup_installs_the_python_speech_stack_only_for_the_fallback(self):
-        """RR-481: speech runs in the Rust relay-speech, so a fresh install
-        installs requirements.txt only and downloads the model without
-        huggingface_hub; RELAY_SPEECH_RUNTIME=python adds the Python stack."""
-        for runtime, requirements in (("", "requirements.txt"), ("python", "requirements-python-speech.txt")):
-            with self.subTest(runtime=runtime), tempfile.TemporaryDirectory() as temp:
-                root = Path(temp)
-                scripts, services, fake_bin, home = (root / name for name in ("scripts", "services", "bin", "home"))
-                for directory in (scripts, services, fake_bin, home):
-                    directory.mkdir()
-                source = (ROOT / "scripts" / "relay-bridge").read_text()
-                start = source.index("find_codex_bin() {")
-                end = source.index("\n}\n", start) + 3
-                source = source[:start] + 'find_codex_bin() {\n    echo ""\n}\n' + source[end:]
-                source = source.replace(
-                    "/opt/homebrew/bin/python3.13 /usr/local/bin/python3.13 python3.13", "python3.13"
-                )
-                launcher = scripts / "relay-bridge"
-                launcher.write_text(source)
-                launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR)
-                for name in ("requirements.txt", "requirements-python-speech.txt"):
-                    shutil.copy(SERVICES / name, services / name)
-                for relative in (
-                    ".claude/skills/relay-bridge/SKILL.md",
-                    ".claude/skills/relay-stop/SKILL.md",
-                    ".claude/skills/relay-dispatch/SKILL.md",
-                    ".claude/skills/relay-workflow/SKILL.md",
-                    ".codex/skills/relay-bridge/SKILL.md",
-                    ".codex/skills/relay-stop/SKILL.md",
-                    ".codex/skills/relay-dispatch/SKILL.md",
-                    ".codex/skills/relay-workflow/SKILL.md",
-                    "Library/LaunchAgents/com.relay.orchestrator.plist",
-                ):
-                    path = home / relative
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_text("ready\n")
-                (home / ".local/bin").mkdir(parents=True, exist_ok=True)
-                self.write_executable(home / ".local/bin/claude", "#!/bin/bash\nexit 0\n")
-                # A new venv whose pip records what it was asked to install.
-                self.write_executable(
-                    fake_bin / "python3.13",
-                    """#!/bin/bash
-if [ "${1:-}" = "--version" ]; then echo 'Python 3.13.7'; exit 0; fi
-if [ "${1:-}" = "-m" ] && [ "${2:-}" = "venv" ]; then
-  mkdir -p "$3/bin"
-  cp "$0" "$3/bin/python3"
-  cp "$0" "$3/bin/python"
-  printf '#!/bin/bash\\necho "$@" >> "$FAKE_PIP_LOG"\\n' > "$3/bin/pip"
-  chmod +x "$3/bin/python3" "$3/bin/python" "$3/bin/pip"
-  exit 0
-fi
-exit 0
-""",
-                )
-                self.write_executable(
-                    fake_bin / "curl",
-                    """#!/bin/bash
 output=""
 while [ $# -gt 0 ]; do
   case "$1" in --output) output="$2"; shift ;; https://*) echo "$1" >> "$FAKE_CURL_LOG" ;; esac
@@ -258,55 +57,88 @@ while [ $# -gt 0 ]; do
 done
 echo model > "$output"
 """,
-                )
-                pip_log, curl_log = root / "pip.log", root / "curl.log"
-                env = {
-                    **os.environ,
-                    "HOME": str(home),
-                    "PATH": f"{fake_bin}:/usr/bin:/bin",
-                    "FAKE_PIP_LOG": str(pip_log),
-                    "FAKE_CURL_LOG": str(curl_log),
-                    "RELAY_DIAGNOSTICS_DIR": str(root / "diagnostics"),
-                    "RELAY_SPEECH_RUNTIME": runtime,
-                }
+            )
+            curl_log = root / "curl.log"
+            env = {
+                **os.environ,
+                "HOME": str(home),
+                "PATH": f"{fake_bin}:/usr/bin:/bin",
+                "FAKE_CURL_LOG": str(curl_log),
+                "RELAY_DIAGNOSTICS_DIR": str(root / "diagnostics"),
+            }
+            result = subprocess.run(
+                [str(launcher), "--setup-only"], env=env, text=True, capture_output=True, check=False
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("Setup ready (--setup-only)", result.stdout)
+            self.assertEqual(
+                curl_log.read_text().splitlines(),
+                [
+                    "https://huggingface.co/fastrtc/kokoro-onnx/resolve/main/kokoro-v1.0.onnx",
+                    "https://huggingface.co/fastrtc/kokoro-onnx/resolve/main/voices-v1.0.bin",
+                ],
+            )
+            kokoro = home / ".local/share/kokoro"
+            self.assertEqual(
+                sorted(path.name for path in kokoro.iterdir()), ["kokoro-v1.0.onnx", "voices-v1.0.bin"]
+            )
+            self.assertFalse((home / "Library/Application Support/relay-runner/services").exists())
+            self.assertNotIn("pip", result.stdout + result.stderr)
+
+    def test_upgrade_removes_only_the_retired_python_runtime(self):
+        """RR-487: an install upgraded from a Python release loses its venv
+        and downloaded interpreter, and keeps every other Relay file, under
+        the old flag name as well as the new one."""
+        for flag in ("--setup-only", "--venv-only"):
+            with self.subTest(flag=flag), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                scripts, home = root / "scripts", root / "home"
+                scripts.mkdir()
+                home.mkdir()
+                launcher = self.bridge_launcher(scripts)
+                self.mark_ready(home)
+                data = home / "Library/Application Support/relay-runner"
+                retired = [
+                    data / "services/.venv/bin/python3",
+                    data / "python/bin/python3",
+                    data / ".python-stage.abc123/python.tar.gz",
+                ]
+                kept = [
+                    data / "config.toml",
+                    data / "projects/registry-v2.json",
+                    data / "orchestrator/runs.db",
+                    data / "notes/index.json",
+                    data / "relay-remote/devices.json",
+                    home / ".local/share/kokoro/kokoro-v1.0.onnx",
+                ]
+                for path in retired + kept:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("data\n")
                 result = subprocess.run(
-                    [str(launcher), "--venv-only"], env=env, text=True, capture_output=True, check=False
+                    [str(launcher), flag],
+                    env={**os.environ, "HOME": str(home), "RELAY_DIAGNOSTICS_DIR": str(root / "diagnostics")},
+                    text=True,
+                    capture_output=True,
+                    check=False,
                 )
 
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn("Venv ready (--venv-only)", result.stdout)
-                installs = [line for line in pip_log.read_text().splitlines() if line.startswith("install -r ")]
-                self.assertEqual(installs, [f"install -r {services / requirements}"])
-                self.assertEqual(
-                    curl_log.read_text().splitlines(),
-                    [
-                        "https://huggingface.co/fastrtc/kokoro-onnx/resolve/main/kokoro-v1.0.onnx",
-                        "https://huggingface.co/fastrtc/kokoro-onnx/resolve/main/voices-v1.0.bin",
-                    ],
-                )
-                kokoro = home / ".local/share/kokoro"
-                self.assertEqual(
-                    sorted(path.name for path in kokoro.iterdir()), ["kokoro-v1.0.onnx", "voices-v1.0.bin"]
-                )
-
-    def test_base_requirements_leave_the_python_speech_stack_to_the_fallback(self):
-        base = (SERVICES / "requirements.txt").read_text()
-        fallback = (SERVICES / "requirements-python-speech.txt").read_text()
-        for package in ("numpy", "onnxruntime", "kokoro-onnx", "huggingface_hub"):
-            with self.subTest(package=package):
-                self.assertNotIn(package, base)
-                self.assertIn(package, fallback)
-        self.assertIn("-r requirements.txt", fallback)
+                self.assertIn("Setup ready (--setup-only)", result.stdout)
+                self.assertIn("Removed the Python runtime from an earlier release.", result.stderr)
+                for name in ("services", "python", ".python-stage.abc123"):
+                    self.assertFalse((data / name).exists(), name)
+                for path in kept:
+                    self.assertEqual(path.read_text(), "data\n", path)
 
     def test_claude_setup_installs_claude_even_when_codex_is_present(self):
         for provider, expect_install in (("claude", True), ("codex", False), ("", False)):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
                 scripts = root / "scripts"
-                services = root / "services"
                 fake_bin = root / "bin"
                 home = root / "home"
-                for directory in (scripts, services, fake_bin, home):
+                for directory in (scripts, fake_bin, home):
                     directory.mkdir()
 
                 source = (ROOT / "scripts" / "relay-bridge").read_text()
@@ -318,7 +150,6 @@ echo model > "$output"
                 launcher = scripts / "relay-bridge"
                 launcher.write_text(source)
                 launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR)
-                (services / "requirements.txt").write_text("placeholder\n")
 
                 for relative in (
                     ".claude/skills/relay-bridge/SKILL.md",
@@ -336,9 +167,6 @@ echo model > "$output"
                     path = home / relative
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text("ready\n")
-                venv_bin = home / "Library/Application Support/relay-runner/services/.venv/bin"
-                venv_bin.mkdir(parents=True)
-                self.write_executable(venv_bin / "python3", "#!/bin/bash\nexit 0\n")
                 codex = fake_bin / "codex"
                 self.write_executable(codex, "#!/bin/bash\nexit 0\n")
                 installed = root / "curl-called"
@@ -366,7 +194,7 @@ SH
                     env["RELAY_RUNNER_PROVIDER"] = provider
 
                 result = subprocess.run(
-                    [str(launcher), "--venv-only"],
+                    [str(launcher), "--setup-only"],
                     env=env,
                     text=True,
                     capture_output=True,
@@ -379,42 +207,23 @@ SH
                 if expect_install:
                     self.assertIn("Claude Code CLI not found", result.stdout)
 
-    def test_pre_main_import_failure_is_safe_and_stops_launchd_retry_churn(self):
+    def test_missing_daemon_binary_is_safe_and_stops_launchd_retry_churn(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             scripts = root / "scripts"
-            services = root / "services"
             home = root / "home"
             diagnostics = root / "diagnostics"
             scripts.mkdir()
-            services.mkdir()
             home.mkdir()
             launcher = scripts / "relay-orchestrator"
             shutil.copy2(ROOT / "scripts" / "relay-orchestrator", launcher)
-            self.write_executable(
-                scripts / "relay-bridge",
-                """#!/bin/bash
-set -e
-venv="$HOME/Library/Application Support/relay-runner/services/.venv/bin"
-mkdir -p "$venv"
-cat > "$venv/python" <<'PYTHON_EOF'
-#!/bin/bash
-if [ "${1:-}" = "-c" ]; then echo '3.9.18'; exit 0; fi
-if [ "${1:-}" = "-" ]; then cat >/dev/null; echo 'ModuleNotFoundError'; exit 1; fi
-touch "$FAKE_DAEMON_EXECUTED"
-PYTHON_EOF
-chmod +x "$venv/python"
-""",
-            )
-            (services / "orchestrator.py").write_text("")
-            daemon_executed = root / "daemon-executed"
+            self.write_executable(scripts / "relay-bridge", "#!/bin/bash\nexit 0\n")
             result = subprocess.run(
                 [str(launcher), "--run"],
                 env={
                     **os.environ,
                     "HOME": str(home),
                     "PATH": "/usr/bin:/bin",
-                    "FAKE_DAEMON_EXECUTED": str(daemon_executed),
                     "RELAY_DIAGNOSTICS_DIR": str(diagnostics),
                     "RELAY_CORRELATION_ID": "22222222-2222-4222-8222-222222222222",
                 },
@@ -424,11 +233,7 @@ chmod +x "$venv/python"
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertFalse(daemon_executed.exists())
-            self.assertIn(
-                "orchestrator import preflight failed under Python 3.9.18 (ModuleNotFoundError)",
-                result.stderr,
-            )
+            self.assertIn("daemon binary is missing from Relay Runner.app", result.stderr)
             rows = [
                 json.loads(line)
                 for path in diagnostics.glob("events-v1-shell-*.jsonl")
@@ -437,25 +242,18 @@ chmod +x "$venv/python"
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["phase"], "orchestrator_preflight")
             self.assertEqual(rows[0]["outcome"], "failed")
-            self.assertEqual(rows[0]["attributes"]["version"], "3.9.18")
-            self.assertEqual(rows[0]["attributes"]["error_code"], "ModuleNotFoundError")
+            self.assertEqual(rows[0]["attributes"], {"error_code": "daemon_binary_missing"})
             self.assertLessEqual(len(rows[0]["summary"]), 80)
 
-    def test_preflight_imports_the_complete_shipped_orchestrator_module(self):
+    def test_install_checks_the_daemon_before_reporting_setup_ready(self):
         source = (ROOT / "scripts" / "relay-orchestrator").read_text()
         bridge = (ROOT / "scripts" / "relay-bridge").read_text()
-        orchestrator = (SERVICES / "orchestrator.py").read_text()
 
-        self.assertIn('importlib.import_module("services.orchestrator")', source)
         self.assertIn("RELAY_ORCHESTRATOR_PREFLIGHT_REQUIRED=1", source)
         self.assertIn('if [ -z "${RELAY_ORCHESTRATOR_PREFLIGHT_REQUIRED:-}" ]', bridge)
-        self.assertLess(
-            source.index('importlib.import_module("services.orchestrator")'),
-            source.index("record_support_event shell setup ready"),
-        )
-        self.assertIn("ArtifactLifecycleCoordinator", orchestrator)
-        self.assertIn("ArtifactRolloutStore", orchestrator)
-        self.assertIn("ArtifactStore", orchestrator)
+        self.assertLess(source.index("    daemon_preflight\n}"), source.index("record_support_event shell setup ready"))
+        for text in (source, bridge):
+            self.assertNotRegex(text, r"/usr/bin/python3|python3? -[cm]\b|\bpip3? install|-m venv|python-build-standalone")
 
     def test_stale_unloaded_launch_agent_is_repaired(self):
         result = self.run_launcher(stale_bootstrap=True, healthy=True)
@@ -474,27 +272,13 @@ chmod +x "$venv/python"
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             scripts = root / "scripts"
-            services = root / "services"
             home = root / "home"
             scripts.mkdir()
-            services.mkdir()
             home.mkdir()
             launcher = scripts / "relay-orchestrator"
             shutil.copy2(ROOT / "scripts" / "relay-orchestrator", launcher)
-            self.write_executable(
-                scripts / "relay-bridge",
-                """#!/bin/bash
-set -e
-venv="$HOME/Library/Application Support/relay-runner/services/.venv/bin"
-mkdir -p "$venv"
-cat > "$venv/python" <<'PYTHON_EOF'
-#!/bin/bash
-printf '%s\n' "$RELAY_CORRELATION_ID"
-PYTHON_EOF
-chmod +x "$venv/python"
-""",
-            )
-            (services / "orchestrator.py").write_text("")
+            self.write_executable(scripts / "relay-bridge", "#!/bin/bash\nexit 0\n")
+            self.fake_daemon(root, "#!/bin/bash\nprintf '%s\\n' \"$RELAY_CORRELATION_ID\"\n")
             env = os.environ.copy()
             env.pop("RELAY_CORRELATION_ID", None)
             env.update({"HOME": str(home), "PATH": "/usr/bin:/bin"})
@@ -554,21 +338,13 @@ chmod +x "$venv/python"
                 """#!/bin/bash
 set -e
 # Skill refresh and MCP registration are delegated here too; only the
-# nested venv bootstrap reports progress.
-[ "${1:-}" = "--venv-only" ] || exit 0
+# nested setup reports progress.
+[ "${1:-}" = "--setup-only" ] || exit 0
 max_percent="${RELAY_PROGRESS_MAX_PERCENT:-100}"
 echo "RELAY_PROGRESS:$((100 * max_percent / 100)):Nested runtime ready." >&2
-venv="$HOME/Library/Application Support/relay-runner/services/.venv/bin"
-mkdir -p "$venv"
-cat > "$venv/python" <<'PYTHON_EOF'
-#!/bin/bash
-if [ "${1:-}" = "-c" ]; then echo '3.13.7'; exit 0; fi
-if [ "${1:-}" = "-" ]; then cat >/dev/null; exit 0; fi
-exit 0
-PYTHON_EOF
-chmod +x "$venv/python"
 """,
             )
+            self.fake_daemon(root)
 
             launch_state = root / "launchd-state"
             self.write_executable(
@@ -623,16 +399,8 @@ esac
             home.mkdir()
             launcher = scripts / "relay-orchestrator"
             shutil.copy2(ROOT / "scripts" / "relay-orchestrator", launcher)
-            self.write_executable(
-                scripts / "relay-bridge",
-                """#!/bin/bash
-set -e
-venv="$HOME/Library/Application Support/relay-runner/services/.venv/bin"
-mkdir -p "$venv"
-printf '#!/bin/bash\\nexit 0\\n' > "$venv/python"
-chmod +x "$venv/python"
-""",
-            )
+            self.write_executable(scripts / "relay-bridge", "#!/bin/bash\nexit 0\n")
+            self.fake_daemon(root)
             state = root / "launchd-state"
             bootstrap_count = root / "bootstrap-count"
             self.write_executable(
@@ -684,6 +452,45 @@ esac
                 capture_output=True,
                 check=False,
             )
+
+    def bridge_launcher(self, scripts: Path) -> Path:
+        """scripts/relay-bridge with no Codex, so setup checks only Claude."""
+        source = (ROOT / "scripts" / "relay-bridge").read_text()
+        start = source.index("find_codex_bin() {")
+        end = source.index("\n}\n", start) + 3
+        source = source[:start] + 'find_codex_bin() {\n    echo ""\n}\n' + source[end:]
+        launcher = scripts / "relay-bridge"
+        self.write_executable(launcher, source)
+        return launcher
+
+    def mark_ready(self, home: Path, *, include_models: bool = True) -> None:
+        """Skills, launch agent, Claude and (optionally) the speech model."""
+        relatives = [
+            ".claude/skills/relay-bridge/SKILL.md",
+            ".claude/skills/relay-stop/SKILL.md",
+            ".claude/skills/relay-dispatch/SKILL.md",
+            ".claude/skills/relay-workflow/SKILL.md",
+            ".codex/skills/relay-bridge/SKILL.md",
+            ".codex/skills/relay-stop/SKILL.md",
+            ".codex/skills/relay-dispatch/SKILL.md",
+            ".codex/skills/relay-workflow/SKILL.md",
+            "Library/LaunchAgents/com.relay.orchestrator.plist",
+        ]
+        if include_models:
+            relatives += [".local/share/kokoro/kokoro-v1.0.onnx", ".local/share/kokoro/voices-v1.0.bin"]
+        for relative in relatives:
+            path = home / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("ready\n")
+        (home / ".local/bin").mkdir(parents=True, exist_ok=True)
+        self.write_executable(home / ".local/bin/claude", "#!/bin/bash\nexit 0\n")
+
+    def fake_daemon(self, root: Path, content: str = "#!/bin/bash\nexit 0\n") -> Path:
+        """A daemon binary where scripts/relay-orchestrator finds a cargo build."""
+        daemon = root / "rust/target/debug/relay-orchestrator"
+        daemon.parent.mkdir(parents=True)
+        self.write_executable(daemon, content)
+        return daemon
 
     @staticmethod
     def write_executable(path: Path, content: str) -> None:

@@ -2,13 +2,13 @@
 
 **Status:** Implemented (RR-477); Rust implementation RR-478
 
-`services/relay_completion_hook.py` and `services/relay_reply.py` run as separate processes: the hook on every Claude and Codex lifecycle event, the reply helper whenever an agent pipes a reply to `$RELAY_REPLY_HELPER`. This document describes what those two programs read and write, as checked by the black-box suite in `tests/contract/`. The suite starts each program as an opaque command and imports nothing from `services/`, so a replacement written in another language is accepted against the same cases.
+`relay-rs hook` and `relay-rs reply` run as separate processes: the hook on every Claude and Codex lifecycle event, the reply helper whenever an agent pipes a reply to `$RELAY_REPLY_HELPER`. This document describes what those two programs read and write, as checked by the black-box suite in `tests/contract/`. The suite starts each program as an opaque command and imports nothing from `services/`, so a replacement written in another language is accepted against the same cases.
 
 ## Implementations
 
-Since RR-478 the app registers `relay-rs hook` and `relay-rs reply` (built from `rust/`, shipped in `Contents/MacOS`) for Claude and Codex sessions alike: Codex's `-c hooks.*` flags, Claude's `--settings` hooks JSON, the `--record-process`, `--record-codex-startup` and `--context-continuation` calls, and `RELAY_REPLY_HELPER`, which then names the binary and is invoked as `"$RELAY_REPLY_HELPER" reply`. The skills `scripts/relay-bridge` installs make the same choice. `relay-rs` opens the intent inbox through bundled SQLite with the bridge's settings (WAL, `busy_timeout` 5000, `BEGIN IMMEDIATE`) and the same schema; `tests/test_hook_inbox_concurrency.py` runs it against a Python `ProviderTurnBroker` writing the same database.
+Since RR-478 the app registers `relay-rs hook` and `relay-rs reply` (built from `rust/`, shipped in `Contents/MacOS`) for Claude and Codex sessions alike: Codex's `-c hooks.*` flags, Claude's `--settings` hooks JSON, the `--record-process`, `--record-codex-startup` and `--context-continuation` calls, and `RELAY_REPLY_HELPER`, which then names the binary and is invoked as `"$RELAY_REPLY_HELPER" reply`. The skills `scripts/relay-bridge` installs make the same choice. `relay-rs` opens the intent inbox through bundled SQLite with the bridge's settings (WAL, `busy_timeout` 5000, `BEGIN IMMEDIATE`) and the same schema the voice bridge uses.
 
-The Python scripts stay bundled. Setting `RELAY_HOOK_RUNTIME=python` in the app's environment (for example `launchctl setenv RELAY_HOOK_RUNTIME python`, then relaunch Relay Runner) registers them again for both providers, with `RELAY_REPLY_HELPER` naming `services/relay_reply.py` and invoked as `/usr/bin/python3 "$RELAY_REPLY_HELPER"`. A build without `relay-rs` beside the app executable falls back the same way.
+The Python scripts these cases were first written against (`services/relay_completion_hook.py`, `services/relay_reply.py`) and the `RELAY_HOOK_RUNTIME=python` rollback were removed in RR-487; `relay-rs` is the only hook and reply helper.
 
 To run the suite against the Rust binary:
 
@@ -26,8 +26,8 @@ python3 -m unittest discover -s tests/contract -p 'test_hook_contract*.py'
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `RELAY_HOOK_CMD` | `/usr/bin/python3 services/relay_completion_hook.py` | The hook under test. Split like a shell command line; mode arguments are appended. |
-| `RELAY_REPLY_CMD` | `/usr/bin/python3 services/relay_reply.py` | The reply helper under test. |
+| `RELAY_HOOK_CMD` | `rust/target/debug/relay-rs hook` (the folder is `RELAY_RUST_BIN_DIR` when set) | The hook under test. Split like a shell command line; mode arguments are appended. |
+| `RELAY_REPLY_CMD` | `rust/target/debug/relay-rs reply` | The reply helper under test. |
 | `RELAY_HOOK_BUDGET_SECONDS` | `2.0` | The longest a lifecycle hook may take. Both providers stop a hook after 2 seconds. |
 
 The suite needs macOS (`/bin/ps`, `/usr/sbin/lsof`, an 8192-byte FIFO buffer) and Python 3.9 or newer. Each case builds its own temporary directory and passes only the variables listed below, so it never writes to the files of a running Relay Runner session.
@@ -232,9 +232,9 @@ Each case runs for both providers unless a class is named. File names are relati
 
 ## Known differences
 
-These cases state the intended contract, and the current Python scripts fail them. They are expected failures while the default scripts are under test and ordinary cases for any command named in `RELAY_HOOK_CMD` or `RELAY_REPLY_CMD`.
+These cases state the intended contract, which the Python scripts removed in RR-487 failed. They were expected failures while those scripts were the default; every command under test must now pass them.
 
-| Case | What the Python script does |
+| Case | What the Python script did |
 | --- | --- |
 | `test_hook_contract_faults.…test_reply_longer_than_the_fifo_buffer_arrives_whole` | The hook writes without waiting for the reader. A completion line longer than the 8192-byte FIFO buffer is cut off after 8192 bytes with no newline; the table row says `completed_final` while the ledger still says `active`. |
 | `test_hook_contract_reply.…test_reply_longer_than_the_fifo_buffer_arrives_whole` | The same cut-off in the reply helper, which then exits 1 with a traceback. |

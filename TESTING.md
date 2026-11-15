@@ -8,16 +8,30 @@ Run tests from the repository root on macOS 14 or later. Xcode 16 or later is re
 git diff --check
 scripts/build-instructions --check
 swift test
+(cd rust && cargo build)
 python3 -m unittest discover -s tests
+python3 -m unittest discover -s tests/contract
 ```
 
-Use a Python 3.10–3.13 interpreter. The app can install its own runtime for end users, but contributor tests should not mutate the installed app or the user's Relay Runner Application Support state.
+Use a Python 3.10–3.13 interpreter for the Python tests and build tooling. The app itself runs no Python (RR-487). Contributor tests should not mutate the installed app or the user's Relay Runner Application Support state.
+
+The black-box contract suites in `tests/contract/` run the Rust binaries a `cargo build` leaves in `rust/target/debug` (`relay-rs`, `relay-speech`, `relay-orchestrator`). `RELAY_RUST_BIN_DIR` names another folder, such as an installed app's `Contents/MacOS`; a case whose binary is missing skips with a note. `RELAY_HOOK_CMD`, `RELAY_REPLY_CMD`, `RELAY_VOICE_BRIDGE_CMD`, `RELAY_SPEECH_SERVICE_CMD`, `RELAY_ORCHESTRATOR_CMD` and `RELAY_ARTIFACT_MIGRATION_CMD` still replace one command each.
 
 Run one Python file while iterating with:
 
 ```bash
-python3 -m unittest tests.test_config
+python3 -m unittest tests.test_first_run_startup
 ```
+
+### Python in the repository
+
+Python remains only where it never ships:
+
+- build and release tooling: `services/app_signing.py` (signing identity and bundle checks in `scripts/build-dmg.sh`), `scripts/build-instructions`, `scripts/rust-licenses`, the DMG tooling (`scripts/dmgbuild-settings.py`, `scripts/generate-dmg-background.py`, `scripts/generate-icon.py`) and other maintenance scripts in `scripts/`;
+- the tests in `tests/` and `tests/contract/`;
+- the artifact-store reference modules in `services/` (`artifact_store`, `artifact_sync`, `artifact_retention`, `artifact_lifecycle`, `artifact_migration`, `artifact_catalog`, `program_artifacts`, `graphify_core`, `graphify_ingest`, `project_notes`, `note_contract`, `tickets`, `toml_compat`). Nothing runs them at runtime; they back the white-box tests that the RR-270 source matrix in `rust/relay-artifacts/src/verification.rs` names (`tests/test_artifact_*.py`). Replace those tests with Rust ones before deleting the modules.
+
+`scripts/build-dmg.sh` fails if a `.py` file reaches the app bundle.
 
 Run one Swift test class or method with Swift Package Manager's `--filter` option.
 
@@ -50,11 +64,11 @@ cd ..
 scripts/rust-licenses --check
 ```
 
-The workspace also holds `relay-intents`, the library crate for the intent inbox, the provider-turn broker and the intent model that `relay-rs hook` is built on (RR-489). `cargo test` builds its test driver, `rust/target/debug/examples/intents_driver`, which `tests/test_relay_intents_parity.py` and `tests/test_relay_intents_concurrency.py` run beside the Python modules on one database; without the driver their Rust cases skip.
+The workspace also holds `relay-intents`, the library crate for the intent inbox, the provider-turn broker and the intent model that `relay-rs hook` is built on (RR-489).
 
-`relay-store` is the library crate for the orchestrator daemon's SQLite stores (RR-496): the eight databases under the data root, the General task ledger and the personal-storage catalog, opened in place with the Python stores' schemas. `tests/release_databases.rs` opens the RR-485 release fixtures (`tests/contract/fixtures/orchestrator/<release>/`) and checks the `release/runs.response` golden. `tests/python_interop.rs` runs `tests/python_interop.py` against the Python stores in `services/` on the same files, comparing schemas, migrations, reads after each side writes, and `runs.json`. It needs a Python 3.10 or newer (`RELAY_STORE_PYTHON`, else Homebrew's `python3`, else `python3` on `PATH`) and skips with a note when there is none.
+`relay-store` is the library crate for the orchestrator daemon's SQLite stores (RR-496): the eight databases under the data root, the General task ledger and the personal-storage catalog, opened in place with the schemas the earlier Python stores created, so an upgraded install's databases are read unchanged. `tests/release_databases.rs` opens the RR-485 release fixtures (`tests/contract/fixtures/orchestrator/<release>/`) and checks the `release/runs.response` golden.
 
-`relay-services` is the library crate for the daemon's services (RR-499): notes and personal storage, Program capture, status and graph ingest, the continuity lane, General work, and the command actions, authorization ledger and provider gates (Claude subscription readiness, the Codex model catalogue) that the voice bridge in `relay-rs` shares with the daemon. Its integration tests replay the RR-485 cases for those areas at library level and run the Python modules in `services/` beside the Rust ports on the same files and repositories, comparing responses, commits, rows and ledgers in both directions. They need a Python 3.10 or newer (`RELAY_SERVICES_PYTHON`, else Homebrew's `python3`, else `python3` on `PATH`) and skip with a note when there is none. `cargo test` also builds `rust/target/debug/examples/notes_driver`, which `tests/contract/test_orchestrator_contract_notes_crate.py` drives against the notes goldens; without it that case skips.
+`relay-services` is the library crate for the daemon's services (RR-499): notes and personal storage, Program capture, status and graph ingest, the continuity lane, General work, and the command actions, authorization ledger and provider gates (Claude subscription readiness, the Codex model catalogue) that the voice bridge in `relay-rs` shares with the daemon. Its integration tests replay the RR-485 cases for those areas at library level. `cargo test` also builds `rust/target/debug/examples/notes_driver`, which `tests/contract/test_orchestrator_contract_notes_crate.py` drives against the notes goldens; without it that case skips.
 
 After adding, removing or updating a crate, commit `rust/Cargo.lock` and run `scripts/rust-licenses` to regenerate the Rust section of `THIRD_PARTY_NOTICES.md`. It refuses a crate whose license is outside the allow list at the top of that script; GPL-family licenses must not be added to it.
 

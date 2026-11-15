@@ -463,9 +463,7 @@ class ExistingInstallSetupTests(RelayInstallHarness):
         macos = self.expected_mcp.parent
         for server in self.SERVERS:
             executable(macos / f"{server}-mcp", "#!/bin/bash\nexit 0\n")
-        support = self.home / "Library" / "Application Support" / "relay-runner"
-        # Healthy venv, speech models, skills and orchestrator plist.
-        executable(support / "services" / ".venv" / "bin" / "python3", "#!/bin/bash\nexit 0\n")
+        # Healthy speech models, skills and orchestrator plist.
         kokoro = self.home / ".local" / "share" / "kokoro"
         kokoro.mkdir(parents=True)
         for name in ("kokoro-v1.0.onnx", "voices-v1.0.bin"):
@@ -483,7 +481,7 @@ class ExistingInstallSetupTests(RelayInstallHarness):
             (self.state / f"claude-user-{server}").write_text(binary)
             (self.state / f"codex-{server}").write_text(binary)
 
-        result = self.run_script("relay-bridge", "--venv-only")
+        result = self.run_script("relay-bridge", "--setup-only")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for server in ("relay-desktop", "relay-app"):

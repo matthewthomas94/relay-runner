@@ -3,7 +3,7 @@ import Foundation
 // MCP server for the relay-runner orchestrator.
 //
 // This is a thin proxy: each MCP tool call translates to a single HTTP request
-// to the Python daemon (services/orchestrator.py) on 127.0.0.1. The Swift
+// to the Rust daemon (relay-orchestrator) on 127.0.0.1. The Swift
 // surface exists so the orchestrator's tools appear in Claude Code's MCP toolbelt
 // alongside relay-actions, with consistent stdio framing.
 //

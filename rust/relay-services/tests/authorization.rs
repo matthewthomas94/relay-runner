@@ -1,12 +1,10 @@
-//! The daemon's half of the Relay command authorization ledger against
-//! `services/relay_authorization.py` (RR-499).
+//! The daemon's half of the Relay command authorization ledger (RR-499).
 //!
-//! Python registers the grants (the voice bridge's half, three sessions so
-//! the redirect revokes nothing); the same sequence of
-//! validations and cancellations then runs in Python on one ledger and in
-//! Rust on a copy, and the two files must stay byte-identical. The refusals
-//! carry Python's messages, including the one the RR-485 session case reads
-//! for an unregistered command.
+//! The grants are registered as the voice bridge registers them (three
+//! sessions so the redirect revokes nothing); a sequence of validations and
+//! cancellations then runs on the ledger, and the refusals the daemon's
+//! routes rely on must appear, including the one the RR-485 session case
+//! reads for an unregistered command.
 
 mod common;
 
@@ -15,27 +13,45 @@ use std::path::Path;
 
 use relay_intents::json::{self, Dict, Value};
 use relay_services::authorization::{
-    authorization_exists, mark_mutations_canceled, mutation_fingerprint, validate_and_mark_mutation,
+    authorization_exists, mark_mutations_canceled, mutation_fingerprint,
+    record_command_authorization, validate_and_mark_mutation,
 };
 
-use common::{TempRoot, python, run_python};
+use common::TempRoot;
 
-const REGISTER: &str = r#"
-import json, relay_authorization as a
-path = sys.argv[1]
-a.record_command_authorization(path, {"relay_command_seq": 1, "relay_command_id": "cmd-1",
-    "action": "create_ticket", "source_text": "Make a ticket for RR-9", "intent_id": "i-1"},
-    relationship="replacement", now=10.0)
-a.record_command_authorization(path, {"relay_command_seq": 2, "relay_command_id": "cmd-2",
-    "action": "dispatch_ticket", "ticket_id": "rr-7", "source_text": "Dispatch RR-7 and RR-8"},
-    relationship="additive", session_key="spool-a", now=11.0)
-a.record_command_authorization(path, {"relay_command_seq": 3, "relay_command_id": "cmd-3",
-    "action": "update_ticket", "ticket_id": "RR-5", "source_text": "Actually change RR-5"},
-    relationship="redirect", session_key="spool-c", now=12.0)
-"#;
+/// The grants: `[metadata, relationship, session key, now]`.
+const REGISTER: &str = r#"[
+  [{"relay_command_seq": 1, "relay_command_id": "cmd-1", "action": "create_ticket",
+    "source_text": "Make a ticket for RR-9", "intent_id": "i-1"}, "replacement", "", 10.0],
+  [{"relay_command_seq": 2, "relay_command_id": "cmd-2", "action": "dispatch_ticket",
+    "ticket_id": "rr-7", "source_text": "Dispatch RR-7 and RR-8"}, "additive", "spool-a", 11.0],
+  [{"relay_command_seq": 3, "relay_command_id": "cmd-3", "action": "update_ticket",
+    "ticket_id": "RR-5", "source_text": "Actually change RR-5"}, "redirect", "spool-c", 12.0]
+]"#;
 
-/// Each step: `[function, seq, id, mutation or mutations, extra]`, run by
-/// both implementations; the outcome is the result's JSON or the error.
+fn register(path: &Path, grants: &str) {
+    let Some(Value::List(grants)) = json::parse(grants) else {
+        panic!("grants")
+    };
+    for grant in &grants {
+        let grant = grant.as_list().unwrap();
+        let Value::Float(now) = grant[3] else {
+            panic!("now")
+        };
+        record_command_authorization(
+            path,
+            grant[0].as_dict().unwrap(),
+            grant[1].as_str().unwrap(),
+            None,
+            grant[2].as_str().unwrap(),
+            Some(now),
+        )
+        .unwrap();
+    }
+}
+
+/// Each step: `[function, seq, id, mutation or mutations, extra]`; the
+/// outcome is the result's JSON or the error.
 const STEPS: &str = r#"[
   ["validate", 1, "cmd-1", {"kind": "orchestrator_action", "action_kind": "create_ticket", "request_id": "r1"}, {}],
   ["validate", 1, "cmd-1", {"kind": "orchestrator_action", "action_kind": "create_ticket", "request_id": "r1"}, {}],
@@ -58,25 +74,6 @@ const STEPS: &str = r#"[
   ["exists", 2, "cmd-2", null, {}],
   ["exists", 5, "cmd-5", null, {}]
 ]"#;
-
-const PYTHON_STEPS: &str = r#"
-import json, relay_authorization as a
-path, steps = sys.argv[1], json.loads(sys.argv[2])
-for index, (function, seq, command, mutation, extra) in enumerate(steps):
-    now = 100.0 + index
-    try:
-        if function == "validate":
-            result = a.validate_and_mark_mutation(path, seq, command, mutation,
-                relay_intent_id=extra.get("intent"), session_key=extra.get("session"), now=now)
-        elif function == "cancel":
-            result = a.mark_mutations_canceled(path, seq, command, mutation,
-                reason=extra["reason"], now=now)
-        else:
-            result = a.authorization_exists(path, seq, command, session_key=extra.get("session"))
-        print(json.dumps({"ok": result}))
-    except ValueError as error:
-        print(json.dumps({"error": str(error)}))
-"#;
 
 fn rust_steps(path: &Path) -> Vec<String> {
     let Some(Value::List(steps)) = json::parse(STEPS) else {
@@ -140,30 +137,63 @@ fn rust_steps(path: &Path) -> Vec<String> {
 }
 
 #[test]
-fn rust_marks_the_ledger_exactly_as_python_does() {
-    let Some(python) = python() else { return };
+fn the_ledger_marks_validations_and_cancellations() {
     let root = TempRoot::new("authorization");
-    let theirs = root.path.join("python/voice_command_authorization.json");
     let ours = root.path.join("rust/voice_command_authorization.json");
-    run_python(&python, &root.path, REGISTER, &[theirs.to_str().unwrap()]);
-    fs::create_dir_all(ours.parent().unwrap()).unwrap();
-    fs::copy(&theirs, &ours).unwrap();
+    register(&ours, REGISTER);
 
-    let expected = run_python(
-        &python,
-        &root.path,
-        PYTHON_STEPS,
-        &[theirs.to_str().unwrap(), STEPS],
+    // Each outcome: the refusal, the marked record's command and how many
+    // mutations it has started, or the plain result.
+    let outcomes: Vec<String> = rust_steps(&ours)
+        .iter()
+        .map(|line| {
+            let line = json::parse(line).unwrap();
+            let line = line.as_dict().unwrap();
+            if let Some(error) = line.get("error") {
+                return error.as_str().unwrap().to_string();
+            }
+            match line.get("ok").unwrap() {
+                Value::Dict(record) => format!(
+                    "{} {}",
+                    record.get("relay_command_id").unwrap().as_str().unwrap(),
+                    record
+                        .get("started_mutations")
+                        .unwrap()
+                        .as_list()
+                        .unwrap()
+                        .len()
+                ),
+                other => json::dumps(other),
+            }
+        })
+        .collect();
+    let unregistered = "stale Relay command: no mutation authorization was registered";
+    let unauthorized = "Relay command is not authorized for this mutation";
+    assert_eq!(
+        outcomes,
+        [
+            "cmd-1 1",
+            "replayed Relay mutation authorization",
+            unauthorized,
+            "cmd-1 2",
+            unregistered,
+            "cmd-2 1",
+            unauthorized,
+            unregistered,
+            "cmd-3 1",
+            unauthorized,
+            unregistered,
+            "stale Relay command: missing mutation authorization metadata",
+            "cmd-1 3",
+            "null",
+            "null",
+            "null",
+            "true",
+            "false",
+            "true",
+            "false",
+        ]
     );
-    let actual = rust_steps(&ours);
-    assert_eq!(actual, expected.lines().collect::<Vec<_>>());
-    assert_eq!(fs::read(&ours).unwrap(), fs::read(&theirs).unwrap());
-
-    // The outcomes the daemon's routes rely on.
-    assert!(expected.contains("replayed Relay mutation authorization"));
-    assert!(expected.contains("Relay command is not authorized for this mutation"));
-    assert!(expected.contains("stale Relay command: no mutation authorization was registered"));
-    assert!(expected.contains("stale Relay command: missing mutation authorization metadata"));
     // The lock file is the owner's only.
     let mut lock = ours.clone().into_os_string();
     lock.push(".lock");
@@ -176,21 +206,16 @@ fn rust_marks_the_ledger_exactly_as_python_does() {
 
 #[test]
 fn a_revoked_grant_names_the_turn_that_revoked_it() {
-    let Some(python) = python() else { return };
     let root = TempRoot::new("authorization-revoked");
     let path = root.path.join("ledger.json");
-    run_python(
-        &python,
-        &root.path,
-        r#"
-import relay_authorization as a
-path = sys.argv[1]
-a.record_command_authorization(path, {"relay_command_seq": 1, "relay_command_id": "old",
-    "action": "create_ticket", "source_text": "Make a ticket"}, relationship="replacement", now=1.0)
-a.record_command_authorization(path, {"relay_command_seq": 2, "relay_command_id": "new",
-    "action": "create_ticket", "source_text": "Cancel that"}, relationship="cancel", now=2.0)
-"#,
-        &[path.to_str().unwrap()],
+    register(
+        &path,
+        r#"[
+  [{"relay_command_seq": 1, "relay_command_id": "old", "action": "create_ticket",
+    "source_text": "Make a ticket"}, "replacement", "", 1.0],
+  [{"relay_command_seq": 2, "relay_command_id": "new", "action": "create_ticket",
+    "source_text": "Cancel that"}, "cancel", "", 2.0]
+]"#,
     );
     let error = validate_and_mark_mutation(
         &path,

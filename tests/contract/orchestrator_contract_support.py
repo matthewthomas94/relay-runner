@@ -36,16 +36,29 @@ FIXTURES_DIR = CONTRACT_DIR / "fixtures" / "orchestrator"
 ARTIFACT_REF = "refs/heads/relay/artifacts"
 
 
-def _command(variable: str, script: str) -> list:
+# The Rust binaries under test: a cargo build of rust/ (`cargo build` there),
+# or the folder RELAY_RUST_BIN_DIR names, such as an app's Contents/MacOS.
+RUST_BIN_DIR = Path(os.environ.get("RELAY_RUST_BIN_DIR") or REPO_ROOT / "rust" / "target" / "debug")
+
+
+def require_built(command: list) -> None:
+    """Skip the case when the default Rust binary has not been built."""
+    program = command[0]
+    if not (os.access(program, os.X_OK) or shutil.which(program)):
+        raise unittest.SkipTest("%s is not built; run cargo build in rust/" % program)
+
+
+def _command(variable: str, *default: str) -> list:
     configured = os.environ.get(variable, "").strip()
     if configured:
         return shlex.split(configured)
-    return [sys.executable, str(REPO_ROOT / "services" / script)]
+    return [str(RUST_BIN_DIR / default[0]), *default[1:]]
 
 
-DAEMON_CMD = _command("RELAY_ORCHESTRATOR_CMD", "orchestrator.py")
-MIGRATION_CMD = _command("RELAY_ARTIFACT_MIGRATION_CMD", "artifact_migration_cli.py")
-DAEMON_IS_REFERENCE = not os.environ.get("RELAY_ORCHESTRATOR_CMD", "").strip()
+DAEMON_CMD = _command("RELAY_ORCHESTRATOR_CMD", "relay-orchestrator")
+MIGRATION_CMD = _command("RELAY_ARTIFACT_MIGRATION_CMD", "relay-rs", "artifact-migrate")
+# The Python daemon was the reference until RR-487 removed it.
+DAEMON_IS_REFERENCE = False
 UPDATE_GOLDEN = os.environ.get("RELAY_CONTRACT_UPDATE_GOLDEN", "").strip() == "1"
 START_TIMEOUT_SECONDS = float(os.environ.get("RELAY_ORCHESTRATOR_START_TIMEOUT", "30"))
 WAIT_TIMEOUT_SECONDS = float(os.environ.get("RELAY_ORCHESTRATOR_WAIT_TIMEOUT", "60"))
@@ -344,6 +357,7 @@ class Sandbox:
             self.port_file.unlink()
         except FileNotFoundError:
             pass
+        require_built(DAEMON_CMD)
         stderr = open(str(self.stderr_path), "ab")
         self.process = subprocess.Popen(
             [*DAEMON_CMD, "--config", str(self.config_path)],
@@ -585,6 +599,7 @@ class Sandbox:
         the daemon has seen the project.
         """
         project_id = self.registry_record(repo)["project_id"]
+        require_built(MIGRATION_CMD)
         done = subprocess.run(
             [*MIGRATION_CMD, "migrate", "--repo", str(repo), "--project-id", project_id,
              "--state-root", str(self.state_root), "--confirm-source-cleanup"],

@@ -11,7 +11,7 @@ Relay Runner is a native macOS app with local companion processes. The provider 
                                    │
                  ┌─────────────────┼──────────────────┐
                  ▼                 ▼                  ▼
-        Python voice and     Codex or Claude     MCP helpers
+        Rust voice and       Codex or Claude     MCP helpers
         orchestrator services interactive CLI    Actions / Vision / board
                  │                 │                  │
                  └─────────────────┼──────────────────┘
@@ -25,19 +25,19 @@ Swift code under `Sources/relay-runner/` owns microphone capture, FluidAudio tra
 
 **Start Session** validates the selected registered project, prepares the voice runtime and Relay integrations, then launches Codex or Claude in an app-owned pseudo-terminal. Both providers receive the same project-scope and Relay workflow contract. Provider-specific executable discovery, authentication, model resolution, flags, and hooks stay at the launch boundary.
 
-Python modules under `services/` own the voice bridge, tool-free messenger, ticket orchestration, worker lifecycle, program capture, and artifact services. The daemon listens only on loopback and stores durable local run state so a UI or provider turn does not have to stay alive to poll work.
+Rust binaries built from `rust/` own the rest: `relay-rs` is the voice bridge (`relay-rs bridge`), the tool-free messenger, Relay Remote, the provider hook and reply helper, and the per-invocation CLIs behind `scripts/relay-*`; `relay-speech` is the speech service; `relay-orchestrator` is the daemon for ticket orchestration, worker lifecycle, program capture, and artifact services. The daemon listens only on loopback and stores durable local run state so a UI or provider turn does not have to stay alive to poll work. Nothing in the app runs Python (RR-487).
 
 ## Voice loop
 
 The configured on-device model (Phonon 2 on macOS 15 or later, or Parakeet) converts captured audio to text on the Mac. Each current voice turn reaches the foreground provider session and a persistent tool-free messenger. The foreground orchestrator is authoritative for decisions and project work; the messenger sees only the user turn plus bounded public progress and produces concise spoken wording. Kokoro synthesizes that speech locally.
 
-`STTModel` resolves the persisted `[stt] model` identifier and its macOS floor before any download or load. `STTModelPolicy` is the OS-aware default and one-time Phonon migration policy, mirrored in `services/config.py`. Its `phononDefaultActive` flag, and `PHONON_DEFAULT_ACTIVE` in Python, are the single activation point for RR-416; both stay `false` until rollout. `STTPhononMigration` prepares and validates Phonon before `AppState` applies it at an idle boundary. `AppState` restarts command STT only after any in-flight recording and drops an idle cached Note Taker coordinator on a model change, so each recording keeps the model it started with.
+`STTModel` resolves the persisted `[stt] model` identifier and its macOS floor before any download or load. `STTModelPolicy` is the OS-aware default and one-time Phonon migration policy, mirrored in `rust/relay-artifacts/src/config.rs`. Its `phononDefaultActive` flag and the Rust `PHONON_DEFAULT_ACTIVE` are the single activation point for RR-416 and must agree. `STTPhononMigration` prepares and validates Phonon before `AppState` applies it at an idle boundary. `AppState` restarts command STT only after any in-flight recording and drops an idle cached Note Taker coordinator on a model change, so each recording keeps the model it started with.
 
 Freshness identifiers prevent a superseded voice command from speaking or mutating as though it were current. Raw transcripts remain private coordination metadata and are not valid ticket content.
 
 ### Speech playback
 
-`services/tts_worker.py` splits each reply into sentence chunks and synthesizes them with Kokoro, rendering the next chunk while the current one plays. It hands each chunk to `services/speech_player.py`, which keeps one AudioToolbox output queue running for the whole reply. In a Relay session the worker, the player and the coordinator run in their own process, `services/speech_service.py`, which the voice bridge starts and talks to over the protocol in [`docs/specs/speech-service-protocol.md`](specs/speech-service-protocol.md) (RR-480). Chunks join one PCM stream, so sentence boundaries are gapless and CoreAudio starts the output device once per reply rather than once per sentence (RR-438). Before that change, a fresh `afplay` process per sentence restarted the device each time, and each restart risked an audible coreaudiod IO overload.
+The speech service `relay-speech` (`rust/relay-speech`) splits each reply into sentence chunks and synthesizes them with Kokoro (`worker.rs`, `kokoro.rs`), rendering the next chunk while the current one plays. It hands each chunk to its player (`player.rs`), which keeps one AudioToolbox output queue running for the whole reply. The worker, the player and the coordinator run in their own process, which the voice bridge starts and talks to over the protocol in [`docs/specs/speech-service-protocol.md`](specs/speech-service-protocol.md) (RR-480, RR-481). Chunks join one PCM stream, so sentence boundaries are gapless and CoreAudio starts the output device once per reply rather than once per sentence (RR-438). Before that change, a fresh `afplay` process per sentence restarted the device each time, and each restart risked an audible coreaudiod IO overload.
 
 - The queue starts on its own thread, so a stop never waits for the device to spin up. It stops after 2 s of silence, or 15 s while the worker is still inside a reply.
 - `[tts] rate` changes tempo without changing pitch, using the queue's Time Domain time-pitch processor, the algorithm `afplay -r` uses. Rate 1.0 bypasses it.
@@ -46,11 +46,9 @@ Freshness identifiers prevent a superseded voice command from speaking or mutati
 - The waiting chime still plays through `afplay`.
 - Codex and Claude sessions share this path; nothing in it is provider-specific.
 
-`RELAY_AUDIO_DEVICE_TESTS=1 python3 -m unittest tests.test_speech_player` adds a check against the default output device that plays only silence.
-
 ### Speech queue rules
 
-`services/speech_coordinator.py` is the single gateway in front of the worker. It keeps one first-in, first-out queue for every session (RR-464). An item leaves the queue only when it has been played or skipped. A **reply** is a `final`, `fallback` or `clarification` intent; `handoff` and `progress` are status speech. The `QUEUE_RULES` table in `tests/test_speech_coordinator.py` runs each rule below.
+The speech coordinator (`rust/relay-speech/src/coordinator.rs`) is the single gateway in front of the worker. It keeps one first-in, first-out queue for every session (RR-464). An item leaves the queue only when it has been played or skipped. A **reply** is a `final`, `fallback` or `clarification` intent; `handoff` and `progress` are status speech. `coordinator_tests.rs` and the speech contract suite in `tests/contract/` check the rules below.
 
 | Rule | Event | Queue effect | Diagnostic |
 | --- | --- | --- | --- |
@@ -94,6 +92,6 @@ Deeper references:
 
 ## Distribution
 
-Swift Package Manager resolves FluidAudio, TOMLKit, Sparkle, and SwiftTerm. `scripts/build-dmg.sh` builds the app and three MCP helpers, copies read-only Python service sources, embeds Sparkle, includes license notices, signs the nested bundle, and creates a DMG plus Sparkle zip.
+Swift Package Manager resolves FluidAudio, TOMLKit, Sparkle, and SwiftTerm. `scripts/build-dmg.sh` builds the app, its MCP helpers and the Rust workspace in `rust/`, copies the launcher scripts and worker prompt templates, embeds Sparkle, includes license notices, signs the nested bundle, and creates a DMG plus Sparkle zip. The build fails if a Python file reaches the bundle.
 
 Local builds are ad-hoc signed unless Developer ID and notary credentials are provided. Tagged GitHub Actions runs validate release secrets, sign, generate an EdDSA-signed appcast, and publish existing release paths; they notarize and staple only when dispatched with `notarize`. Details are in [Release updates](release-updates.md); normal project work never invokes that release path automatically.

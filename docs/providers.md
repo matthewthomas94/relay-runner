@@ -27,7 +27,7 @@ Relay Runner sends model requests only through the user's own provider subscript
 
 ### Claude
 
-Claude Code accepts several credentials, and `claude auth status` alone does not prove which one a launch uses. Before every Relay-owned Claude process starts — the embedded foreground session, workers, reviews, spikes, the messenger, sidecar research, the continuity agent and note summaries — `services/claude_subscription.py` decides readiness from:
+Claude Code accepts several credentials, and `claude auth status` alone does not prove which one a launch uses. Before every Relay-owned Claude process starts — the embedded foreground session, workers, reviews, spikes, the messenger, sidecar research, the continuity agent and note summaries — Relay Runner's subscription gate (`relay-rs claude-subscription`, shared with the daemon through `rust/relay-services`) decides readiness from:
 
 - the environment the process will receive: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, a non-Anthropic `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK`/`VERTEX`/`FOUNDRY`, `AWS_BEARER_TOKEN_BEDROCK`, `ANTHROPIC_FOUNDRY_API_KEY`, `ANTHROPIC_PROFILE` or `ANTHROPIC_FEDERATION_RULE_ID` block the launch;
 - Claude settings that apply to the launch (managed, user, project and local): the same names in `env`, `apiKeyHelper`, or `forceLoginMethod: "console"` block it;
@@ -116,7 +116,7 @@ The supported default is **Start Session** in Workspace. It launches the selecte
 
 If sign-in is needed, Start Session opens the selected provider's login flow automatically. Complete the browser sign-in or paste the code into the terminal; startup continues after authentication succeeds. Queued voice prompts wait until the provider is ready. Canceling or failing sign-in ends startup with a retry message. The external Terminal.app compatibility route uses the same login behavior.
 
-For a terminal you launched yourself, install Relay Skills from **Settings → General**, then invoke the relay-bridge skill from the active Codex or Claude session. `relay-stop` ends that manual bridge. Directly running `services/voice_bridge.py` is an implementation path, not a supported user entry point.
+For a terminal you launched yourself, install Relay Skills from **Settings → General**, then invoke the relay-bridge skill from the active Codex or Claude session. `relay-stop` ends that manual bridge. Directly running `relay-rs bridge` is an implementation path, not a supported user entry point.
 
 ### Embedded terminal editing keys
 

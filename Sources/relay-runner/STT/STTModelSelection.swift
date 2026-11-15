@@ -67,8 +67,8 @@ enum STTModelSelectionError: LocalizedError, Equatable {
 }
 
 /// OS-aware default and one-time Phonon migration policy. Mirrored by
-/// `services/config.py` (`PHONON_DEFAULT_ACTIVE`, `default_stt_model`,
-/// `stt_migration_target`); keep both in step.
+/// `rust/relay-rs/src/bridge/config.rs` (`PHONON_DEFAULT_ACTIVE`,
+/// `default_stt_model`); keep both in step.
 enum STTModelPolicy {
     /// RR-416 activation point (mirrors `PHONON_DEFAULT_ACTIVE`). When true,
     /// fresh macOS 15+ installs use Phonon and implicit v2 users migrate once;

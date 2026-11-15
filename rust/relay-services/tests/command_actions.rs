@@ -1,15 +1,10 @@
-//! The daemon's ticket summaries and command resolution against
-//! `services/command_actions.py` (RR-499): the same spoken commands give the
-//! same summary, title and resolved action in Rust and in Python.
-
-mod common;
+//! The daemon's ticket summaries and command resolution (RR-499): each
+//! spoken command gives its recorded summary, title and resolved action.
 
 use relay_intents::json::{self, Value};
 use relay_services::command_actions::{
     refined_command_summary, refined_ticket_title, resolve_command_action,
 };
-
-use common::{TempRoot, python, run_python};
 
 const COMMANDS: &[&str] = &[
     "Fix the login bug on the settings page",
@@ -29,22 +24,26 @@ const COMMANDS: &[&str] = &[
     "gen-0123 abc-1x add tests for rr-4 and Rr-5",
 ];
 
-const PYTHON: &str = r#"
-import json, command_actions as c
-for text in json.loads(sys.argv[1]):
-    action = c.resolve_command_action(text)
-    print(json.dumps([c.refined_command_summary(text), c.refined_ticket_title(text),
-                      action.kind, action.ticket_id, action.reason]))
+/// `[summary, title, action kind, ticket id, reason]` for each command,
+/// recorded from the Python bridge before RR-487 removed it.
+const EXPECTED: &str = r#"
+["Fix login bug settings page.", "Fix login bug settings page", "needs_project", null, "Project implementation needs a confirmed target repository"]
+["Implement use new flow.", "Implement use new flow", "update_ticket", "RR-12", ""]
+["Clean up up handling bridge cache.", "Clean up up handling bridge cache", "create_ticket", null, "Substantial or explicitly tracked general work needs a refined General ticket"]
+["Write migration moves every old-config value new.", "Write migration moves every old-config value new", "create_ticket", null, "Substantial or explicitly tracked general work needs a refined General ticket"]
+["Implement what s screen.", "Implement what s screen", "direct_action", null, "screen_observation"]
+["Implement requested project change.", "Implement requested project change", "conversation", null, ""]
+["Implement requested project change.", "Implement requested project change", "conversation", null, ""]
+["Ship requested project change.", "Ship requested project change", "create_ticket", null, "Substantial or explicitly tracked general work needs a refined General ticket"]
+["Update requested project change.", "Update requested project change", "create_ticket", null, "Substantial or explicitly tracked general work needs a refined General ticket"]
+["Implement very-long-hyphenated-subject-name-that-keeps-going-for-quite-a-while-yes another-extremely-long-hyphenated-subject-name-so-the-title-needs-cutting.", "Implement very-long-hyphenated-subject-name-that-keeps-going-for-quite-a-...", "create_ticket", null, "Substantial or explicitly tracked general work needs a refined General ticket"]
+["Implement dispatch.", "Implement dispatch", "dispatch_ticket", "RR-7", ""]
+["Build n code parser.", "Build n code parser", "conversation", null, ""]
+["Add tests.", "Add tests", "inspect_ticket", "GEN-0123", "ticket_reference"]
 "#;
 
 #[test]
-fn summaries_titles_and_actions_match_python() {
-    let Some(python) = python() else { return };
-    let root = TempRoot::new("command-actions");
-    let commands = json::dumps(&Value::List(
-        COMMANDS.iter().map(|text| Value::from(*text)).collect(),
-    ));
-    let expected = run_python(&python, &root.path, PYTHON, &[&commands]);
+fn summaries_titles_and_actions_are_recorded() {
     let actual: Vec<String> = COMMANDS
         .iter()
         .map(|text| {
@@ -58,7 +57,7 @@ fn summaries_titles_and_actions_match_python() {
             ]))
         })
         .collect();
-    assert_eq!(actual, expected.lines().collect::<Vec<_>>());
+    assert_eq!(actual, EXPECTED.trim().lines().collect::<Vec<_>>());
 }
 
 #[test]

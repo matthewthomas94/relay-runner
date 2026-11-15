@@ -15,7 +15,7 @@ import Foundation
 /// key, and the daemon resolves a keyed mutation against that session's spool
 /// and records only (RR-399).
 ///
-/// `services/voice_bridge.py` resolves the same file names from
+/// The relay-rs bridge resolves the same file names from
 /// `RELAY_SESSION_SPOOL_DIR`, falling back to `/tmp` like `legacy`.
 struct VoiceSessionSpool: Equatable {
     static let rootDirectory = "/tmp/relay-sessions"

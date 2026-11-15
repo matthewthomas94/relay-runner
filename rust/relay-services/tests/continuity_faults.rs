@@ -1,10 +1,10 @@
-//! The daemon half of `services/continuity_fault_harness.py`'s fault matrix
-//! (RR-499): every fault case runs detector → agent lane → component-owned
-//! broker → report, for Codex and Claude continuity agents alike. A restored
-//! case runs each fixed recovery action at most once; an unresolved one
-//! leaves exactly one privacy-safe report with a reviewable draft. The
-//! harness's bridge half (intent inbox, resume, speech) belongs to the voice
-//! bridge in relay-rs and is not repeated here.
+//! The daemon half of the continuity fault matrix (RR-499): every fault case
+//! runs detector → agent lane → component-owned broker → report, for Codex
+//! and Claude continuity agents alike. A restored case runs each fixed
+//! recovery action at most once; an unresolved one leaves exactly one
+//! privacy-safe report with a reviewable draft. The matrix's bridge half
+//! (intent inbox, resume, speech) belongs to the voice bridge in relay-rs and
+//! is not repeated here.
 
 mod common;
 
@@ -404,8 +404,8 @@ fn every_fault_restores_or_escalates_without_duplicate_effects() {
                     "{name}: {key}"
                 );
             }
-            // The lane already dropped the private fields, as in Python, so the
-            // report it hands over has nothing left to redact.
+            // The lane already dropped the private fields, so the report
+            // it hands over has nothing left to redact.
             assert_eq!(report.get("redaction_count").unwrap().py_int(), Some(0));
             let proposals = report.get("proposals").unwrap().as_list().unwrap();
             assert_eq!(proposals.len(), 1);

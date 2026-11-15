@@ -1,5 +1,5 @@
-//! Shared by the integration tests: temporary roots, git repositories, the
-//! repository's goldens and services, and a Python that can import them.
+//! Shared by the integration tests: temporary roots, git repositories and the
+//! repository's goldens.
 //!
 //! Each test file declares `mod common;` and uses what it needs.
 
@@ -16,10 +16,6 @@ pub fn repo_root() -> PathBuf {
         .join("../..")
         .canonicalize()
         .expect("repository root")
-}
-
-pub fn services() -> PathBuf {
-    repo_root().join("services")
 }
 
 /// `tests/contract/golden/orchestrator/<name>`.
@@ -115,57 +111,4 @@ pub fn make_repo(path: &Path) -> PathBuf {
         ],
     );
     path.canonicalize().unwrap()
-}
-
-/// A Python 3.10 or newer that can import `services/`, or `None` (with the
-/// reason on stderr). `RELAY_SERVICES_PYTHON` names one; otherwise
-/// Homebrew's, then `python3` on `PATH`.
-pub fn python() -> Option<PathBuf> {
-    let candidates: Vec<PathBuf> = match std::env::var_os("RELAY_SERVICES_PYTHON") {
-        Some(configured) => vec![PathBuf::from(configured)],
-        None => vec![
-            PathBuf::from("/opt/homebrew/bin/python3"),
-            PathBuf::from("python3"),
-        ],
-    };
-    for candidate in candidates {
-        let probe = Command::new(&candidate)
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .arg("-c")
-            .arg(
-                "import sys; sys.path.insert(0, sys.argv[1]); \
-                 assert sys.version_info >= (3, 10); import orchestrator",
-            )
-            .arg(services())
-            .output();
-        if probe.is_ok_and(|output| output.status.success()) {
-            return Some(candidate);
-        }
-    }
-    eprintln!("skipping: no Python 3.10+ that imports services/ (set RELAY_SERVICES_PYTHON)");
-    None
-}
-
-/// Runs `script` with `services/` first on `sys.path`, `arguments` as
-/// `sys.argv[1:]`, `HOME` at `home` and the git identity above. Panics with
-/// stderr when it fails; returns stdout.
-pub fn run_python(python: &Path, home: &Path, script: &str, arguments: &[&str]) -> String {
-    let prelude = "import sys; sys.path.insert(0, sys.argv.pop(1))\n";
-    let output = Command::new(python)
-        .arg("-c")
-        .arg(format!("{prelude}{script}"))
-        .arg(services())
-        .args(arguments)
-        .env("HOME", home)
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .envs(GIT_IDENTITY)
-        .stdin(Stdio::null())
-        .output()
-        .expect("run python");
-    assert!(
-        output.status.success(),
-        "python failed:\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).expect("utf-8 output")
 }

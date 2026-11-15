@@ -266,7 +266,7 @@ final class OnboardingIntroTests: XCTestCase {
             setAgentProvider: { providerWrites.append($0) },
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
-            makeVenvInstaller: { installer },
+            makeSetupInstaller: { installer },
             runtimeAlreadyInstalled: { _ in false },
             isAgentAuthenticated: { _ in false },
             runtimePollInterval: 0.01,
@@ -301,7 +301,7 @@ final class OnboardingIntroTests: XCTestCase {
             flagURLs: flagURLs,
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
-            makeVenvInstaller: { installers.removeFirst() },
+            makeSetupInstaller: { installers.removeFirst() },
             runtimeAlreadyInstalled: { _ in false },
             isAgentAuthenticated: { _ in false },
             runtimePollInterval: 0.01,
@@ -336,7 +336,7 @@ final class OnboardingIntroTests: XCTestCase {
                 getWorkingDirectory: { "/Users/example/current" },
                 permissionStatus: { _ in .granted },
                 makeIntroController: { intro },
-                makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+                makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
                 runtimeAlreadyInstalled: { _ in false },
                 isAgentAuthenticated: { _ in false },
                 openAgentLoginInTerminal: {
@@ -389,7 +389,7 @@ final class OnboardingIntroTests: XCTestCase {
             getWorkingDirectory: { "/Users/example/current" },
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
-            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
             runtimeAlreadyInstalled: { _ in false },
             isAgentAuthenticated: { _ in verified },
             refreshAgentReadiness: { _, completion in
@@ -451,7 +451,7 @@ final class OnboardingIntroTests: XCTestCase {
             getWorkingDirectory: { "/Users/example/current" },
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
-            makeVenvInstaller: { installer },
+            makeSetupInstaller: { installer },
             runtimeAlreadyInstalled: { _ in false },
             isAgentAuthenticated: { _ in true },
             openAgentLoginInTerminal: {
@@ -490,7 +490,7 @@ final class OnboardingIntroTests: XCTestCase {
             getWorkingDirectory: { "/Users/example/current" },
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
-            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
             runtimeAlreadyInstalled: { _ in false },
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
@@ -530,7 +530,7 @@ final class OnboardingIntroTests: XCTestCase {
             usesProjectRegistryV2: true,
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
-            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
             runtimeAlreadyInstalled: { _ in false },
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
@@ -573,7 +573,7 @@ final class OnboardingIntroTests: XCTestCase {
             usesProjectRegistryV2: true,
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
-            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
             runtimeAlreadyInstalled: { _ in true },
             isAgentAuthenticated: { _ in true },
             introAdvanceDelay: 0,
@@ -633,7 +633,7 @@ final class OnboardingIntroTests: XCTestCase {
             },
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
-            makeVenvInstaller: { installer },
+            makeSetupInstaller: { installer },
             runtimeAlreadyInstalled: { _ in false },
             isAgentAuthenticated: { _ in false },
             openAgentLoginInTerminal: {
@@ -688,7 +688,7 @@ final class OnboardingIntroTests: XCTestCase {
                 flagURLs: OnboardingFlagURLs.testURLs(in: directory),
                 permissionStatus: { _ in .granted },
                 makeIntroController: { intro },
-                makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+                makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
                 runtimeAlreadyInstalled: { _ in false },
                 isAgentAuthenticated: { _ in authenticated },
                 refreshAgentReadiness: { _, completion in
@@ -745,7 +745,7 @@ final class OnboardingIntroTests: XCTestCase {
             },
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
-            makeVenvInstaller: { installer },
+            makeSetupInstaller: { installer },
             runtimeAlreadyInstalled: { _ in false },
             isAgentAuthenticated: { _ in authenticated },
             openAgentLoginInTerminal: { _ in
@@ -1158,7 +1158,7 @@ final class OnboardingIntroTests: XCTestCase {
             setWorkingDirectory: { _ in },
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
-            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
@@ -1212,7 +1212,7 @@ final class OnboardingIntroTests: XCTestCase {
             },
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
-            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
             runtimeAlreadyInstalled: { _ in false },
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
@@ -1282,7 +1282,7 @@ final class OnboardingIntroTests: XCTestCase {
             setFirstRunExperienceActive: { events.append("firstRun:\($0)") },
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
-            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
             runtimeAlreadyInstalled: { _ in false },
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
@@ -1345,7 +1345,7 @@ final class OnboardingIntroTests: XCTestCase {
             setFirstRunExperienceActive: { events.append("firstRun:\($0)") },
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
-            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
             runtimeAlreadyInstalled: { _ in false },
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
@@ -1405,7 +1405,7 @@ final class OnboardingIntroTests: XCTestCase {
             setFirstRunExperienceActive: { events.append("firstRun:\($0)") },
             permissionStatus: { _ in .granted },
             makeIntroController: { presenterFactory.makePresenter() },
-            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
             runtimeAlreadyInstalled: { _ in false },
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
@@ -1503,7 +1503,7 @@ final class OnboardingIntroTests: XCTestCase {
             setWorkingDirectory: { workingDirectoryWrites.append($0) },
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
-            makeVenvInstaller: { installer },
+            makeSetupInstaller: { installer },
             runtimeAlreadyInstalled: { _ in false },
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
@@ -1545,7 +1545,7 @@ final class OnboardingIntroTests: XCTestCase {
             setWorkingDirectory: { workingDirectoryWrites.append($0) },
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
-            makeVenvInstaller: { installer },
+            makeSetupInstaller: { installer },
             runtimeAlreadyInstalled: { _ in false },
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
@@ -1585,7 +1585,7 @@ final class OnboardingIntroTests: XCTestCase {
             setWorkingDirectory: { workingDirectoryWrites.append($0) },
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
-            makeVenvInstaller: { installer },
+            makeSetupInstaller: { installer },
             runtimeAlreadyInstalled: { _ in false },
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
@@ -1653,7 +1653,7 @@ final class OnboardingIntroTests: XCTestCase {
             setOnboardingNotchOverrideActive: { notchOverrideStates.append($0) },
             permissionStatus: { _ in .denied },
             makeIntroController: { intro },
-            makeVenvInstaller: { installer },
+            makeSetupInstaller: { installer },
             runtimeAlreadyInstalled: { _ in false },
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
@@ -1785,7 +1785,7 @@ final class OnboardingIntroTests: XCTestCase {
             setFirstRunExperienceActive: { firstRunExperienceStates.append($0) },
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
-            makeVenvInstaller: { installer },
+            makeSetupInstaller: { installer },
             runtimeAlreadyInstalled: { _ in false },
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
@@ -1876,7 +1876,7 @@ final class OnboardingIntroTests: XCTestCase {
             setFirstRunExperienceActive: { firstRunExperienceStates.append($0) },
             permissionStatus: { statuses[$0] ?? .denied },
             makeIntroController: { resumedIntro },
-            makeVenvInstaller: { installer },
+            makeSetupInstaller: { installer },
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
@@ -2013,7 +2013,7 @@ final class OnboardingIntroTests: XCTestCase {
                 defer { introIndex += 1 }
                 return intros[introIndex]
             },
-            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
@@ -2690,7 +2690,7 @@ final class OnboardingIntroTests: XCTestCase {
             requiresParentPermissionGuidance: false,
             parentPermissionsReviewed: false,
             permissionStatus: { _ in .granted },
-            venvInstalled: true,
+            servicesInstalled: true,
             agentSignedIn: true,
             fullFlowInitialStep: .agentChoice
         )
@@ -2845,7 +2845,7 @@ final class OnboardingIntroTests: XCTestCase {
             setWorkingDirectory: { _ in },
             permissionStatus: { _ in .granted },
             makeIntroController: { intro },
-            makeVenvInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
             isAgentAuthenticated: { _ in true },
             runtimePollInterval: 0.01,
             introAdvanceDelay: 0,
@@ -3132,11 +3132,11 @@ private final class DeferredDismissIntroPresenter: OnboardingIntroPresenting {
 
 private final class FakeRuntimeInstaller: OnboardingRuntimeInstalling {
     private(set) var installProviders: [GeneralConfig.AgentProvider?] = []
-    private let installStatus: VenvInstaller.Status
-    var status: VenvInstaller.Status
+    private let installStatus: RelaySetupInstaller.Status
+    var status: RelaySetupInstaller.Status
 
-    init(status: VenvInstaller.Status = .idle,
-         installStatus: VenvInstaller.Status = .idle) {
+    init(status: RelaySetupInstaller.Status = .idle,
+         installStatus: RelaySetupInstaller.Status = .idle) {
         self.status = status
         self.installStatus = installStatus
     }

@@ -255,7 +255,7 @@ final class SupportDiagnosticsTests: XCTestCase {
                 XCTAssertFalse(launchSteps.contains("bridge_readiness ready"))
                 XCTAssertTrue(script.contains("relay_record_support_event provider provider_readiness spawned"))
                 XCTAssertEqual(
-                    launchSteps.contains("--venv-only"),
+                    launchSteps.contains("--setup-only"),
                     delivery == .agentSkill
                 )
                 XCTAssertFalse(script.contains("working_directory\":"))
@@ -299,17 +299,10 @@ final class SupportDiagnosticsTests: XCTestCase {
                 at: root.appendingPathComponent("scripts"),
                 withIntermediateDirectories: true
             )
-            try FileManager.default.createDirectory(
-                at: root.appendingPathComponent("services"),
-                withIntermediateDirectories: true
-            )
-            // Claude launches pass the subscription-only gate before the bridge starts.
-            try FileManager.default.copyItem(
-                at: URL(fileURLWithPath: #filePath)
-                    .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-                    .appendingPathComponent("services/claude_subscription.py"),
-                to: root.appendingPathComponent("services/claude_subscription.py")
-            )
+            // Claude launches pass the subscription-only gate before the bridge
+            // starts; this fake relay-rs reports a verified subscription.
+            let relayRS = root.appendingPathComponent("relay-rs")
+            try writeExecutable("#!/bin/bash\nexit 0\n", to: relayRS)
             try writeExecutable("#!/bin/bash\nexit 0\n", to: bridge)
             try writeExecutable(
                 "#!/bin/bash\n[ \"$1\" = auth ] && echo '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"apiProvider\":\"firstParty\",\"subscriptionType\":\"max\"}'\n[ \"$1\" = -c ] && echo 'Logged in using ChatGPT'\nexit 0\n",
@@ -327,7 +320,8 @@ final class SupportDiagnosticsTests: XCTestCase {
                 voiceDelivery: .agentSkill,
                 homeDirectory: root,
                 resolvedCodexModel: provider == .codex ? "gpt-6-sol" : nil,
-                resolvedCodexEffort: provider == .codex ? "medium" : nil
+                resolvedCodexEffort: provider == .codex ? "medium" : nil,
+                relayRS: relayRS.path
             )
             try writeExecutable(script, to: launcher)
 
@@ -357,24 +351,22 @@ final class SupportDiagnosticsTests: XCTestCase {
         }
     }
 
-    func testSwiftAndPythonWritersShareCrossProcessLock() throws {
+    /// RR-487: the launcher's shell writer is the other writer; the Rust
+    /// services take the same `.journal.lock`.
+    func testSwiftAndShellWritersShareCrossProcessLock() throws {
         let root = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let diagnostics = RelayDiagnostics(
             directory: root,
             appSessionID: "11111111-1111-4111-8111-111111111111"
         )
-        let repository = FileManager.default.currentDirectoryPath
-        let python = """
-        from services.support_diagnostics import record_event
-        record_event(process="orchestrator", phase="orchestrator_launch", outcome="started")
-        """
+        let shell = ProcessManager.supportDiagnosticsPreamble()
+            + "\nrelay_record_support_event provider provider_readiness spawned\n"
         let processes = (0..<20).map { _ -> Process in
             let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = ["python3", "-c", python]
+            process.executableURL = URL(fileURLWithPath: "/bin/bash")
+            process.arguments = ["-c", shell]
             process.environment = ProcessInfo.processInfo.environment.merging([
-                "PYTHONPATH": repository,
                 "RELAY_DIAGNOSTICS_DIR": root.path,
                 "RELAY_APP_SESSION_ID": "11111111-1111-4111-8111-111111111111",
                 "RELAY_CORRELATION_ID": "22222222-2222-4222-8222-222222222222",

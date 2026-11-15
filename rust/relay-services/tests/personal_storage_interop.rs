@@ -1,43 +1,17 @@
-//! A Rust and a Python daemon take turns on one personal-storage catalog
-//! and cache (RR-499).
-//!
-//! The Python side is `services/personal_file_storage.py` on the same state
-//! root. Files either side caches, discovers, pins or sets policy for read
-//! back through the other: references, the file list, content and status.
-//! The database's own size moves as each process opens and checkpoints its
-//! WAL, so status is compared without the byte counts that include it.
+//! Personal storage on one state root (RR-499): files cached, discovered,
+//! pinned or given a policy read back through a store reopened on the same
+//! root: references, the file list, content and status. The database's own
+//! size moves as each store opens and checkpoints its WAL, so status is
+//! compared without the byte counts that include it.
 
 mod common;
 
 use std::fs;
-use std::path::Path;
 
 use relay_intents::json::{self, Dict, Value};
 use relay_services::personal_storage::{PersonalFileStorage, handle_personal_storage_request};
 
-use common::{TempRoot, python, run_python};
-
-const PYTHON_STORAGE: &str = r##"
-import base64, json
-from personal_file_storage import PersonalFileStorage, StorageError
-root, action = sys.argv[1], sys.argv[2]
-storage = PersonalFileStorage(root)
-if action == "write":
-    storage.put("task-1", "tasks/task-1/output.md", b"# Output\n", category="tasks",
-                metadata={"task": "GEN-1"}, active=False, approved=True)
-    storage.put("task-1", "tasks/task-1/output.md", b"# Output v2\n", category="tasks",
-                metadata={"task": "GEN-1"})
-    storage.pin("task-1", True)
-    storage.policy(budget_bytes=64 * 1024 * 1024, retention_days=3)
-out = {"files": storage.list_files(""), "status": storage.status()}
-out["contents"] = {row["artifact_id"]: base64.b64encode(storage.read(row["artifact_id"])).decode()
-                   for row in out["files"]["files"]}
-try:
-    storage.configure(confirm=False)
-except StorageError as error:
-    out["configure"] = [error.state, str(error)]
-print(json.dumps(out, sort_keys=True))
-"##;
+use common::TempRoot;
 
 /// The byte counts that do not include the database file.
 const STABLE_USAGE: [&str; 5] = [
@@ -65,20 +39,7 @@ fn stable(status: &Value) -> Value {
     Value::Dict(status)
 }
 
-fn python_view(python: &Path, root: &TempRoot, action: &str) -> Dict {
-    let state_root = root.state_root();
-    let output = run_python(
-        python,
-        &state_root,
-        PYTHON_STORAGE,
-        &[&state_root.to_string_lossy(), action],
-    );
-    json::parse(output.trim())
-        .and_then(|value| value.as_dict().cloned())
-        .expect("python JSON")
-}
-
-fn rust_view(storage: &PersonalFileStorage) -> Dict {
+fn view(storage: &PersonalFileStorage) -> Dict {
     let files = storage.list_files("").unwrap();
     let mut contents = Dict::new();
     for file in files.get("files").and_then(Value::as_list).unwrap() {
@@ -120,8 +81,8 @@ fn rust_view(storage: &PersonalFileStorage) -> Dict {
     view
 }
 
-/// The file list without `accessed`, which each side's `read()` moves on
-/// after the other listed.
+/// The file list without `accessed`, which each `read()` moves on after the
+/// list was taken.
 fn listed(view: &Dict) -> Value {
     let files = view
         .get("files")
@@ -141,31 +102,30 @@ fn listed(view: &Dict) -> Value {
     )
 }
 
-fn assert_same(rust: &Dict, python: &Dict, what: &str) {
+fn assert_same(written: &Dict, reopened: &Dict, what: &str) {
     assert_eq!(
-        json::dumps_sorted(&listed(rust)),
-        json::dumps_sorted(&listed(python)),
+        json::dumps_sorted(&listed(written)),
+        json::dumps_sorted(&listed(reopened)),
         "{what}: files differ"
     );
     for key in ["contents", "configure"] {
         assert_eq!(
-            json::dumps_sorted(rust.get(key).unwrap()),
-            json::dumps_sorted(python.get(key).unwrap()),
+            json::dumps_sorted(written.get(key).unwrap()),
+            json::dumps_sorted(reopened.get(key).unwrap()),
             "{what}: {key} differs"
         );
     }
     assert_eq!(
-        json::dumps_sorted(&stable(rust.get("status").unwrap())),
-        json::dumps_sorted(&stable(python.get("status").unwrap())),
+        json::dumps_sorted(&stable(written.get("status").unwrap())),
+        json::dumps_sorted(&stable(reopened.get("status").unwrap())),
         "{what}: status differs"
     );
 }
 
 #[test]
-fn files_and_catalog_round_trip_between_python_and_rust() {
-    let Some(python) = python() else { return };
+fn files_and_catalog_read_back_through_a_reopened_store() {
     let root = TempRoot::new("personal-files");
-    // A user document and a General task file, discovered by both sides.
+    // A user document and a General task file, discovered on open.
     let documents = root.state_root().join("files/documents/plans");
     fs::create_dir_all(&documents).unwrap();
     fs::write(documents.join("roadmap.md"), "# Roadmap\n").unwrap();
@@ -173,12 +133,45 @@ fn files_and_catalog_round_trip_between_python_and_rust() {
     fs::create_dir_all(&general).unwrap();
     fs::write(general.join("draft.txt"), "draft\n").unwrap();
 
-    let theirs = python_view(&python, &root, "write");
+    // An approved inactive version, then an active one, pinned, with a
+    // policy; a second store on the same root reads the same catalog.
+    let task = json::parse(r#"{"task": "GEN-1"}"#).unwrap();
     let storage = PersonalFileStorage::open(&root.state_root(), None, None).unwrap();
-    assert_same(&rust_view(&storage), &theirs, "Python-written catalog");
-
-    // Rust caches a new version and a note file, pins and sets policy.
     storage
+        .put(
+            "task-1",
+            "tasks/task-1/output.md",
+            b"# Output\n",
+            "tasks",
+            Some(&task),
+            false,
+            Some(true),
+            true,
+        )
+        .unwrap();
+    storage
+        .put(
+            "task-1",
+            "tasks/task-1/output.md",
+            b"# Output v2\n",
+            "tasks",
+            Some(&task),
+            false,
+            None,
+            true,
+        )
+        .unwrap();
+    storage.pin("task-1", true).unwrap();
+    storage
+        .policy(&Value::Int(64 * 1024 * 1024), &Value::Int(3))
+        .unwrap();
+    let ours = view(&storage);
+    drop(storage);
+    let reopened = PersonalFileStorage::open(&root.state_root(), None, None).unwrap();
+    assert_same(&ours, &view(&reopened), "first catalog");
+
+    // A new version and a note file, unpinned, with a new policy.
+    reopened
         .put(
             "task-2",
             "tasks/task-2/report.txt",
@@ -190,15 +183,16 @@ fn files_and_catalog_round_trip_between_python_and_rust() {
             true,
         )
         .unwrap();
-    storage.pin("task-1", false).unwrap();
-    storage
+    reopened.pin("task-1", false).unwrap();
+    reopened
         .policy(&Value::Int(32 * 1024 * 1024), &Value::Int(9))
         .unwrap();
     fs::write(documents.join("roadmap.md"), "# Roadmap v2\n").unwrap();
-    let ours = rust_view(&storage);
-    drop(storage);
-    let theirs = python_view(&python, &root, "read");
-    assert_same(&ours, &theirs, "Rust-written catalog");
+    let ours = view(&reopened);
+    drop(reopened);
+    let again = PersonalFileStorage::open(&root.state_root(), None, None).unwrap();
+    let theirs = view(&again);
+    assert_same(&ours, &theirs, "second catalog");
     let status = theirs.get("status").and_then(Value::as_dict).unwrap();
     assert_eq!(
         status.get("budget_bytes").and_then(Value::py_int),

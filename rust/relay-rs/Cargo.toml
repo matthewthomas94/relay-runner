@@ -12,6 +12,9 @@ relay-intents = { path = "../relay-intents" }
 # Command actions, authorization and the provider gates, shared with the
 # daemon (RR-499).
 relay-services = { path = "../relay-services" }
+# The artifact CLIs (ticket history, rollout, verification and migration) and
+# the pathlib helpers the fresh-install port resolves paths with (RR-487).
+relay-artifacts = { path = "../relay-artifacts" }
 # O_NONBLOCK and ENXIO, for the FIFO the bridge reads.
 libc = "0.2"
 # Bundled SQLite: the hook shares the intent inbox with the Python bridge and

@@ -1,12 +1,12 @@
 # Orchestrator daemon HTTP API
 
-The contract the orchestrator daemon (`services/orchestrator.py`) offers its
+The contract the orchestrator daemon (`relay-orchestrator`, `rust/relay-orchestrator/`) offers its
 clients: the HTTP routes, the files and databases it leaves on disk, the git
 commits it writes, and the switches that run it in isolation. The black-box
-suite in `tests/contract/` checks this document against a running daemon, and
-any replacement daemon (the planned Rust port, RR-448) must pass the same
-suite. Behaviour described here is the reference daemon's behaviour as of
-RR-485, including its quirks; changing it is a separate, deliberate decision.
+suite in `tests/contract/` checks this document against a running daemon; the
+Rust daemon (RR-448, the default since RR-500) passes it. Behaviour described
+here is the Python reference daemon's behaviour as of RR-485, including its
+quirks; changing it is a separate, deliberate decision.
 
 ## Transport
 
@@ -89,7 +89,7 @@ board writer`.
 Callers name the non-test code that sends the request: **Board** is
 `Sources/relay-runner/Board/OrchestratorClient.swift`, **MCP** is
 `Sources/relay-orchestrator-mcp/Tools.swift`, **Bridge** is
-`services/voice_bridge.py`, **Settings** is
+`relay-rs bridge` (`rust/relay-rs/src/bridge/`), **Settings** is
 `Sources/relay-runner/Settings/PersonalFileStorageSettingsView.swift`,
 **Worker prompt** is a URL the daemon writes into a worker's prompt. Routes
 marked **none** have no non-test caller today.
@@ -173,9 +173,10 @@ marked **none** have no non-test caller today.
 | POST | `/v1/personal-storage/pin` | 200 | none |
 | POST | `/v1/personal-storage/retrieve` | 200 | none |
 
-`tests/contract/orchestrator_route_inventory.py` reads `Handler._route` and
-`handle_personal_storage_request` with `ast` and the suite fails when either
-gains, loses or renames a route this table does not match. The suite also
+`tests/contract/orchestrator_route_inventory.py` reads this table and the
+suite fails when a route is listed twice or a path parameter is not in the
+`<name>` form. (Until RR-487 it also compared the table with the Python
+daemon's handlers.) The suite also
 sends every row to the running daemon with empty input and compares the
 status and error with `golden/orchestrator/routes/empty-input.json`.
 
@@ -531,10 +532,7 @@ the Rust `relay-artifacts` crate (RR-494).
 through the crate's test driver (`rust/relay-artifacts/examples/artifacts_driver.rs`,
 or `RELAY_ARTIFACTS_DRIVER`) and compares the commit with its golden as above.
 It skips when the driver is not built (`cargo test` in `rust/`) and while
-goldens are being regenerated. `tests/test_relay_artifacts_parity.py` makes the
-same commits with the Python store and with the crate, with pinned commit
-dates, and requires identical commit ids, including when the two take turns on
-one data root.
+goldens are being regenerated.
 
 ## Running the suite
 
@@ -542,9 +540,13 @@ one data root.
 /opt/homebrew/bin/python3 -m unittest discover -s tests/contract -p 'test_orchestrator_contract_*.py'
 ```
 
-`RELAY_ORCHESTRATOR_CMD` replaces the daemon command (default: this Python
-with `services/orchestrator.py`; the suite appends `--config <file>`), and
-`RELAY_ARTIFACT_MIGRATION_CMD` the board migration command. Timeouts:
+The suite runs `rust/target/debug/relay-orchestrator` (the folder is
+`RELAY_RUST_BIN_DIR` when set; build it with `cargo build` in `rust/`) and
+skips a case when it is missing. `RELAY_ORCHESTRATOR_CMD` replaces the daemon
+command (the suite appends `--config <file>`), and
+`RELAY_ARTIFACT_MIGRATION_CMD` the board migration command (default
+`relay-rs artifact-migrate` from the same folder). Quote a path with a space
+in it: the suite splits both like a shell. Timeouts:
 `RELAY_ORCHESTRATOR_START_TIMEOUT` (30 s) and `RELAY_ORCHESTRATOR_WAIT_TIMEOUT`
 (60 s).
 
@@ -559,30 +561,10 @@ route in the index from the crates of the earlier parts (`relay-artifacts`,
 
 **Cut-over (RR-500).** The app bundle ships the release build as
 `Contents/MacOS/relay-orchestrator`, and `scripts/relay-orchestrator --run`
-(what the LaunchAgent runs) execs it by default. For one release
-`RELAY_ORCHESTRATOR_RUNTIME=python`, or a build without the binary such as a
-source checkout, runs `services/orchestrator.py` instead; the daemon's stderr
-(`/tmp/relay_orchestrator.err`) names the runtime each launch used.
-`test_orchestrator_contract_daemon_swap.py` checks the swap in both
-directions, for Claude and Codex workers: one daemon dispatches and merges a
-legacy-board and an artifact-board run and creates a session and a note, then
-the other starts on the same data root, serves all of it with every database
-schema unchanged, and continues the run ids.
-
-`test_orchestrator_contract_rust_daemon.py` repeats every daemon case class
-of the suite against `rust/target/debug/relay-orchestrator` (or
-`RELAY_RUST_ORCHESTRATOR`), and the RR-495 `RustMigrated*` classes with a
-Rust migration and a Rust daemon on one repository. It skips when the binary
-is not built. To run the whole suite against the binary instead, quote the
-path: the suite splits `RELAY_ORCHESTRATOR_CMD` like a shell, and the
-Application Support worktrees have a space in their path.
-
-```bash
-(cd rust && cargo build -p relay-orchestrator)
-/opt/homebrew/bin/python3 -m unittest discover -s tests/contract -p 'test_orchestrator_contract_rust_daemon.py'
-RELAY_ORCHESTRATOR_CMD="'$PWD/rust/target/debug/relay-orchestrator'" \
-  /opt/homebrew/bin/python3 -m unittest discover -s tests/contract -p 'test_orchestrator_contract_*.py'
-```
+(what the LaunchAgent runs) execs it. RR-487 removed the Python daemon
+(`services/orchestrator.py`) and its `RELAY_ORCHESTRATOR_RUNTIME=python`
+rollback; the goldens it recorded stay the contract, and the Rust daemon reads
+the databases and files an earlier release's Python daemon left unchanged.
 
 **Execution (RR-498).** The Rust daemon creates the worktree or spike
 snapshot, launches the Claude or Codex worker with the Python daemon's
@@ -600,5 +582,5 @@ Smaller differences, none visible to the clients:
 - Support diagnostics (`orchestrator_launch` events in `RELAY_DIAGNOSTICS_DIR`)
   are not recorded yet.
 - Daemon log lines that Python prints as a `dict` repr are printed as JSON.
-- The opt-in sampling profiler (`RELAY_ORCHESTRATOR_PROFILE`) profiles Python
-  stacks, so only the Python daemon has it.
+- The Python daemon's opt-in sampling profiler (`RELAY_ORCHESTRATOR_PROFILE`)
+  has no Rust counterpart.

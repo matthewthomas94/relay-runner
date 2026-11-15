@@ -26,7 +26,7 @@ final class ProjectWorkStyleTests: XCTestCase {
         XCTAssertEqual(SessionWorkStyleStore.load(from: file), .auto)
     }
 
-    func testTheThreeStylesMatchThePythonClassifier() {
+    func testTheThreeStylesMatchTheBridgeClassifier() {
         XCTAssertEqual(ProjectWorkStyle.allCases.map(\.rawValue), ["auto", "direct", "orchestrated"])
     }
 }

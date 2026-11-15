@@ -1,6 +1,6 @@
 //! General tasks (RR-499): the RR-485 contract case at library level, the
-//! real worker process path, cancellation, and interop with
-//! `services/general_work.py` on one state root.
+//! real worker process path, cancellation, the worker result contract and
+//! prompt, and a state root read back by a second store.
 
 mod common;
 
@@ -17,7 +17,7 @@ use relay_services::general_work::{
 };
 use relay_services::{Dict, Result, Value};
 
-use common::{TempRoot, python, run_python};
+use common::TempRoot;
 
 fn text(value: &str) -> Value {
     Value::Str(value.to_string())
@@ -420,25 +420,85 @@ fn result_cases(root: &Path) -> Vec<(String, PathBuf)> {
     cases
 }
 
-const PYTHON_RESULTS: &str = r##"
-import json, sys
-from pathlib import Path
-from general_work import GeneralWorkStore
-task = json.loads(sys.argv[1])
-report = {}
-for name, workspace in json.loads(sys.argv[2]):
-    try:
-        result, manifest = GeneralWorkStore._validate_result(GeneralWorkStore, task, Path(workspace))
-        report[name] = {"result": result, "manifest": manifest}
-    except ValueError as error:
-        report[name] = {"error": str(error)}
-report["prompt"] = GeneralWorkStore._prompt(task)
-print(json.dumps(report))
-"##;
+/// Each result-contract case and the refusal it gets (`None` accepts it).
+const RESULT_OUTCOMES: &[(&str, Option<&str>)] = &[
+    (
+        "missing",
+        Some("Worker did not produce a valid bounded result.json"),
+    ),
+    ("not-object", Some("Worker result needs a summary")),
+    ("blank-summary", Some("Worker result needs a summary")),
+    (
+        "no-evidence",
+        Some("Worker result needs evidence for each acceptance criterion"),
+    ),
+    (
+        "wrong-criteria",
+        Some("Worker result must cover every acceptance criterion exactly once"),
+    ),
+    (
+        "number-criterion",
+        Some("Worker result must cover every acceptance criterion exactly once"),
+    ),
+    (
+        "no-artifacts",
+        Some("Worker result must name at least one local artifact"),
+    ),
+    (
+        "parent",
+        Some("Worker artifact path is outside its output contract"),
+    ),
+    (
+        "absolute",
+        Some("Worker artifact path is outside its output contract"),
+    ),
+    (
+        "reserved",
+        Some("Worker artifact path is outside its output contract"),
+    ),
+    (
+        "absent",
+        Some("Worker artifact is missing or outside its managed run"),
+    ),
+    ("duplicate", Some("Worker artifacts must be unique")),
+    (
+        "directory",
+        Some("Worker artifact is missing or outside its managed run"),
+    ),
+    ("valid", None),
+    ("symlink", Some("Worker artifacts cannot contain symlinks")),
+    (
+        "symlink-parent",
+        Some("Worker artifacts cannot contain symlinks"),
+    ),
+    (
+        "result-link",
+        Some("Worker did not produce a valid bounded result.json"),
+    ),
+];
+
+/// The `valid` case's manifest.
+const VALID_MANIFEST: &str = r#"[{"path": "output.md", "size_bytes": 8, "sha256": "c47fffce7ab6215da4633829b59605e9bdf14fb3d49b6ac0fe8105e639b9c4f9"}, {"path": "./sub//note.txt", "size_bytes": 4, "sha256": "edb465624291e4053c6c5ea4b7eb320dec773e10a57d26b95dcf0564f8e310f8"}]"#;
+
+/// The worker prompt for the result-contract task.
+const RESULT_PROMPT: &str = r#"
+You are a Relay Runner General task worker. Work only on this bounded task in the current managed output directory. This is not a source repository; do not initialize Git, edit project boards, dispatch workers, or commit. Preserve unrelated files and accepted work. Task classification does not authorize sending messages, publishing, purchasing, deleting existing user data or other external effects. If completing the task needs an effect not explicitly authorized in the description, stop with an exact blocker instead of doing it. Create local drafts for review. Do not copy credentials, machine logs or provider transcripts into artifacts. Do not change your task's canonical lifecycle.
+
+{
+  "id": "GEN-0123456789ABCDEF",
+  "title": "Draft \u00e9",
+  "description": "Write it.",
+  "acceptance_criteria": [
+    "A draft exists.",
+    "B"
+  ]
+}
+
+When finished, write result.json containing {"summary":"...", "criteria":[{"criterion":"exact acceptance criterion", "evidence":"specific result and validation"}], "artifacts":["relative/output.md"]}. Cover each criterion exactly once. Include all deliverable files, not worker.log or result.json. Outputs remain pending PM review. If blocked, exit without a success result and write a local blocker.md explaining the resume path.
+"#;
 
 #[test]
-fn result_contract_and_prompt_match_python() {
-    let Some(python) = python() else { return };
+fn result_contract_and_prompt() {
     let root = TempRoot::new("general-results");
     let cases = result_cases(&root.path);
     let task = json::parse(
@@ -449,59 +509,29 @@ fn result_contract_and_prompt_match_python() {
     let Value::Dict(task) = task else {
         unreachable!()
     };
-    let listed = Value::List(
-        cases
-            .iter()
-            .map(|(name, path)| list(&[name, &path.to_string_lossy()]))
-            .collect(),
-    );
-    let theirs = run_python(
-        &python,
-        &root.path,
-        PYTHON_RESULTS,
-        &[
-            &json::dumps(&Value::Dict(task.clone())),
-            &json::dumps(&listed),
-        ],
-    );
-    let Some(Value::Dict(theirs)) = json::parse(theirs.trim()) else {
-        panic!("Python report")
-    };
-    for (name, workspace) in &cases {
-        let ours = match validate_result(&task, workspace) {
-            Ok((result, manifest)) => {
-                let mut answer = Dict::new();
-                answer.insert("result", Value::Dict(result));
-                answer.insert(
-                    "manifest",
-                    Value::List(manifest.into_iter().map(Value::Dict).collect()),
+    assert_eq!(cases.len(), RESULT_OUTCOMES.len());
+    for ((name, workspace), (expected_name, refusal)) in cases.iter().zip(RESULT_OUTCOMES) {
+        assert_eq!(name, expected_name);
+        match (validate_result(&task, workspace), refusal) {
+            (Ok((result, manifest)), None) => {
+                assert_eq!(
+                    json::dumps(result.get("artifacts").unwrap()),
+                    r#"["output.md", "./sub//note.txt"]"#,
+                    "case {name}"
                 );
-                answer
+                assert_eq!(
+                    json::dumps(&Value::List(
+                        manifest.into_iter().map(Value::Dict).collect()
+                    )),
+                    VALID_MANIFEST,
+                    "case {name}"
+                );
             }
-            Err(error) => {
-                let mut answer = Dict::new();
-                answer.insert("error", error.message);
-                answer
-            }
-        };
-        assert_eq!(
-            json::dumps(&Value::Dict(ours)),
-            json::dumps(theirs.get(name).unwrap()),
-            "case {name}"
-        );
+            (Err(error), Some(refusal)) => assert_eq!(error.message, *refusal, "case {name}"),
+            (outcome, _) => panic!("case {name}: {:?}", outcome.map(|_| ()).err()),
+        }
     }
-    let valid = theirs.get("valid").and_then(Value::as_dict).unwrap();
-    assert_eq!(
-        valid
-            .get("manifest")
-            .and_then(Value::as_list)
-            .map(<[Value]>::len),
-        Some(2)
-    );
-    assert_eq!(
-        Some(prompt(&task).as_str()),
-        theirs.get("prompt").and_then(Value::as_str)
-    );
+    assert_eq!(prompt(&task), RESULT_PROMPT.strip_prefix('\n').unwrap());
     // `_manifest` refuses anything but a non-empty list of strings.
     for paths in [Value::Null, list(&[]), Value::List(vec![Value::Int(1)])] {
         assert_eq!(
@@ -511,59 +541,13 @@ fn result_contract_and_prompt_match_python() {
     }
 }
 
-const PYTHON_WRITES: &str = r##"
-import json, sys, time
-from pathlib import Path
-from general_work import GeneralWorkStore
-root = Path(sys.argv[1])
-def runner(command, workspace, prompt, run_id, cancelled):
-    (workspace / "output.md").write_text("# Draft\n")
-    (workspace / "result.json").write_text(sys.argv[2])
-    return 0
-store = GeneralWorkStore(root, command_factory=lambda provider: ("codex", ["codex"]), runner=runner)
-task = store.create(title="From Python", description="Write it.",
-                    acceptance_criteria=["A draft exists."], request_id="py-1")["task"]
-store.dispatch(task["id"])
-deadline = time.time() + 20
-while store.get(task["id"])["task"]["status"] != "awaiting_review":
-    assert time.time() < deadline
-    time.sleep(0.02)
-run = store.get(task["id"])["task"]["runs"][-1]
-store.review(task["id"], run_id=run["id"], approve=True, summary="Looks right.")
-print(json.dumps({"id": task["id"], "get": store.get(task["id"]), "list": store.list()}))
-"##;
-
-const PYTHON_READS: &str = r##"
-import json, sys
-from pathlib import Path
-from general_work import GeneralWorkStore
-store = GeneralWorkStore(Path(sys.argv[1]))
-print(json.dumps({"get": store.get(sys.argv[2]), "list": store.list(limit=1)}))
-"##;
-
 #[test]
-fn python_and_rust_share_general_tasks() {
-    let Some(python) = python() else { return };
-    let root = TempRoot::new("general-interop");
-    let state = root.state_root().to_string_lossy().into_owned();
-
-    // Python writes a reviewed task; Rust reads it as Python does.
-    let theirs = run_python(&python, &root.path, PYTHON_WRITES, &[&state, RESULT]);
-    let Some(Value::Dict(theirs)) = json::parse(theirs.trim()) else {
-        panic!("Python report")
-    };
-    let python_task = field(&theirs, "id");
+fn a_reopened_state_root_reads_the_same_general_tasks() {
+    let root = TempRoot::new("general-reopen");
     let work = open(&root.state_root(), Some(Box::new(Drafting)));
-    assert_eq!(
-        json::dumps(&Value::Dict(work.get(&python_task).unwrap())),
-        json::dumps(theirs.get("get").unwrap())
-    );
-    assert_eq!(
-        json::dumps(&Value::Dict(work.list(100).unwrap())),
-        json::dumps(theirs.get("list").unwrap())
-    );
 
-    // Rust writes a task through a requested change; Python reads it.
+    // A task through a requested change; a second store on the same state
+    // root reads it as the first does.
     let task_id = field(&task_of(&create(&work, "rust-1").unwrap()), "id");
     work.dispatch(&task_id, None).unwrap();
     let waiting = wait_for_status(&work, &task_id, "awaiting_review");
@@ -576,20 +560,16 @@ fn python_and_rust_share_general_tasks() {
     )
     .unwrap();
     let ours = work.get(&task_id).unwrap();
-    let read = run_python(&python, &root.path, PYTHON_READS, &[&state, &task_id]);
-    let Some(Value::Dict(read)) = json::parse(read.trim()) else {
-        panic!("Python read")
-    };
+    let listed = work.list(1).unwrap();
+    assert_eq!(field(&task_of(&ours), "status"), "changes_requested");
+
+    let reopened = open(&root.state_root(), None);
     assert_eq!(
-        json::dumps(read.get("get").unwrap()),
+        json::dumps(&Value::Dict(reopened.get(&task_id).unwrap())),
         json::dumps(&Value::Dict(ours))
     );
     assert_eq!(
-        json::dumps(read.get("list").unwrap()),
-        json::dumps(&Value::Dict(work.list(1).unwrap()))
-    );
-    assert_eq!(
-        field(&task_of(&work.get(&task_id).unwrap()), "status"),
-        "changes_requested"
+        json::dumps(&Value::Dict(reopened.list(1).unwrap())),
+        json::dumps(&Value::Dict(listed))
     );
 }

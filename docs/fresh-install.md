@@ -64,8 +64,9 @@ scripts/relay-runner-fresh-install --capture-evidence /tmp/relay-first-run.json 
   --incident-bundle /tmp/relay-support.zip
 ```
 
-The report includes the app identifier/version/manifest digest, Python runtime,
-startup outcome, and the support bundle's filename/size/checksum. Inspect the
+The report includes the app identifier/version/manifest digest, the `relay-rs`
+version that wrote it, the startup outcome, and the support bundle's
+filename/size/checksum. Inspect the
 support bundle before sharing it.
 
 ## Second-Mac clean-user procedure
@@ -88,57 +89,52 @@ A VM snapshot taken before step 1 is an equivalent, faster reset path. Revert
 the snapshot for another first-run pass, but still record physical-Mac checks
 when Gatekeeper, device permissions, or hardware audio behavior are in scope.
 
-## Speech runtime
+## Runtime
 
-Speech runs in `relay-speech`, the Rust speech service the app bundle ships in
-`Contents/MacOS` (RR-481). The voice bridge, the onboarding tutorial voice and
-the Settings voice preview all start it. First-run setup therefore installs
-only `services/requirements.txt` into the services venv, and downloads the two
-Kokoro model files to `~/.local/share/kokoro` over plain HTTPS with `curl`. A
-fresh install no longer installs numpy, onnxruntime, kokoro-onnx or
-huggingface_hub.
+Relay Runner runs no Python (RR-487). Every service is a native binary the app
+bundle ships in `Contents/MacOS`, for Claude and Codex sessions alike, so a Mac
+needs neither Python nor the Xcode Command Line Tools for Relay Runner itself.
+Project and worker features still run `git`; on a Mac without the Command Line
+Tools, macOS offers to install them the first time `git` runs.
 
-For one release, the Python speech service remains available as a fallback.
-Set `RELAY_SPEECH_RUNTIME=python` in the app's environment, then relaunch the
-app and start a session:
+| Binary | Runs |
+| --- | --- |
+| `relay-rs` | The voice bridge (`relay-rs bridge`), the messenger, Relay Remote, the provider hook and reply helper, the Claude subscription gate, Codex model resolution, the harness updater, and the CLIs behind `scripts/relay-ticket-history`, `relay-artifact-*`, `relay-runner-fresh-install` and `relay-work-style` |
+| `relay-speech` | Speech: the voice bridge, the onboarding tutorial voice and the Settings voice preview all start it (RR-481) |
+| `relay-orchestrator` | The orchestrator daemon, run by the `com.relay.orchestrator` LaunchAgent (RR-500) |
 
-```bash
-launchctl setenv RELAY_SPEECH_RUNTIME python
-```
+First-run setup (onboarding, Start Session, or
+`scripts/relay-bridge --setup-only`) downloads the two Kokoro model files to
+`~/.local/share/kokoro` over plain HTTPS with `curl`, installs the Relay skills
+and MCP registrations, and installs the orchestrator LaunchAgent. It creates no
+virtual environment and installs no packages. `scripts/build-dmg.sh` refuses to
+package a bundle that contains a `.py` file.
 
-The next setup run (onboarding, or `scripts/relay-bridge --venv-only`) then
-also installs `services/requirements-python-speech.txt`: numpy, onnxruntime,
-kokoro-onnx and huggingface_hub, with their espeak-ng based phonemiser. Those
-packages are installable only for this fallback. Undo it with
-`launchctl unsetenv RELAY_SPEECH_RUNTIME`. A build without `relay-speech`, such
-as a source checkout, also uses the Python service and needs those packages,
-unless `RELAY_SPEECH_BINARY` names a `relay-speech` built from `rust/`. The
-fallback is removed one release after the Rust service ships.
+The one-release rollback switches `RELAY_HOOK_RUNTIME`, `RELAY_SPEECH_RUNTIME`,
+`RELAY_BRIDGE_RUNTIME`, `RELAY_MESSENGER_RUNTIME`, `RELAY_REMOTE_RUNTIME` and
+`RELAY_ORCHESTRATOR_RUNTIME` are retired and no longer read. If one was set
+with `launchctl setenv`, clear it with `launchctl unsetenv <name>`.
 
-## Voice bridge runtime
+## Upgrading from a release with Python services
 
-The voice bridge runs as `relay-rs bridge`, the Rust bridge the app bundle
-ships in `Contents/MacOS` (RR-493), for Claude and Codex sessions alike. For
-one release, the Python bridge remains available as a rollback. Set
-`RELAY_BRIDGE_RUNTIME=python` in the app's environment, then relaunch the app
-and start a session:
+Releases before RR-487 created a Python virtual environment and could download
+a Python interpreter. On an upgraded Mac, the first setup run of the new
+release (onboarding, the next Start Session, or `relay-orchestrator --install`)
+removes only these Relay-owned folders, and only once no process still runs
+from them:
 
-```bash
-launchctl setenv RELAY_BRIDGE_RUNTIME python
-```
+- `~/Library/Application Support/relay-runner/services/.venv` (and the
+  `services` folder if it is then empty)
+- `~/Library/Application Support/relay-runner/python` and any leftover
+  `python.old` or `.python-stage.*` from an interrupted download
 
-`scripts/relay-bridge` then runs `services/voice_bridge.py`; the bridge log
-(`/tmp/voice_bridge.log`) names the runtime each launch used. Undo it with
-`launchctl unsetenv RELAY_BRIDGE_RUNTIME`. A build without `relay-rs`, such as
-a source checkout, also runs the Python bridge. The switch is independent of
-`RELAY_SPEECH_RUNTIME` and `RELAY_HOOK_RUNTIME`. The rollback is removed one
-release after the Rust bridge ships.
+Everything else is kept and read unchanged by the Rust services: settings
+(`config.toml`), the project registry, tickets (in each project's
+`.orchestrator/` and `relay/artifacts` ref), the run ledger and other
+orchestrator databases, notes, Relay Remote paired devices, installed skills,
+and the Kokoro model cache in `~/.local/share/kokoro`, which `relay-speech`
+uses as is. Homebrew, system or other Python installations are never touched.
 
-## Orchestrator daemon runtime
-
-The orchestrator LaunchAgent runs the Rust daemon the app bundle ships in
-`Contents/MacOS/relay-orchestrator` (RR-500). For one release,
-`RELAY_ORCHESTRATOR_RUNTIME=python` runs `services/orchestrator.py` instead;
-see [Daemon runtime](orchestrator.md#troubleshooting). Both daemons read and
-write the same data root, so switching needs no migration, and fresh-install
-process checks recognise either.
+A Python voice bridge or daemon left running by the previous release is
+stopped by the normal session start and by the LaunchAgent restart that setup
+performs, so the new binaries take over without a reboot.

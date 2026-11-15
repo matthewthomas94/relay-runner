@@ -1,6 +1,6 @@
 import Foundation
 
-// HTTP client for talking to the orchestrator daemon (services/orchestrator.py).
+// HTTP client for talking to the orchestrator daemon (relay-orchestrator).
 //
 // Port discovery: the daemon writes its bound port to /tmp/relay_orchestrator.port
 // at startup, and clears the file on clean shutdown. We re-read the file on each

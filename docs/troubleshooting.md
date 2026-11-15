@@ -10,9 +10,11 @@
 
 ## Voice setup does not finish
 
-First setup creates a local Python runtime, installs packages, downloads Kokoro model files, and installs Relay integrations. It requires network access and can take several minutes.
+First setup downloads the Kokoro speech model (about 350 MB) to `~/.local/share/kokoro`, installs Relay skills and MCP registrations, and starts the orchestrator service. It needs network access for the download and can take a few minutes. Relay Runner needs no Python: every service is a binary inside the app.
 
-Retry from onboarding or Relay Skills. Open Console.app and filter for “Relay Runner” for the underlying setup line. Python 3.14 is not supported by the current Kokoro dependency; the installer selects or downloads a compatible Python 3.10–3.13 runtime.
+Retry from onboarding or Relay Skills. Open Console.app and filter for “Relay Runner” for the underlying setup line. If the model download keeps failing, check that `huggingface.co` is reachable from this Mac. If setup reports that `relay-rs` or `relay-orchestrator` is missing, the app bundle is incomplete: reinstall Relay Runner.
+
+After an upgrade from a release that used Python, setup removes the old Python environment from `~/Library/Application Support/relay-runner` and keeps everything else; see [Upgrading from a release with Python services](fresh-install.md#upgrading-from-a-release-with-python-services).
 
 ## The microphone or activation key does not work
 

@@ -4,7 +4,8 @@
 # Usage:
 #   relay-bridge                     # Relay daemon for Start Session / relay-bridge skills
 #   relay-bridge --relay             # Same as default; kept for existing skill launchers
-#   relay-bridge --venv-only         # Run venv bootstrap and exit 0 (used by onboarding)
+#   relay-bridge --setup-only        # Run first-run setup and exit 0 (used by onboarding)
+#   relay-bridge --venv-only         # Deprecated alias of --setup-only
 #   relay-bridge --start-daemon      # Bootstrap, launch detached bridge daemon, exit
 #   relay-bridge --suppress-startup-greeting
 #                                    # Skip the initial TTS greeting for tutorial sessions
@@ -14,8 +15,8 @@
 #                                    # Register/repair one MCP server for available agents
 #
 # Supported voice sessions run through Start Session or the installed
-# relay-bridge skill/command. The old full-terminal direct mode lives only in
-# services/voice_bridge.py for legacy manual debugging.
+# relay-bridge skill/command. The voice bridge is `relay-rs bridge` (RR-493);
+# since RR-487 nothing here needs Python.
 #
 # Voice commands are written to /tmp/voice_cmd_ready for the agent to pick up,
 # and a persistent tool-free messenger owns normal TTS replies.
@@ -26,40 +27,30 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # -- Paths --
-# Read-only services bundled inside the .app (or repo, for dev): the
-# Python source files and requirements.txt that ship with each release.
-SERVICES_BUNDLE="$PROJECT_ROOT/services"
-# RR-478: the reply helper the installed skills pipe replies to. The app
-# bundle ships relay-rs in Contents/MacOS beside SharedSupport; without it, or
-# with RELAY_HOOK_RUNTIME=python (the app's rollback switch), the skills use the
-# bundled Python helper, as ProcessManager.HookRuntime does for app sessions.
+# relay-rs, the Rust helper: the app bundle ships it in Contents/MacOS beside
+# SharedSupport; a source checkout uses its cargo build.
+relay_rs_binary() {
+    local candidate
+    for candidate in "$PROJECT_ROOT/../MacOS/relay-rs" \
+        "$PROJECT_ROOT/rust/target/aarch64-apple-darwin/release/relay-rs" \
+        "$PROJECT_ROOT/rust/target/release/relay-rs" \
+        "$PROJECT_ROOT/rust/target/debug/relay-rs"; do
+        if [ -x "$candidate" ]; then
+            printf '%s\n' "$(cd "$(dirname "$candidate")" && pwd)/relay-rs"
+            return 0
+        fi
+    done
+    return 1
+}
+# RR-478: the reply helper the installed skills pipe replies to.
 relay_reply_command() {
-    local rust="$PROJECT_ROOT/../MacOS/relay-rs"
-    if [ "${RELAY_HOOK_RUNTIME:-}" != "python" ] && [ -x "$rust" ]; then
-        printf "'%s' reply" "$(cd "$(dirname "$rust")" && pwd)/relay-rs"
-    else
-        printf "/usr/bin/python3 '%s'" "$SERVICES_BUNDLE/relay_reply.py"
-    fi
+    local rust
+    rust="$(relay_rs_binary)" || rust="$PROJECT_ROOT/../MacOS/relay-rs"
+    printf "'%s' reply" "$rust"
 }
-# RR-493: the voice bridge is `relay-rs bridge` from the same Contents/MacOS.
-# RELAY_BRIDGE_RUNTIME=python (the rollback switch for one release), or a
-# build without relay-rs, runs services/voice_bridge.py instead. The bridge's
-# process is matched as either '[v]oice_bridge[.]py' or '[r]elay-rs bridge'.
-rust_bridge_binary() {
-    local rust="$PROJECT_ROOT/../MacOS/relay-rs" runtime
-    runtime="$(printf '%s' "${RELAY_BRIDGE_RUNTIME:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
-    [ "$runtime" != python ] && [ -x "$rust" ] || return 1
-    printf '%s\n' "$(cd "$(dirname "$rust")" && pwd)/relay-rs"
-}
-# Writable runtime data — venv + downloaded Python live here so the
-# install path works for non-admin users with no Homebrew or system
-# Python. Admin is required to install Homebrew or run macOS package
-# installers, but ~/Library is always user-writable.
+# The bridge's process is matched as '[r]elay-rs bridge'; '[v]oice_bridge[.]py'
+# still matches a Python bridge an older release left running, so it is stopped.
 USER_DATA_DIR="$HOME/Library/Application Support/relay-runner"
-SERVICES_DIR="$USER_DATA_DIR/services"
-RELOCATABLE_PYTHON_DIR="$USER_DATA_DIR/python"
-RELOCATABLE_PYTHON="$RELOCATABLE_PYTHON_DIR/bin/python3"
-mkdir -p "$SERVICES_DIR"
 VOICE_FIFO="/tmp/voice_in.fifo"
 BRIDGE_SOCK="/tmp/voice_bridge.sock"
 BRIDGE_STOP_REQUESTED_FILE="/tmp/voice_bridge_stop_requested"
@@ -109,19 +100,19 @@ CONFIG_PATH="$CONFIG_DIR/relay-runner/config.toml"
 
 # Export PROJECT_ROOT so the slash command can find us
 export PROJECT_ROOT
-export PYTHONDONTWRITEBYTECODE=1
 
-# -- Parse our own flags before passing the rest to voice_bridge.py --
-# --venv-only: run only the venv bootstrap below, then exit. Used by
-# the app's onboarding flow so it can call into the same battle-tested
-# Python setup that interactive /relay-bridge sessions use, with output
-# streamed back to the SwiftUI progress view.
+# -- Parse our own flags before passing the rest to the bridge --
+# --setup-only: run only the first-run setup below, then exit. Used by the
+# app's onboarding flow and session launcher so they share the setup that
+# interactive /relay-bridge sessions use, with output streamed back to the
+# SwiftUI progress view. --venv-only is its old name, kept for callers from
+# before RR-487.
 # --install-skills: write Relay Runner command/skill files for Claude Code
 # and Codex, then exit. Used by Settings → Install Skill so the template
 # content lives here as a single source of truth instead of being duplicated
 # as Swift literals. --refresh-skills is the edit-preserving variant used
 # before every Start Session and by relay-orchestrator --install.
-VENV_ONLY=false
+SETUP_ONLY=false
 INSTALL_SKILLS_ONLY=false
 REFRESH_SKILLS_ONLY=false
 ROTATE_LOG_ONLY=false
@@ -142,8 +133,7 @@ fi
 # bar with limited horizontal space.
 #
 # Writes to stderr so it doesn't contaminate functions whose stdout
-# the caller captures (e.g. `find_python`, `ensure_relocatable_python`).
-# The SwiftUI parser merges stdout + stderr into one pipe, so it still
+# the caller captures. The SwiftUI parser merges stdout + stderr into one pipe, so it still
 # sees these lines.
 emit_progress() {
     local percent="$1"
@@ -458,7 +448,8 @@ legacy_relay_command() {
     # quotes, so each path must be a single expansion.
     local content hash
     local bridge_path="$SCRIPT_DIR/relay-bridge"
-    local reply_helper_path="$SERVICES_BUNDLE/relay_reply.py"
+    # The Python reply helper the files named before RR-478.
+    local reply_helper_path="$PROJECT_ROOT/services/relay_reply.py"
     content="$(cat "$1")"
     content="${content//"$bridge_path"/__RELAY_BRIDGE__}"
     content="${content//"$reply_helper_path"/__RELAY_REPLY_HELPER__}"
@@ -609,7 +600,7 @@ if [ "${RELAY_RUNNER_APP_SESSION:-0}" = "1" ] || pgrep -f 'relay-runner' > /dev/
 
 If not running, tell the user to start the Relay Runner menu bar app, then try `/relay-bridge` again. Do not proceed.
 
-2. Kill any existing voice bridge and start a new one in relay mode. The bundled `relay-bridge` script handles its own venv install (relocatable Python, pip deps, Kokoro speech model) and short-circuits when everything's already set up; on first run it may take a couple of minutes downloading deps:
+2. Kill any existing voice bridge and start a new one in relay mode. The bundled `relay-bridge` script handles its own setup (Kokoro speech model, skills, MCP servers) and short-circuits when everything's already set up; on first run it may take a couple of minutes downloading the speech model:
 
 ```bash
 RELAY_CWD=$(pwd)
@@ -664,7 +655,7 @@ launch_relay_bridge() {
 launch_relay_bridge
 ```
 
-3. Wait for the relay bridge to come up. The 60-iteration cap is generous on purpose: the very first invocation may need to download a Python interpreter (~18 MB) and the Kokoro speech model (~350 MB) before the bridge can listen, so allow ~30 seconds:
+3. Wait for the relay bridge to come up. The 60-iteration cap is generous on purpose: the very first invocation may need to download the Kokoro speech model (~350 MB) before the bridge can listen, so allow ~30 seconds:
 
 ```bash
 for i in $(seq 1 60); do [ -S /tmp/voice_bridge.sock ] && echo "bridge: ok" && break; sleep 0.5; done; [ -S /tmp/voice_bridge.sock ] || echo "bridge: FAILED"
@@ -1989,7 +1980,7 @@ fi
 __rb_args=()
 for arg in "$@"; do
     case "$arg" in
-        --venv-only) VENV_ONLY=true ;;
+        --setup-only|--venv-only) SETUP_ONLY=true ;;
         --install-skills) INSTALL_SKILLS_ONLY=true ;;
         --refresh-skills) REFRESH_SKILLS_ONLY=true ;;
         --rotate-log) ROTATE_LOG_ONLY=true ;;
@@ -2002,7 +1993,7 @@ for arg in "$@"; do
     esac
 done
 # Re-bind $@ to the filtered list so the final exec sees only flags
-# voice_bridge.py understands. The +/expansion guards against `set -u`
+# the bridge understands. The +/expansion guards against `set -u`
 # when no args remain (bash 3.2 compatibility).
 set -- "${__rb_args[@]+"${__rb_args[@]}"}"
 
@@ -2033,9 +2024,9 @@ if [ -z "${RELAY_ORCHESTRATOR_PREFLIGHT_REQUIRED:-}" ]; then
 fi
 
 # -- Kill any existing bridge (only one voice session at a time) --
-# Skipped under --venv-only so onboarding doesn't tear down a running
+# Skipped under --setup-only so onboarding doesn't tear down a running
 # session just to install dependencies in the background.
-if ! $VENV_ONLY; then
+if ! $SETUP_ONLY; then
     rm -f "$BRIDGE_STOP_REQUESTED_FILE"
 fi
 
@@ -2077,17 +2068,13 @@ if $START_DAEMON_ONLY; then
     acquire_bridge_start_lock
 fi
 
-if ! $VENV_ONLY && ! $JOIN_RUNNING_BRIDGE && { [ -S "$BRIDGE_SOCK" ] || pgrep -f '[v]oice_bridge[.]py|[r]elay-rs bridge' > /dev/null 2>&1; }; then
+if ! $SETUP_ONLY && ! $JOIN_RUNNING_BRIDGE && { [ -S "$BRIDGE_SOCK" ] || pgrep -f '[v]oice_bridge[.]py|[r]elay-rs bridge' > /dev/null 2>&1; }; then
     if pgrep -f '[v]oice_bridge[.]py|[r]elay-rs bridge' > /dev/null 2>&1; then
         echo "[relay-bridge] Stopping previous voice session..."
         # Try graceful shutdown first
-        python3 -c "
-import socket, os
-s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-try: s.sendto(b'shutdown', '$BRIDGE_SOCK')
-except: pass
-s.close()
-" 2>/dev/null
+        if RELAY_RS="$(relay_rs_binary)"; then
+            "$RELAY_RS" bridge --send-control shutdown 2>/dev/null || true
+        fi
         sleep 0.5
         # Force kill if still alive
         { BP=$(cat /tmp/voice_bridge.pid 2>/dev/null); [ -n "$BP" ] && ps -p "$BP" -o command= 2>/dev/null | grep -qE '[v]oice_bridge[.]py|[r]elay-rs bridge' && kill "$BP" 2>/dev/null; } || true
@@ -2096,19 +2083,12 @@ s.close()
     cleanup_bridge_runtime_files
 fi
 
-# -- Ensure Python venv with dependencies AND speech-model files --
-# Two separate things have to be true for the voice bridge to work:
-#   1. Python venv exists with requirements.txt installed (and, only with
-#      RELAY_SPEECH_RUNTIME=python, the Python speech stack)
-#   2. Kokoro speech-model files (~350 MB) are on disk
-# Old code only checked (1), so the user could finish onboarding and then
-# discover the first session was silent because tts_worker.py was lazy-
-# downloading models — and would simply fail if the network was flaky
-# at that moment. We now check both up front and pre-download the
-# models as part of the install, so a successful onboarding means the
-# session works immediately, fully offline.
-PYTHON="$SERVICES_DIR/.venv/bin/python3"
-# Match where relay-speech (kokoro.rs) and tts_worker.py look for the model.
+# -- Ensure the speech-model files and the retired Python runtime --
+# The voice bridge needs the Kokoro speech-model files (~350 MB) on disk.
+# Setup pre-downloads them, so a successful onboarding means the first
+# session speaks immediately, fully offline, instead of failing on a flaky
+# network the first time relay-speech needs the model.
+# Match where relay-speech (kokoro.rs) looks for the model.
 KOKORO_DIR="$HOME/.local/share/kokoro"
 KOKORO_MODEL_FILE="$KOKORO_DIR/kokoro-v1.0.onnx"
 KOKORO_VOICES_FILE="$KOKORO_DIR/voices-v1.0.bin"
@@ -2135,31 +2115,32 @@ download_kokoro_models() {
     echo "[Relay Runner] Speech model files present." >&2
 }
 
-# Check the retained interpreter before dependency imports can short-circuit
-# setup. Older releases accepted Python 3.9 venvs; their voice dependencies may
-# still import even though the current orchestrator's artifact modules cannot.
-if [ -x "$PYTHON" ] && \
-   ! "$PYTHON" -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] <= (3,13) else 1)' 2>/dev/null; then
-    retained_version="$("$PYTHON" -c 'import sys; print(".".join(map(str, sys.version_info[:2])))' 2>/dev/null || echo unknown)"
-    echo "[Relay Runner] Existing venv uses Python $retained_version, which Relay Runner doesn't support. Recreating with a 3.10–3.13 interpreter."
-    rm -rf "$SERVICES_DIR/.venv"
-fi
+# RR-487: releases before it created a Python venv in
+# $USER_DATA_DIR/services/.venv and could download a Python interpreter into
+# $USER_DATA_DIR/python. Nothing uses either any more, so an upgraded install
+# removes them once no process runs from them. Only those Relay-owned folders
+# are touched; the speech model, settings, projects, tickets, notes and
+# paired devices are kept.
+remove_retired_python_runtime() {
+    local retired=() path
+    for path in "$USER_DATA_DIR/services/.venv" "$USER_DATA_DIR/python" "$USER_DATA_DIR/python.old"; do
+        [ -e "$path" ] || [ -L "$path" ] || continue
+        if pgrep -f "$path/" >/dev/null 2>&1; then
+            echo "[Relay Runner] Keeping $path while a process still runs from it." >&2
+            continue
+        fi
+        retired+=("$path")
+    done
+    for path in "$USER_DATA_DIR"/.python-stage.*; do
+        [ -d "$path" ] && retired+=("$path")
+    done
+    [ "${#retired[@]}" -gt 0 ] || return 0
+    rm -rf -- "${retired[@]}" || return 0
+    rmdir "$USER_DATA_DIR/services" 2>/dev/null || true
+    echo "[Relay Runner] Removed the Python runtime from an earlier release." >&2
+}
+remove_retired_python_runtime
 
-# RR-481: speech runs in the Rust relay-speech the app bundle ships, so the
-# venv needs only requirements.txt. RELAY_SPEECH_RUNTIME=python selects the
-# Python speech service, the fallback for one release, which also needs numpy,
-# onnxruntime, kokoro-onnx and huggingface_hub (requirements-python-speech.txt).
-SPEECH_RUNTIME="$(printf '%s' "${RELAY_SPEECH_RUNTIME:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
-PYTHON_DEPS_CHECK='import sys; sys.version_info >= (3, 11) or __import__("tomli")'
-PYTHON_REQUIREMENTS="$SERVICES_BUNDLE/requirements.txt"
-PYTHON_DEPS_PROGRESS="Installing Python packages..."
-if [ "$SPEECH_RUNTIME" = python ]; then
-    PYTHON_DEPS_CHECK="$PYTHON_DEPS_CHECK; import numpy, kokoro_onnx, huggingface_hub"
-    PYTHON_REQUIREMENTS="$SERVICES_BUNDLE/requirements-python-speech.txt"
-    PYTHON_DEPS_PROGRESS="Installing numpy, onnxruntime, kokoro-onnx, huggingface_hub..."
-fi
-PYTHON_DEPS_OK=false
-"$PYTHON" -c "$PYTHON_DEPS_CHECK" >/dev/null 2>&1 && PYTHON_DEPS_OK=true
 KOKORO_MODELS_OK=false
 [ -f "$KOKORO_MODEL_FILE" ] && [ -f "$KOKORO_VOICES_FILE" ] && KOKORO_MODELS_OK=true
 CLAUDE_BIN="$(find_claude_bin)"
@@ -2230,210 +2211,14 @@ fi
 
 # Every MCP flag gates the block: an existing install whose Relay Actions entry
 # is healthy still needs any later server (Vision, Desktop, App) registered.
-if ! $PYTHON_DEPS_OK || ! $KOKORO_MODELS_OK || ! $AGENT_CLI_OK || ! $RELAY_SKILLS_OK || ! $RELAY_MCP_OK \
+if ! $KOKORO_MODELS_OK || ! $AGENT_CLI_OK || ! $RELAY_SKILLS_OK || ! $RELAY_MCP_OK \
    || ! $RELAY_VISION_MCP_OK || ! $RELAY_DESKTOP_MCP_OK || ! $RELAY_APP_MCP_OK || ! $ORCH_OK; then
     echo ''
     echo '╔══════════════════════════════════════════╗'
     echo '║  Relay Runner — First-time setup         ║'
-    echo '║  Installing Python dependencies...       ║'
+    echo '║  Installing voice and agent tools...     ║'
     echo '╚══════════════════════════════════════════╝'
     echo ''
-    emit_progress 5 "Locating Python..."
-    # Prefer a specific minor version with broad wheel coverage for our
-    # deps (kokoro-onnx + transitive phonemizer/espeakng/onnxruntime).
-    # kokoro-onnx caps at Python <3.14, so the bare `python3` on newer
-    # Homebrew (→ 3.14) is *not* acceptable here — we'd rather fall
-    # through and auto-install python@3.13 via Homebrew.
-    find_python() {
-        for p in \
-            /opt/homebrew/bin/python3.13 /usr/local/bin/python3.13 python3.13 \
-            /opt/homebrew/bin/python3.12 /usr/local/bin/python3.12 python3.12 \
-            /opt/homebrew/bin/python3.11 /usr/local/bin/python3.11 python3.11 \
-            /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
-            if command -v "$p" >/dev/null 2>&1 && \
-               "$p" -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] <= (3,13) else 1)' 2>/dev/null; then
-                echo "$p"
-                return 0
-            fi
-        done
-        return 1
-    }
-    # Download a relocatable Python 3.13 build into RELOCATABLE_PYTHON_DIR
-    # and echo the interpreter path. Used when no system Python in the
-    # 3.10–3.13 range exists. python-build-standalone is the same
-    # distribution uv / Rye / pyodide use; it's PSF-licensed (with
-    # statically-linked OpenSSL etc.), extracts cleanly into any user-
-    # writable directory, and crucially does NOT require admin (the
-    # previous Homebrew-bootstrap path did, which broke for non-admin
-    # users). Idempotent: skips the download if a usable interpreter
-    # already lives at RELOCATABLE_PYTHON.
-    ensure_relocatable_python() {
-        if [ -x "$RELOCATABLE_PYTHON" ] && \
-           "$RELOCATABLE_PYTHON" -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] <= (3,13) else 1)' 2>/dev/null; then
-            echo "$RELOCATABLE_PYTHON"
-            return 0
-        fi
-        if ! command -v curl >/dev/null 2>&1; then
-            echo "[Relay Runner] curl not available — cannot download Python." >&2
-            return 1
-        fi
-        local arch
-        case "$(uname -m)" in
-            arm64)  arch="aarch64-apple-darwin" ;;
-            x86_64) arch="x86_64-apple-darwin" ;;
-            *)
-                echo "[Relay Runner] Unsupported architecture: $(uname -m)" >&2
-                return 1
-                ;;
-        esac
-        emit_progress 25 "Downloading Python 3.13 (~18MB, no admin required)..."
-        # Stderr only — function's stdout is captured by the caller as
-        # the path to the interpreter, so anything else printed there
-        # gets concatenated into $VENV_PYTHON and breaks downstream.
-        echo "[Relay Runner] No system Python 3.10–3.13 found — downloading" >&2
-        echo "[Relay Runner] a standalone Python 3.13 build (no admin required)." >&2
-
-        # Find the latest 3.13 install_only asset URL via GitHub's API.
-        # Asset name pattern (literal `+`, URL-encoded as %2B in JSON):
-        #   cpython-3.13.X+YYYYMMDD-<arch>-install_only.tar.gz
-        # `install_only` is the slimmer embedding-friendly variant;
-        # `freethreaded` is the GIL-less PEP 703 build, not what we want.
-        # `|| true` guards against pipefail when grep finds nothing.
-        local api_url="https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest"
-        local asset_url
-        asset_url=$(curl -fsSL "$api_url" 2>/dev/null \
-            | grep -oE '"browser_download_url": "[^"]*'"$arch"'-install_only\.tar\.gz"' \
-            | grep -E 'cpython-3\.13\.' \
-            | grep -v 'freethreaded' \
-            | head -1 \
-            | sed -E 's/.*"([^"]+)"/\1/' || true)
-        if [ -z "$asset_url" ]; then
-            echo "[Relay Runner] Couldn't locate a python-build-standalone 3.13 release for $arch." >&2
-            echo "[Relay Runner] Check internet connectivity, or rate-limit on api.github.com." >&2
-            return 1
-        fi
-        # SHA256SUMS file lives at the same release base path; the file
-        # lists the literal asset name, but the URL we got back from the
-        # API has `%2B` for `+` — decode for the lookup.
-        local checksums_url="${asset_url%/*}/SHA256SUMS"
-        local asset_name="${asset_url##*/}"
-        asset_name="${asset_name//%2B/+}"
-
-        # Stage download + extract inside USER_DATA_DIR so the final mv
-        # is a same-filesystem rename (atomic). mktemp -d ensures we
-        # never collide with a parallel install.
-        mkdir -p "$USER_DATA_DIR"
-        local stage
-        stage=$(mktemp -d "$USER_DATA_DIR/.python-stage.XXXXXX") || return 1
-
-        local tmp_tar="$stage/python.tar.gz"
-        if ! curl -fsSL "$asset_url" -o "$tmp_tar"; then
-            rm -rf "$stage"
-            echo "[Relay Runner] Python download failed." >&2
-            return 1
-        fi
-
-        # Verify SHA256 against the release's SHA256SUMS file. Refuse
-        # to install if the checksum is missing or mismatched — better
-        # to fail loudly than silently install a corrupted interpreter.
-        local expected_sha
-        expected_sha=$(curl -fsSL "$checksums_url" 2>/dev/null \
-            | awk -v name="$asset_name" '$2 == name { print $1; exit }' || true)
-        if [ -z "$expected_sha" ]; then
-            rm -rf "$stage"
-            echo "[Relay Runner] Couldn't fetch SHA256 checksum for verification." >&2
-            return 1
-        fi
-        local actual_sha
-        actual_sha=$(shasum -a 256 "$tmp_tar" | awk '{print $1}')
-        if [ "$expected_sha" != "$actual_sha" ]; then
-            rm -rf "$stage"
-            echo "[Relay Runner] Python checksum mismatch — refusing to install." >&2
-            echo "  Expected: $expected_sha" >&2
-            echo "  Got:      $actual_sha" >&2
-            return 1
-        fi
-
-        emit_progress 40 "Extracting Python..."
-        if ! tar -xzf "$tmp_tar" -C "$stage"; then
-            rm -rf "$stage"
-            echo "[Relay Runner] Failed to extract Python tarball." >&2
-            return 1
-        fi
-        # Tarball unpacks into a top-level "python/" directory.
-        if [ ! -x "$stage/python/bin/python3" ]; then
-            rm -rf "$stage"
-            echo "[Relay Runner] Extracted Python missing expected interpreter." >&2
-            return 1
-        fi
-
-        # Atomically replace any existing install. Move the old aside
-        # so we can restore on failure rather than leaving the user
-        # with no Python at all.
-        if [ -e "$RELOCATABLE_PYTHON_DIR" ]; then
-            rm -rf "$RELOCATABLE_PYTHON_DIR.old"
-            mv "$RELOCATABLE_PYTHON_DIR" "$RELOCATABLE_PYTHON_DIR.old"
-        fi
-        if ! mv "$stage/python" "$RELOCATABLE_PYTHON_DIR"; then
-            if [ -e "$RELOCATABLE_PYTHON_DIR.old" ]; then
-                mv "$RELOCATABLE_PYTHON_DIR.old" "$RELOCATABLE_PYTHON_DIR" 2>/dev/null || true
-            fi
-            rm -rf "$stage"
-            echo "[Relay Runner] Failed to install downloaded Python." >&2
-            return 1
-        fi
-        rm -rf "$RELOCATABLE_PYTHON_DIR.old" "$stage"
-
-        if [ ! -x "$RELOCATABLE_PYTHON" ]; then
-            echo "[Relay Runner] Python install completed but interpreter missing at $RELOCATABLE_PYTHON" >&2
-            return 1
-        fi
-
-        echo "$RELOCATABLE_PYTHON"
-    }
-    if ! $PYTHON_DEPS_OK; then
-        # Only create a new venv if one isn't already on disk; if the venv
-        # exists but deps are missing, we fall through to reinstall into the
-        # existing interpreter.
-        if [ ! -x "$PYTHON" ]; then
-            # Test override — flip to force the relocatable-Python path even
-            # on a machine that has a system Python in our range, so we can
-            # exercise the no-admin install end-to-end without uninstalling
-            # the system interpreter.
-            if [ -n "${RELAY_FORCE_RELOCATABLE_PYTHON:-}" ]; then
-                VENV_PYTHON=""
-            else
-                VENV_PYTHON="$(find_python || true)"
-            fi
-            if [ -z "$VENV_PYTHON" ]; then
-                VENV_PYTHON="$(ensure_relocatable_python || true)"
-                if [ -z "$VENV_PYTHON" ]; then
-                    echo "[Relay Runner] Could not obtain a usable Python 3.10–3.13 interpreter."
-                    echo "[Relay Runner] See errors above; fix and re-launch Relay Runner."
-                    exit 1
-                fi
-            fi
-            emit_progress 50 "Creating virtual environment..."
-            echo "Using $("$VENV_PYTHON" --version) at $VENV_PYTHON"
-            "$VENV_PYTHON" -m venv "$SERVICES_DIR/.venv" || {
-                echo "[Relay Runner] Failed to create venv."
-                exit 1
-            }
-        else
-            echo "[Relay Runner] Venv present but deps incomplete — reinstalling."
-        fi
-        emit_progress 60 "Upgrading pip..."
-        "$SERVICES_DIR/.venv/bin/python3" -m pip install --upgrade pip || \
-            { echo ''; echo '[Relay Runner] Setup failed. Check errors above.'; exit 1; }
-        # Pip emits one "Collecting <pkg>" line per (transitive) dep before
-        # the silent download phase. The Swift parser ticks the bar within
-        # the dep-install band each time it sees one — that's where the
-        # perceived "hang" lives, so the sub-progress is what makes the
-        # bar feel alive.
-        emit_progress 65 "$PYTHON_DEPS_PROGRESS"
-        "$SERVICES_DIR/.venv/bin/pip" install -r "$PYTHON_REQUIREMENTS" || \
-            { echo ''; echo '[Relay Runner] Setup failed. Check errors above.'; exit 1; }
-    fi
 
     if ! $KOKORO_MODELS_OK; then
         # Pre-download the Kokoro speech model + voices (~350 MB) so the
@@ -2443,7 +2228,7 @@ if ! $PYTHON_DEPS_OK || ! $KOKORO_MODELS_OK || ! $AGENT_CLI_OK || ! $RELAY_SKILL
         # network moment. RR-481: plain HTTPS from the repository
         # huggingface_hub fetched from, into the same folder, so setup no
         # longer needs huggingface_hub.
-        emit_progress 80 "Downloading speech model (~350 MB, may take 1–2 minutes)..."
+        emit_progress 10 "Downloading speech model (~350 MB, may take 1–2 minutes)..."
         if ! download_kokoro_models
         then
             echo ''
@@ -2507,13 +2292,12 @@ if ! $PYTHON_DEPS_OK || ! $KOKORO_MODELS_OK || ! $AGENT_CLI_OK || ! $RELAY_SKILL
         register_mcp_for_available_agents relay-app relay-app-mcp "Relay App"
     fi
 
-    # Skip the orchestrator install branch under --venv-only:
-    # relay-orchestrator --install delegates venv bootstrap back to
-    # `relay-bridge --venv-only`, so re-running this branch from inside that
-    # call would fork-bomb. The --venv-only path only owes the caller a healthy
-    # Python venv; the orchestrator's other install steps (skills, MCP, plist)
-    # run on the next non-venv-only invocation.
-    if ! $ORCH_OK && ! $VENV_ONLY; then
+    # Skip the orchestrator install branch under --setup-only:
+    # relay-orchestrator --install delegates this setup back to
+    # `relay-bridge --setup-only`, so re-running this branch from inside that
+    # call would fork-bomb. The orchestrator's own install steps (skills, MCP,
+    # plist) run in that caller, or on the next full invocation.
+    if ! $ORCH_OK && ! $SETUP_ONLY; then
         # Orchestrator install: skills, MCP server, and launchd plist (keeps the
         # daemon alive across logins). Delegated to scripts/relay-orchestrator
         # --install which is idempotent and resolves its own binary paths the
@@ -2541,12 +2325,12 @@ if [ -z "${RELAY_ORCHESTRATOR_PREFLIGHT_REQUIRED:-}" ]; then
     record_support_event shell setup ready
 fi
 
-if $VENV_ONLY; then
+if $SETUP_ONLY; then
     # Emit a terminal 100% marker so the SwiftUI bar fills regardless of
-    # whether the install block above ran or was short-circuited (venv
-    # already healthy on a re-run).
+    # whether the install block above ran or was short-circuited (setup
+    # already complete on a re-run).
     emit_progress 100 "Ready."
-    echo '[relay-bridge] Venv ready (--venv-only).'
+    echo '[relay-bridge] Setup ready (--setup-only).'
     exit 0
 fi
 
@@ -2554,7 +2338,7 @@ fi
 ensure_fifo "$VOICE_FIFO"
 
 # -- Note: STT is now handled by the Relay Runner menu bar app --
-# -- This script only starts the Python voice bridge in relay mode --
+# -- This script only starts the voice bridge in relay mode --
 if [ "${RELAY_RUNNER_APP_SESSION:-0}" != "1" ] && ! pgrep -f 'relay-runner' > /dev/null 2>&1; then
     echo "[relay-bridge] Warning: Relay Runner app is not running. STT will not be available."
     echo "[relay-bridge] Start the Relay Runner menu bar app for speech-to-text."
@@ -2592,21 +2376,13 @@ if [ -n "${RELAY_SESSION_SPOOL_DIR:-}" ]; then
 else
     rm -f "$BRIDGE_SPOOL_FILE"
 fi
-if RUST_BRIDGE="$(rust_bridge_binary)"; then
-    BRIDGE_COMMAND=("$RUST_BRIDGE" bridge)
-    # The Rust bridge has no interpreter of its own. When its speech falls
-    # back to Python (RELAY_SPEECH_RUNTIME=python, or no relay-speech beside
-    # it), it runs the venv's, as the Python bridge would.
-    RUST_SPEECH="${RELAY_SPEECH_BINARY:-$(dirname "$RUST_BRIDGE")/relay-speech}"
-    if [ -z "${RELAY_SPEECH_SERVICE_CMD:-}" ] && { [ "$SPEECH_RUNTIME" = python ] || [ ! -x "$RUST_SPEECH" ]; }; then
-        export RELAY_SPEECH_SERVICE_CMD="'$PYTHON' '$SERVICES_BUNDLE/speech_service.py'"
-    fi
-    echo "[relay-bridge] Voice bridge runtime: rust ($RUST_BRIDGE)"
-else
-    BRIDGE_COMMAND=("$PYTHON" "$SERVICES_BUNDLE/voice_bridge.py")
-    echo "[relay-bridge] Voice bridge runtime: python"
+if ! RUST_BRIDGE="$(relay_rs_binary)"; then
+    echo "[relay-bridge] relay-rs is missing from Relay Runner.app; reinstall Relay Runner." >&2
+    record_support_event shell bridge_readiness failed
+    exit 1
 fi
-if "${BRIDGE_COMMAND[@]}" --config "$CONFIG_PATH" --relay "$@"; then
+echo "[relay-bridge] Voice bridge: $RUST_BRIDGE bridge"
+if "$RUST_BRIDGE" bridge --config "$CONFIG_PATH" --relay "$@"; then
     exit 0
 else
     bridge_status=$?

@@ -69,7 +69,7 @@ struct SpeechPresentation: Equatable {
     }
 }
 
-/// Possible overlay states, driven by STT engine (in-process) and Python services (via socket).
+/// Possible overlay states, driven by STT engine (in-process) and the voice services (via socket).
 enum OverlayState: Equatable {
     case idle
     case listening
@@ -132,7 +132,7 @@ enum OverlayState: Equatable {
     }
 }
 
-/// Central state machine. Consumes events from STTEngine (in-process) and StateEventBus (Python).
+/// Central state machine. Consumes events from STTEngine (in-process) and StateEventBus (voice services).
 /// Always accessed from main thread (timers, StateEventBus MainActor dispatch).
 @Observable
 final class StateMachine: @unchecked Sendable {
@@ -197,7 +197,7 @@ final class StateMachine: @unchecked Sendable {
         }
     }
 
-    /// Called by StateEventBus when Python services send state updates.
+    /// Called by StateEventBus when the voice services send state updates.
     func handleServiceEvent(
         source: String,
         newState: String,
