@@ -518,6 +518,7 @@ impl Daemon {
             );
         }
         self.dispatch_promoted(&repo_path, lifecycle, promoted);
+        self.dispatch_queued_dependents(&repo_path, lifecycle, &run.string("ticket_id"), promoted);
         self.record_queue_drain_after_event(Some(&repo_path), "verification-closeout", true);
     }
 
@@ -535,6 +536,63 @@ impl Daemon {
                 eprintln!(
                     "[orchestrator] artifact dependent dispatch declined for {dependent}: {}",
                     error.message
+                );
+            }
+        }
+    }
+
+    /// `_dispatch_queued_dependents`: starts the dependents that were
+    /// already waiting in `ready`. The canonical writer reports only the
+    /// tickets it promoted from backlog; a dependent dispatched before its
+    /// predecessor is already `ready`, so it is not among them, and the
+    /// sweeper holds no project confirmation to start it.
+    fn dispatch_queued_dependents(
+        &self,
+        repo_path: &str,
+        lifecycle: &Arc<ArtifactLifecycleCoordinator>,
+        finished_ticket_id: &str,
+        promoted: &[String],
+    ) {
+        let repo = Path::new(repo_path);
+        let all_tickets: Vec<Ticket> = match tickets::scan_repo(repo) {
+            Ok(board) => board.into_iter().map(|(_, ticket)| ticket).collect(),
+            Err(error) => {
+                // The merge stands; report it.
+                eprintln!(
+                    "[orchestrator] queued dependent scan failed in {repo_path}: {}",
+                    Failure::from(error).message
+                );
+                return;
+            }
+        };
+        for dependent in &all_tickets {
+            if !dependent
+                .depends_on
+                .iter()
+                .any(|id| id == finished_ticket_id)
+                || promoted.contains(&dependent.id)
+            {
+                continue;
+            }
+            if dependent.status != "ready" || dependent.canceled || dependent.draft {
+                continue;
+            }
+            let started = self
+                .all_dependencies_done(repo, &dependent.depends_on, &all_tickets, Some(lifecycle))
+                .and_then(|done| {
+                    if !done {
+                        return Ok(());
+                    }
+                    let mut request =
+                        DispatchRequest::new(&dependent.id, repo_path, "dependency-progression");
+                    request.internally_confirmed_project_id =
+                        Some(lifecycle.store.project_id.clone());
+                    self.dispatch(&request).map(|_| ())
+                });
+            if let Err(error) = started {
+                eprintln!(
+                    "[orchestrator] artifact dependent dispatch declined for {}: {}",
+                    dependent.id, error.message
                 );
             }
         }
@@ -967,7 +1025,10 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                         );
                     }
                 }
-                Some(lifecycle) => self.dispatch_promoted(&repo_path, lifecycle, &promoted),
+                Some(lifecycle) => {
+                    self.dispatch_promoted(&repo_path, lifecycle, &promoted);
+                    self.dispatch_queued_dependents(&repo_path, lifecycle, &ticket_id, &promoted);
+                }
             }
         }
         self.record_queue_drain_after_event(Some(&repo_path), "run-merged", true);

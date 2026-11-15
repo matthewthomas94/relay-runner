@@ -9042,6 +9042,53 @@ Title: {ticket['title']}
             self._verification_closeouts[run_id] = result.promoted_ticket_ids
         return outcome, reason
 
+    def _dispatch_queued_dependents(
+        self,
+        *,
+        repo_path: str,
+        lifecycle: ArtifactLifecycleCoordinator,
+        finished_ticket_id: str,
+        promoted: Iterable[str],
+    ) -> None:
+        """Start the dependents that were already waiting in `ready`.
+
+        The canonical writer reports only the tickets it promoted from
+        backlog. A dependent dispatched before its predecessor is already
+        `ready`, so it is not among them, and the sweeper holds no project
+        confirmation to start it.
+        """
+        repo = Path(repo_path)
+        try:
+            all_tickets = scan_repo(repo)
+        except Exception as error:  # noqa: BLE001 - the merge stands; report it.
+            print(f"[orchestrator] queued dependent scan failed in {repo}: {error}", file=sys.stderr)
+            return
+        already = set(promoted)
+        for dependent in all_tickets:
+            if finished_ticket_id not in dependent["depends_on"] or dependent["id"] in already:
+                continue
+            if dependent["status"] != "ready" or dependent.get("canceled") or dependent.get("draft"):
+                continue
+            try:
+                if not self._all_dependencies_done(
+                    repo=repo,
+                    ticket=dependent,
+                    all_tickets=all_tickets,
+                    artifact_lifecycle=lifecycle,
+                ):
+                    continue
+                self.dispatch(
+                    ticket_id=dependent["id"],
+                    repo_path=repo_path,
+                    source="dependency-progression",
+                    internally_confirmed_project_id=lifecycle.store.project_id,
+                )
+            except (ValueError, RuntimeError) as error:
+                print(
+                    f"[orchestrator] artifact dependent dispatch declined for {dependent['id']}: {error}",
+                    file=sys.stderr,
+                )
+
     def _finish_verification_closeout(
         self,
         run: dict,
@@ -9071,6 +9118,12 @@ Title: {ticket['title']}
                     f"[orchestrator] artifact dependent dispatch declined for {dependent_id}: {error}",
                     file=sys.stderr,
                 )
+        self._dispatch_queued_dependents(
+            repo_path=repo_path,
+            lifecycle=lifecycle,
+            finished_ticket_id=str(run["ticket_id"]),
+            promoted=promoted,
+        )
         self._record_queue_drain_after_event(
             repo_path=repo_path,
             trigger="verification-closeout",
@@ -9951,6 +10004,12 @@ Do not edit tickets directly. Do not push. The daemon merge path publishes `done
                         f"[orchestrator] artifact dependent dispatch declined for {dependent_id}: {error}",
                         file=sys.stderr,
                     )
+            self._dispatch_queued_dependents(
+                repo_path=repo_path,
+                lifecycle=artifact_lifecycle,
+                finished_ticket_id=ticket_id,
+                promoted=promoted,
+            )
         self._record_queue_drain_after_event(
             repo_path=repo_path,
             trigger="run-merged",

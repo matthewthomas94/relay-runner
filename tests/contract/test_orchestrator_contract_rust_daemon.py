@@ -82,6 +82,7 @@ _CASES = (
     run_cases.CodexDispatchTests,
     artifact_run_cases.ArtifactImplementationTests,
     artifact_run_cases.ArtifactDispatchErrorTests,
+    artifact_run_cases.ArtifactQueuedDependentTests,
     artifact_run_cases.SpikeTests,
     artifact_run_cases.ReadySweepTests,
     artifact_run_cases.RunsIndexTests,

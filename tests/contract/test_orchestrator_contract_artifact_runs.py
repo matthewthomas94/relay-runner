@@ -182,6 +182,30 @@ class SpikeTests(ArtifactCase):
         self.assertEqual(self.runs_for("CT-2"), [])
 
 
+class ArtifactQueuedDependentTests(ArtifactCase):
+    """A dependent dispatched before its predecessor waits in ready, then starts."""
+
+    @classmethod
+    def prepare(cls):
+        cls.repo = cls.box.artifact_project("queued", tickets=[
+            ("CT-1", {}),
+            ("CT-2", {"depends_on": ["CT-1"]}),
+        ], next_id=3)
+
+    def test_a_queued_dependent_starts_when_its_predecessor_merges(self):
+        queued = self.assertStatus(self.dispatch("CT-2"), 202).json
+        self.assertTrue(queued["queued"])
+        self.assertEqual(queued["waiting_on"], ["CT-1"])
+        self.assertIn("\nstatus: ready\n", (self.repo / ".orchestrator" / "CT-2.md").read_text())
+
+        first = self.assertStatus(self.dispatch("CT-1"), 202).json["run"]
+        self.box.wait_for_run(first["id"], "Merged")
+        # CT-2 was already ready, so the canonical writer promotes nothing;
+        # the daemon still starts it, under its own project confirmation.
+        dependent = self.box.wait_for(lambda: self.runs_for("CT-2"), message="CT-2 dispatched")[0]
+        self.box.wait_for_run(dependent["id"], "Merged")
+
+
 class ReadySweepTests(DaemonCase):
     """A legacy board, so the sweep needs no scope token."""
 
