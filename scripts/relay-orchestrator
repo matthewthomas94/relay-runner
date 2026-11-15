@@ -10,9 +10,13 @@
 #   relay-orchestrator --restart-if-idle  # Restart launchd daemon only when no workers are active
 #   relay-orchestrator --status       # Print quick status (process, port, recent log)
 #
-# The daemon is the Symphony-style sub-agent orchestrator at services/orchestrator.py.
-# It reuses the same venv and Python that scripts/relay-bridge installs, so we
-# delegate venv bootstrap to that script via `--venv-only`.
+# The daemon is the Symphony-style sub-agent orchestrator. Since RR-500 it is
+# the Rust binary the app bundle ships in Contents/MacOS/relay-orchestrator.
+# RELAY_ORCHESTRATOR_RUNTIME=python (the rollback switch for one release), or a
+# build without that binary, runs services/orchestrator.py instead. Both read
+# and write the same data root, so either can replace the other.
+# The Python daemon reuses the same venv and Python that scripts/relay-bridge
+# installs, so we delegate venv bootstrap to that script via `--venv-only`.
 
 set -euo pipefail
 
@@ -61,7 +65,20 @@ LEGACY_WORKFLOW_MD="$CMDS_DIR/relay-workflow.md"
 LEGACY_LINK_MD="$CMDS_DIR/relay-link-project.md"
 LEGACY_ORCHESTRATE_MD="$CMDS_DIR/relay-orchestrate.md"
 
+# The daemon's process, by either command line.
+DAEMON_PROCESS_PATTERN='services/orchestrator[.]py|MacOS/relay-orchestrator( |$)'
+
 # -- Common helpers --
+
+# RR-500: the Rust daemon from this bundle's Contents/MacOS, unless
+# RELAY_ORCHESTRATOR_RUNTIME=python asks for the Python daemon or the build has
+# no binary (a source checkout).
+rust_daemon_binary() {
+    local rust="$PROJECT_ROOT/../MacOS/relay-orchestrator" runtime
+    runtime="$(printf '%s' "${RELAY_ORCHESTRATOR_RUNTIME:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+    [ "$runtime" != python ] && [ -x "$rust" ] || return 1
+    printf '%s\n' "$(cd "$(dirname "$rust")" && pwd)/relay-orchestrator"
+}
 
 support_file_mtime() {
     stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null || echo 0
@@ -486,8 +503,8 @@ launchctl_unload() {
 
 cmd_status() {
     echo "Daemon process:"
-    if pgrep -f 'services/orchestrator.py' >/dev/null 2>&1; then
-        pgrep -fl 'services/orchestrator.py' | head -3 | sed 's/^/  /'
+    if pgrep -f "$DAEMON_PROCESS_PATTERN" >/dev/null 2>&1; then
+        pgrep -fl "$DAEMON_PROCESS_PATTERN" | head -3 | sed 's/^/  /'
     else
         echo "  (not running)"
     fi
@@ -515,6 +532,13 @@ cmd_status() {
 
 cmd_run() {
     ensure_support_correlation
+    local rust
+    if rust="$(rust_daemon_binary)"; then
+        # The Rust daemon needs no interpreter, so no venv check delays it.
+        mkdir -p "$ORCH_DIR"
+        echo "[relay-orchestrator] daemon runtime: rust ($rust)" >&2
+        exec "$rust" "$@"
+    fi
     if ! ensure_venv; then
         # launchd KeepAlive restarts only unsuccessful exits. Return cleanly on
         # a deterministic pre-main failure so it does not spin until setup is
@@ -522,6 +546,7 @@ cmd_run() {
         return 0
     fi
     mkdir -p "$ORCH_DIR"
+    echo "[relay-orchestrator] daemon runtime: python" >&2
     exec "$VENV_PYTHON" "$PROJECT_ROOT/services/orchestrator.py" "$@"
 }
 
@@ -585,7 +610,7 @@ case "$mode" in
         cmd_run "$@"
         ;;
     -h|--help)
-        sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+        sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
         ;;
     *)
         echo "Unknown subcommand: $mode" >&2

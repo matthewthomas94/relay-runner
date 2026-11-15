@@ -29,11 +29,11 @@ agent-desktop is copyright Vercel, Inc. Its binaries are re-signed with Relay Ru
 
 ## Rust crates
 
-The app bundle ships `relay-rs` and `relay-speech`, Relay Runner's own Rust helper and speech service, in `Contents/MacOS`. The block below is generated from `rust/Cargo.lock` by `scripts/rust-licenses`, which also refuses any crate whose license is outside its allow list; GPL-family licenses are never on that list.
+The app bundle ships `relay-rs`, `relay-speech` and `relay-orchestrator`, Relay Runner's own Rust helper, speech service and orchestrator daemon, in `Contents/MacOS`. The block below is generated from `rust/Cargo.lock` by `scripts/rust-licenses`, which also refuses any crate whose license is outside its allow list; GPL-family licenses are never on that list.
 
 <!-- BEGIN GENERATED: Rust crates — run scripts/rust-licenses, do not edit here -->
 
-`relay-rs` and `relay-speech` are built from the Cargo workspace in `rust/` with Rust 1.94.1 and statically link the Rust standard library, which is licensed under the Apache License 2.0 or the MIT License at the user's option; the Rust project's [COPYRIGHT](https://github.com/rust-lang/rust/blob/1.94.1/COPYRIGHT) file describes the third-party material it includes.
+`relay-rs`, `relay-speech` and `relay-orchestrator` are built from the Cargo workspace in `rust/` with Rust 1.94.1 and statically link the Rust standard library, which is licensed under the Apache License 2.0 or the MIT License at the user's option; the Rust project's [COPYRIGHT](https://github.com/rust-lang/rust/blob/1.94.1/COPYRIGHT) file describes the third-party material it includes.
 
 `rust/Cargo.lock` resolves these crates for `aarch64-apple-darwin`:
 

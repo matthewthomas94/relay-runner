@@ -165,7 +165,7 @@ def render(crates: list[dict], toolchain: str) -> str:
     lines = [
         BEGIN,
         "",
-        f"`relay-rs` and `relay-speech` are built from the Cargo workspace in `rust/` with Rust {toolchain} "
+        f"`relay-rs`, `relay-speech` and `relay-orchestrator` are built from the Cargo workspace in `rust/` with Rust {toolchain} "
         "and statically link the Rust standard library, which is licensed under the Apache License 2.0 or the MIT License at "
         "the user's option; the Rust project's "
         f"[COPYRIGHT](https://github.com/rust-lang/rust/blob/{toolchain}/COPYRIGHT) file describes the "

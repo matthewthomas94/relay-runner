@@ -7,8 +7,8 @@ publish.workspace = true
 
 # The Rust daemon's fourth and fifth parts (RR-497, RR-498): the HTTP server,
 # every route of services/orchestrator.py and worker, review and spike
-# execution, backed by parts 1-3 and 6. Nothing ships the binary until the
-# cut-over (RR-500).
+# execution, backed by parts 1-3 and 6. Since the cut-over (RR-500) the app
+# bundle ships the binary and the LaunchAgent runs it by default.
 [dependencies]
 # Python-compatible JSON, SHA-256 and `re` patterns.
 relay-intents = { path = "../relay-intents" }

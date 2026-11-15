@@ -217,7 +217,8 @@ The full file format is documented at [docs/specs/orchestrator-tickets.md](specs
 
 | Path | Purpose |
 |---|---|
-| `services/orchestrator.py` | The daemon (HTTP server + SQLite + worker spawn) |
+| `rust/relay-orchestrator/` | The daemon (HTTP server + SQLite + worker spawn), shipped as `Contents/MacOS/relay-orchestrator` |
+| `services/orchestrator.py` | The Python daemon, the rollback for one release (`RELAY_ORCHESTRATOR_RUNTIME=python`) |
 | `services/messenger.py` | Persistent tool-free Codex/Claude messenger backends and event runtime |
 | `services/orchestrator_workflow.md` | Default workflow template |
 | `services/orchestrator_artifact_workflow.md` | Source-only worker contract for artifact-lifecycle projects |
@@ -277,6 +278,13 @@ tail /tmp/relay_orchestrator.err
 ```
 Restart with `scripts/relay-orchestrator --start`.
 
+**Daemon runtime.** The LaunchAgent runs the Rust daemon the app bundle ships in `Contents/MacOS/relay-orchestrator` (RR-500), for Claude and Codex workers alike. For one release the Python daemon remains available as a rollback; both use the same data root, so either picks up where the other stopped, with no migration. To switch, set the variable in your launchd session and restart the daemon once no worker is running:
+```bash
+launchctl setenv RELAY_ORCHESTRATOR_RUNTIME python
+scripts/relay-orchestrator --restart-if-idle
+```
+`/tmp/relay_orchestrator.err` names the runtime each launch used. Undo it with `launchctl unsetenv RELAY_ORCHESTRATOR_RUNTIME` and the same restart. The setting lasts until you log out, so set it again after logging in. A build without the Rust binary, such as a source checkout, runs the Python daemon.
+
 **Installed skills still show older foreground-session guidance.** Every Start Session refreshes the installed command and skill files that are still exactly what Relay installed, and keeps files you edited (Relay records each installed file's hash in `~/Library/Application Support/relay-runner/installed-commands.sha256`). To overwrite edited files with the current repo sources:
 ```bash
 scripts/relay-bridge --install-skills
@@ -291,9 +299,9 @@ cancel_run --run_id=N --prune_worktree=false
 ```
 Then read `<workspace>/.relay/run.log`. Implementation and review workers have no wall-clock deadline. The daemon performs an advisory health check every 10 minutes by comparing process liveness, worker-log growth, activity, commits, and worktree changes. A live run with no observable progress raises a visible warning but keeps running; only explicit cancellation, process exit/failure, or a separately identified critical condition stops it. Tune the observation interval via `[orchestrator].worker_health_check_seconds` in `config.toml`.
 
-**Daemon uses CPU while idle.** The daemon has an opt-in sampling profiler, off by default. Without `RELAY_ORCHESTRATOR_PROFILE` no profiler thread starts and nothing is written. To profile, stop the launchd job (`scripts/relay-orchestrator --stop`) and run the daemon by hand with the variable set to an output file:
+**Daemon uses CPU while idle.** The Python daemon has an opt-in sampling profiler, off by default; the Rust daemon has none. Without `RELAY_ORCHESTRATOR_PROFILE` no profiler thread starts and nothing is written. To profile, stop the launchd job (`scripts/relay-orchestrator --stop`) and run the Python daemon by hand with the variable set to an output file:
 ```bash
-RELAY_ORCHESTRATOR_PROFILE=/tmp/orchestrator.folded scripts/relay-orchestrator --run
+RELAY_ORCHESTRATOR_RUNTIME=python RELAY_ORCHESTRATOR_PROFILE=/tmp/orchestrator.folded scripts/relay-orchestrator --run
 ```
 Every `RELAY_ORCHESTRATOR_PROFILE_INTERVAL_MS` (default 10, range 1–1000) a profiler thread charges each thread's Python stack with the CPU that thread used since the previous sample. On macOS that per-thread CPU comes from `proc_pidinfo`, so waiting threads drop out; elsewhere each stack is charged wall-clock time. The file is rewritten every 5 s and at shutdown as collapsed stacks (`thread;file.py:function;… <microseconds>`), which `flamegraph.pl` and speedscope read directly. The `(profiler)` line is the profiler's own cost, and `(exited threads)` is CPU from threads that ran and exited between two samples, such as short HTTP request threads. Background processes get coarse timers, so the effective interval can be far longer than requested. When samples are sparse, a short burst is charged to whatever the thread is doing at the next sample. In that case the thread and its loop are reliable, but the deepest frames are approximate. Restart the launchd job with `scripts/relay-orchestrator --start` afterwards.
 

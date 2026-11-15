@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import plistlib
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -568,10 +569,12 @@ class FreshInstallCoordinator:
             parent = processes.get(parent, (None, ""))[0]
         markers = ("relay-runner", "voice_bridge.py", "relay-rs bridge", "orchestrator.py", "tts_worker.py")
         installer_markers = ("fresh_install_cli.py", "relay-runner-fresh-install")
+        # The Rust orchestrator daemon (RR-500), but not relay-orchestrator-mcp.
+        rust_daemon = re.compile(r"/MacOS/relay-orchestrator(?:\s|$)")
         return [
             f"{pid} {parent} {command}"
             for pid, (parent, command) in processes.items()
-            if any(marker in command for marker in markers)
+            if (any(marker in command for marker in markers) or rust_daemon.search(command))
             and not (pid in lineage and any(marker in command for marker in installer_markers))
         ]
 
