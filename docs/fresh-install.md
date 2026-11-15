@@ -133,3 +133,12 @@ launchctl setenv RELAY_BRIDGE_RUNTIME python
 a source checkout, also runs the Python bridge. The switch is independent of
 `RELAY_SPEECH_RUNTIME` and `RELAY_HOOK_RUNTIME`. The rollback is removed one
 release after the Rust bridge ships.
+
+## Orchestrator daemon runtime
+
+The orchestrator LaunchAgent runs the Rust daemon the app bundle ships in
+`Contents/MacOS/relay-orchestrator` (RR-500). For one release,
+`RELAY_ORCHESTRATOR_RUNTIME=python` runs `services/orchestrator.py` instead;
+see [Daemon runtime](orchestrator.md#troubleshooting). Both daemons read and
+write the same data root, so switching needs no migration, and fresh-install
+process checks recognise either.

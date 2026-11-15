@@ -555,8 +555,19 @@ with `services/orchestrator.py`; the suite appends `--config <file>`), and
 isolation switches, port file, databases, files and artifact commits, so a
 Rust and a Python daemon can take turns on one data root. It serves every
 route in the index from the crates of the earlier parts (`relay-artifacts`,
-`relay-store`, `relay-services`). Nothing ships it yet; the cut-over is
-RR-500.
+`relay-store`, `relay-services`).
+
+**Cut-over (RR-500).** The app bundle ships the release build as
+`Contents/MacOS/relay-orchestrator`, and `scripts/relay-orchestrator --run`
+(what the LaunchAgent runs) execs it by default. For one release
+`RELAY_ORCHESTRATOR_RUNTIME=python`, or a build without the binary such as a
+source checkout, runs `services/orchestrator.py` instead; the daemon's stderr
+(`/tmp/relay_orchestrator.err`) names the runtime each launch used.
+`test_orchestrator_contract_daemon_swap.py` checks the swap in both
+directions, for Claude and Codex workers: one daemon dispatches and merges a
+legacy-board and an artifact-board run and creates a session and a note, then
+the other starts on the same data root, serves all of it with every database
+schema unchanged, and continues the run ids.
 
 `test_orchestrator_contract_rust_daemon.py` repeats every daemon case class
 of the suite against `rust/target/debug/relay-orchestrator` (or
@@ -589,3 +600,5 @@ Smaller differences, none visible to the clients:
 - Support diagnostics (`orchestrator_launch` events in `RELAY_DIAGNOSTICS_DIR`)
   are not recorded yet.
 - Daemon log lines that Python prints as a `dict` repr are printed as JSON.
+- The opt-in sampling profiler (`RELAY_ORCHESTRATOR_PROFILE`) profiles Python
+  stacks, so only the Python daemon has it.
