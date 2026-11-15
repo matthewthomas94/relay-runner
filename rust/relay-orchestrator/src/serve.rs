@@ -119,6 +119,10 @@ pub fn serve(daemon: Arc<Daemon>) -> std::io::Result<()> {
         crate::board::retention_loop(&owner, &wait);
     });
     let owner = daemon.clone();
+    spawn_loop("stale-worktree-sweep", move || {
+        crate::worktree_gc::sweep_loop(&owner, &wait);
+    });
+    let owner = daemon.clone();
     spawn_loop("personal-file-storage", move || {
         while wait(60.0) {
             let connected = owner
