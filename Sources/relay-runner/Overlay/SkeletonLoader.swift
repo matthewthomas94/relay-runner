@@ -68,6 +68,8 @@ final class SkeletonLoaderView: NSView {
     let skeleton: SkeletonLoaderLayout
 
     private let panelsLayer = CAShapeLayer()
+    /// The glass edge on each panel, as the real panels carry it.
+    private let panelRimsLayer = CALayer()
     private let dots = FluxDotLayers()
     private let outlineLayer = CAShapeLayer()
 
@@ -84,6 +86,7 @@ final class SkeletonLoaderView: NSView {
         panelsLayer.strokeColor = BoardDarkSurfaceStyle.borderNSColor.cgColor
         panelsLayer.lineWidth = 1
         layer?.addSublayer(panelsLayer)
+        layer?.addSublayer(panelRimsLayer)
 
         layer?.addSublayer(dots.container)
         outlineLayer.fillColor = nil
@@ -117,6 +120,8 @@ final class SkeletonLoaderView: NSView {
         }
         panelsLayer.frame = bounds
         panelsLayer.path = panels
+        panelRimsLayer.frame = bounds
+        panelRimsLayer.sublayers = Self.panels(for: skeleton, in: bounds).map(Self.panelRim)
         let outlines = CGMutablePath()
         for bone in bones where bone.style == .outline {
             let inset = Self.outlineWidth / 2
@@ -153,6 +158,30 @@ final class SkeletonLoaderView: NSView {
     /// Disintegrates the dots in (to 1) or out (to 0) over `duration`.
     func animatePresence(to presence: Double, duration: TimeInterval, completion: (() -> Void)? = nil) {
         dots.animatePresence(to: presence, duration: duration, completion: completion)
+    }
+
+    /// One panel's glass edge: the rim gradient across the panel, showing
+    /// only through a hairline along its border.
+    private static func panelRim(for panel: CGRect) -> CALayer {
+        let rim = CAGradientLayer()
+        rim.frame = panel
+        rim.startPoint = CGPoint(x: 0, y: 0)
+        rim.endPoint = CGPoint(x: 1, y: 1)
+        rim.colors = BoardDarkSurfaceStyle.glassRimStops.map { NSColor($0.color).cgColor }
+        rim.locations = BoardDarkSurfaceStyle.glassRimStops.map { NSNumber(value: Double($0.location)) }
+        let hairline = CAShapeLayer()
+        hairline.frame = rim.bounds
+        hairline.fillColor = nil
+        hairline.strokeColor = NSColor.black.cgColor
+        hairline.lineWidth = 1
+        hairline.path = CGPath(
+            roundedRect: rim.bounds.insetBy(dx: 0.5, dy: 0.5),
+            cornerWidth: 16,
+            cornerHeight: 16,
+            transform: nil
+        )
+        rim.mask = hairline
+        return rim
     }
 
     // MARK: Dots

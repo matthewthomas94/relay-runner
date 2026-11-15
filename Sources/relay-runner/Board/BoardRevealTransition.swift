@@ -456,6 +456,13 @@ final class BoardRevealContainerView: NSView {
 private final class BoardRevealSurfaceView: NSView {
     private let plan: BoardRevealTransitionPlan
     private let surfaceMaskLayer = CAShapeLayer()
+    /// The board's glass shell, so the loader sits on what the loaded
+    /// Workspace sits on: the blurred desktop under a black that thins to
+    /// 75% at the foot, where the edge catches a glow. All of it scales
+    /// with how far the surface has opened, so the notch pill stays black.
+    private let glassBackdropView = NSVisualEffectView()
+    private let glassTintLayer = CAGradientLayer()
+    private let glassGlowLayer = CAGradientLayer()
     private var loadingView: SkeletonLoaderView?
     private var surfaceFrame: CGRect
     private var loading = false
@@ -484,6 +491,21 @@ private final class BoardRevealSurfaceView: NSView {
             "position": NSNull(),
         ]
         layer?.mask = surfaceMaskLayer
+        glassBackdropView.material = .hudWindow
+        glassBackdropView.blendingMode = .behindWindow
+        glassBackdropView.state = .active
+        glassBackdropView.appearance = NSAppearance(named: .darkAqua)
+        glassBackdropView.isHidden = true
+        glassBackdropView.maskImage = Self.bottomRoundedMask(
+            radius: BoardRevealTransitionPlanner.expandedSurfaceCornerRadius
+        )
+        addSubview(glassBackdropView)
+        glassGlowLayer.colors = [
+            NSColor.clear.cgColor,
+            GraphicalTheme.neutral5NSColor.withAlphaComponent(0.35).cgColor,
+        ]
+        layer?.addSublayer(glassTintLayer)
+        layer?.addSublayer(glassGlowLayer)
         updateSurfaceMask()
         updateLoadingIndicator(animated: false)
     }
@@ -573,7 +595,7 @@ private final class BoardRevealSurfaceView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
-        NSColor(calibratedWhite: 0, alpha: 0.985).setFill()
+        NSColor(calibratedWhite: 0, alpha: Self.surfaceBlackAlpha).setFill()
         surfacePath(in: surfaceFrame).fill()
     }
 
@@ -680,6 +702,52 @@ private final class BoardRevealSurfaceView: NSView {
     private func updateSurfaceMask() {
         surfaceMaskLayer.frame = bounds
         surfaceMaskLayer.path = surfacePath(in: surfaceFrame).cgPath
+        updateGlass()
+    }
+
+    private func updateGlass() {
+        let travel = plan.expandedFrame.height - plan.fullWidthFrame.height
+        let opened = travel > 0
+            ? max(0, min(1, (surfaceFrame.height - plan.fullWidthFrame.height) / travel))
+            : 0
+        let solid = Self.surfaceBlackAlpha
+        let foot = solid - (solid - BoardDarkSurfaceStyle.actionOpacity) * opened
+        let glowHeight = min(40, surfaceFrame.height)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        glassBackdropView.isHidden = opened == 0
+        glassBackdropView.frame = surfaceFrame
+        glassTintLayer.isHidden = opened == 0
+        glassTintLayer.frame = surfaceFrame
+        glassTintLayer.colors = [
+            NSColor(calibratedWhite: 0, alpha: solid).cgColor,
+            NSColor(calibratedWhite: 0, alpha: foot).cgColor,
+        ]
+        glassGlowLayer.frame = CGRect(
+            x: surfaceFrame.minX,
+            y: surfaceFrame.maxY - glowHeight,
+            width: surfaceFrame.width,
+            height: glowHeight
+        )
+        glassGlowLayer.opacity = Float(opened)
+        CATransaction.commit()
+    }
+
+    private static let surfaceBlackAlpha: CGFloat = 0.985
+
+    /// A stretchable mask that rounds the blur's bottom corners; a layer
+    /// mask alone does not reliably clip a behind-window blur.
+    private static func bottomRoundedMask(radius: CGFloat) -> NSImage {
+        let side = radius * 2 + 1
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+            NSRect(x: rect.minX, y: rect.midY, width: rect.width, height: rect.height / 2).fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+        image.resizingMode = .stretch
+        return image
     }
 
     private func compactNotchCutoutPath(in rect: CGRect) -> NSBezierPath? {
