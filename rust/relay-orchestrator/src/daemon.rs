@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::Duration;
 
 use relay_artifacts::lifecycle::ArtifactLifecycleCoordinator;
@@ -28,6 +28,7 @@ use relay_store::runs::RunsStore;
 use relay_store::sessions::SessionStore;
 
 use crate::failure::{Class, Failure, Outcome};
+use crate::worker::RunProcess;
 
 pub const DEFAULT_PORT: u16 = 7634;
 pub const DEFAULT_WORKER_HEALTH_CHECK_SECONDS: f64 = 600.0;
@@ -61,6 +62,9 @@ pub struct Paths {
     pub program_registry: PathBuf,
     pub workspace_root: PathBuf,
     pub workflow_path: PathBuf,
+    /// `services/orchestrator_artifact_workflow.md`: the worker prompt of an
+    /// artifact-enabled project.
+    pub artifact_workflow_path: PathBuf,
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -97,7 +101,7 @@ impl Paths {
         } else if user_workflow.exists() {
             user_workflow
         } else {
-            bundled_workflow_path()
+            bundled_service_file("orchestrator_workflow.md")
         };
         let program_registry = data_root
             .parent()
@@ -116,6 +120,7 @@ impl Paths {
             runtime_dir,
             workspace_root,
             workflow_path,
+            artifact_workflow_path: bundled_service_file("orchestrator_artifact_workflow.md"),
             state_root,
             data_root,
         }
@@ -138,11 +143,11 @@ impl Paths {
     }
 }
 
-/// `services/orchestrator_workflow.md` beside the Python daemon. The Rust
-/// binary looks for it in the app bundle's `services/` directory next to
-/// `Contents/MacOS`, then in the source checkout it was built from.
-fn bundled_workflow_path() -> PathBuf {
-    let name = "orchestrator_workflow.md";
+/// A file of `services/` beside the Python daemon (`orchestrator_workflow.md`,
+/// `orchestrator_artifact_workflow.md`). The Rust binary looks for it in the
+/// app bundle's `services/` directory next to `Contents/MacOS`, then in the
+/// source checkout it was built from.
+fn bundled_service_file(name: &str) -> PathBuf {
     if let Ok(executable) = std::env::current_exe()
         && let Some(directory) = executable.parent()
     {
@@ -674,6 +679,18 @@ pub struct Daemon {
     pub action_request_ids: Mutex<HashSet<String>>,
     pub program_status_flight: SingleFlight,
     pub program_dashboard_flight: SingleFlight,
+
+    /// `_workers`: the live implementation and spike workers by run id.
+    pub workers: Mutex<HashMap<i64, Arc<RunProcess>>>,
+    /// `_review_workers`.
+    pub review_workers: Mutex<HashMap<i64, Arc<RunProcess>>>,
+    /// `_verification_closeouts`: the dependents a verification-only
+    /// close-out promoted, until its worker's completion dispatches them.
+    pub verification_closeouts: Mutex<HashMap<i64, Vec<String>>>,
+    /// `_spike_completion_lock`.
+    pub spike_completion_lock: Mutex<()>,
+    /// The daemon's own handle, for the threads that run its workers.
+    self_ref: OnceLock<Weak<Daemon>>,
 }
 
 impl Daemon {
@@ -785,24 +802,41 @@ impl Daemon {
             action_request_ids: Mutex::new(HashSet::new()),
             program_status_flight: SingleFlight::new(PROGRAM_REFRESH_WAIT),
             program_dashboard_flight: SingleFlight::new(PROGRAM_REFRESH_WAIT),
+            workers: Mutex::new(HashMap::new()),
+            review_workers: Mutex::new(HashMap::new()),
+            verification_closeouts: Mutex::new(HashMap::new()),
+            spike_completion_lock: Mutex::new(()),
+            self_ref: OnceLock::new(),
             paths,
             config: Mutex::new(config),
         });
+        let _ = daemon.self_ref.set(Arc::downgrade(&daemon));
         daemon.reconcile_on_startup();
         Ok(daemon)
     }
 
+    /// A strong handle on this daemon, for a worker thread.
+    pub fn arc(&self) -> Option<Arc<Daemon>> {
+        self.self_ref.get().and_then(Weak::upgrade)
+    }
+
     /// The startup half of `Daemon.__init__` after the stores open.
     fn reconcile_on_startup(&self) {
-        match self.runs.reconcile_on_startup() {
-            Ok(stalled) if stalled > 0 => {
-                eprintln!("[orchestrator] reconciled {stalled} stalled run(s) on startup");
+        let stalled = match self.runs.reconcile_on_startup() {
+            Ok(stalled) => {
+                if stalled > 0 {
+                    eprintln!("[orchestrator] reconciled {stalled} stalled run(s) on startup");
+                }
+                stalled
             }
-            Ok(_) => {}
-            Err(error) => eprintln!("[orchestrator] stalled-run reconciliation failed: {error}"),
-        }
-        // `_recover_stalled_spikes` publishes spike results; spike execution
-        // is part 5 (RR-498).
+            Err(error) => {
+                eprintln!("[orchestrator] stalled-run reconciliation failed: {error}");
+                0
+            }
+        };
+        self.recover_stalled_spikes(stalled == 0);
+        // Seed the runs index so the board has something to read before the
+        // first transition (the reconciliation bypasses the write hooks).
         self.runs.write_index();
         crate::board::recover_artifact_lifecycle_leases(self);
         match self
@@ -887,10 +921,12 @@ impl Daemon {
         Ok(lifecycle)
     }
 
-    /// `shutdown`: stop the background workers.
+    /// `shutdown`: stop the background workers, then cancel every run
+    /// worker and let each record its run.
     pub fn shutdown(&self) {
         if let Some(queue) = &self.note_metadata {
             queue.shutdown();
         }
+        self.cancel_workers();
     }
 }

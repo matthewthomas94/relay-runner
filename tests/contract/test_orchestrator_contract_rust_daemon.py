@@ -1,19 +1,11 @@
-"""RR-497: the RR-485 daemon contract suite against the Rust daemon.
+"""RR-497/RR-498: the RR-485 daemon contract suite against the Rust daemon.
 
 Every daemon case class of the suite is repeated here with the daemon
 command replaced by ``rust/target/debug/relay-orchestrator`` (or
 ``RELAY_RUST_ORCHESTRATOR``), so one run checks both daemons. The
 ``RustMigrated*`` classes of RR-495 are repeated as well, which puts a Rust
-migration and a Rust daemon on the same repository.
-
-Worker, review and spike execution is part 5 of the port (RR-498). Until it
-lands the Rust daemon answers the routes that would start a worker, merge a
-reviewed run or redispatch after every check that comes before the launch,
-with a 500 naming RR-498 and nothing written. ``DEFERRED_TO_RR_498`` lists
-every case that needs that execution; each is skipped with its reason, and
-RR-498 removes entries as it ports them. Running the whole suite with
-``RELAY_ORCHESTRATOR_CMD`` pointing at the binary shows the same cases
-failing and no others.
+migration and a Rust daemon on the same repository. Worker, review, spike and
+restart cases run like every other case since RR-498 ported execution.
 
 Every case skips when the binary is not built (``cargo build`` in rust/) and
 while goldens are being regenerated, since the reference daemon owns them.
@@ -44,47 +36,6 @@ RUST_DAEMON = Path(
     or REPO / "rust" / "target" / "debug" / "relay-orchestrator"
 )
 
-_WORKER = "needs a worker process (RR-498)"
-_REVIEW = "needs a review worker and the merge (RR-498)"
-_SPIKE = "needs a spike worker (RR-498)"
-
-# "<case class>.<test>": why it waits for part 5.
-DEFERRED_TO_RR_498 = {
-    "DispatchTests.test_implementation_run_is_reviewed_and_merged": _REVIEW,
-    "DispatchTests.test_dispatch_context_reaches_the_worker_prompt": _WORKER,
-    "CodexDispatchTests.test_codex_run_is_reviewed_and_merged": _REVIEW,
-    "RunFailureTests.test_nonzero_worker_exit_fails_the_run": _WORKER,
-    "RunFailureTests.test_clean_exit_without_a_commit_fails_the_run": _WORKER,
-    "RunFailureTests.test_clean_exit_with_an_unfinished_ticket_fails_the_run": _WORKER,
-    "ReviewTests.test_undecided_review_leaves_the_run_awaiting_review": _REVIEW,
-    "ReviewTests.test_retry_decision_fails_the_run_with_the_reviewer_reason": _REVIEW,
-    "VerificationBlockedTests.test_blocked_run_is_merged_but_held_until_resumed": _REVIEW,
-    "VerificationBlockedTests.test_resume_rejects_a_run_that_is_not_blocked":
-        "dispatches and finishes a run before the refusal (RR-498)",
-    "CancelTests.test_cancel_stops_the_worker_and_removes_the_worktree": _WORKER,
-    "CancelTests.test_cancel_can_keep_the_worktree": _WORKER,
-    "RunQueryTests.test_list_filters_by_state_and_limit":
-        "dispatches and finishes runs before listing them (RR-498)",
-    "RunQueryTests.test_outcome_routes_reject_a_legacy_run":
-        "dispatches and finishes a legacy run before the refusal (RR-498)",
-    "ArtifactImplementationTests.test_outcome_review_merge_and_dependency_progression": _REVIEW,
-    "ArtifactDispatchErrorTests.test_an_outcome_naming_another_commit_fails_the_run_at_exit":
-        _WORKER,
-    "SpikeTests.test_spike_result_is_recorded_without_review_or_progression": _SPIKE,
-    "ReadySweepTests.test_queued_dispatch_then_sweep_then_drain_completion":
-        "the sweep's dispatch needs a worker process (RR-498)",
-    "ReadySweepTests.test_a_drain_can_be_canceled":
-        "the golden drain holds the item of a claimed run (RR-498)",
-    "RunsIndexTests.test_runs_json_mirrors_the_ledger_for_the_board": _WORKER,
-    "ProgramAndFollowupTests.test_spike_followups_are_proposed_and_reviewed":
-        "needs a completed spike run (RR-498)",
-    "RestartTests.test_killed_daemon_marks_in_flight_runs_stalled_on_start":
-        "needs runs in flight (RR-498)",
-    "RestartTests.test_stopped_daemon_cancels_in_flight_runs": "needs runs in flight (RR-498)",
-    "PreviousReleaseDatabaseTests.test_new_runs_continue_the_release_ledger": _REVIEW,
-    "IsolationTests.test_a_full_session_stays_inside_the_sandbox": _REVIEW,
-}
-
 
 class _RustDaemon:
     """Runs a case class with the Rust daemon command."""
@@ -101,22 +52,9 @@ class _RustDaemon:
         super().setUpClass()
 
 
-def _deferred(reason: str):
-    @unittest.skip(reason)
-    def case(self):  # pragma: no cover - skipped
-        pass
-    return case
-
-
 def _rust_case(base: type) -> type:
     attributes = {"__doc__": "%s against the Rust daemon." % base.__name__,
                   "__module__": __name__}
-    for key, reason in DEFERRED_TO_RR_498.items():
-        owner, _, name = key.partition(".")
-        if owner == base.__name__:
-            if not hasattr(base, name):
-                raise AssertionError("deferred case %s no longer exists" % key)
-            attributes[name] = _deferred(reason)
     return type("Rust" + base.__name__, (_RustDaemon, base), attributes)
 
 
@@ -158,19 +96,6 @@ for _base in _CASES:
     _case = _rust_case(_base)
     globals()[_case.__name__] = _case
 del _base, _case
-
-
-class DeferredListTests(unittest.TestCase):
-    """The deferred list names real cases, each with a reason."""
-
-    def test_every_deferred_case_exists(self):
-        names = {case.__name__ for case in _CASES}
-        for key, reason in DEFERRED_TO_RR_498.items():
-            owner, _, name = key.partition(".")
-            self.assertIn(owner, names, key)
-            self.assertTrue(reason, key)
-            base = next(case for case in _CASES if case.__name__ == owner)
-            self.assertTrue(callable(getattr(base, name, None)), key)
 
 
 if __name__ == "__main__":

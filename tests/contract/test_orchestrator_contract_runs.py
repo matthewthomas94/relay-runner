@@ -214,7 +214,12 @@ class ReviewTests(RunCase):
     def test_retry_decision_fails_the_run_with_the_reviewer_reason(self):
         run = self.finish("CT-6", "Failed")
         self.assertEqual(run["last_error"], "Review requested retry: Needs another pass.")
-        posted = self.box.invocations(event="decision-posted", ticket_id="CT-6")[0]
+        # The reviewer records its post after the 202 arrives, which can be
+        # after the run reads Failed.
+        posted = self.box.wait_for(
+            lambda: self.box.invocations(event="decision-posted", ticket_id="CT-6"),
+            message="the review decision record",
+        )[0]
         self.assertEqual(posted["status"], 202)
         self.assertEqual(git(self.repo, "branch", "--list", "relay/ct-6"), "")
         ticket = (self.repo / ".orchestrator" / "CT-6.md").read_text()

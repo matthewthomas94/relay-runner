@@ -1,10 +1,7 @@
-//! `POST /v1/runs`: `Daemon.dispatch` up to the worker launch, with the
-//! checks and worker sizing it resolves before one.
-//!
-//! Everything from the attempt number on (the worktree or spike workspace,
-//! the run claim, the prompt and the worker process) is part 5 (RR-498).
-//! Until it lands, a dispatch that passes every check answers
-//! [`Failure::execution_deferred`] without inserting a run.
+//! `POST /v1/runs`: `Daemon.dispatch`, with the checks and worker sizing it
+//! resolves before a launch, and the launch itself (RR-498): the attempt
+//! number, the worktree or read-only spike snapshot, the run claim, the
+//! prompt and the worker process.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -104,7 +101,7 @@ static UNCHECKED_INPUT: LazyLock<Regex> =
 pub struct DispatchRequest {
     pub ticket_id: String,
     pub repo_path: String,
-    /// The caller's context for the worker prompt, which part 5 renders.
+    /// The caller's context for the worker prompt.
     pub context: Option<String>,
     /// `direct` from the route; the sweeps pass `ready-sweeper`.
     pub source: String,
@@ -672,6 +669,17 @@ struct PlannedRun {
     execution_mode: String,
 }
 
+/// What the launch half of a dispatch receives from its checks.
+struct Launching<'a> {
+    request: &'a DispatchRequest,
+    ticket: Ticket,
+    ticket_file: &'a Path,
+    sizing: &'a WorkerSizing,
+    provider: &'a str,
+    binary: &'a str,
+    base_branch: &'a str,
+}
+
 /// One dispatch's identity, shared by its early answers.
 struct Dispatching<'a> {
     repo: PathBuf,
@@ -713,9 +721,8 @@ impl Daemon {
         Ok((status, Value::Dict(result)))
     }
 
-    /// `Daemon.dispatch(...)`: every check before a worker starts. A ticket
-    /// that passes them all answers [`Failure::execution_deferred`] until
-    /// part 5 (RR-498) ports the launch.
+    /// `Daemon.dispatch(...)`: every check before a worker starts, then the
+    /// launch.
     pub(crate) fn dispatch(&self, request: &DispatchRequest) -> Outcome<Dict> {
         let ticket_id = request.ticket_id.as_str();
         if ticket_id.is_empty() {
@@ -840,11 +847,11 @@ impl Daemon {
         let base_branch = resolve_default_branch(&repo)?;
         let mut target_branch = git_text(&repo, &["branch", "--show-current"])?;
         if target_branch.is_empty() {
-            target_branch = base_branch;
+            target_branch = base_branch.clone();
         }
 
-        let _dispatching = guard(&self.dispatch_lock);
-        let (worker_provider, _worker_bin, general) = self.effective_worker_agent()?;
+        let dispatching = guard(&self.dispatch_lock);
+        let (worker_provider, worker_bin, general) = self.effective_worker_agent()?;
         self.ensure_queue_drain_for_ticket(
             &repo,
             &ticket,
@@ -915,29 +922,379 @@ impl Daemon {
         } else {
             Dict::new()
         };
-        if let Err(error) = resolve_worker_sizing(&ticket, &worker_provider, &sizing_general) {
-            let reason = error.message;
-            self.record_dispatch_refusal(
-                &context,
-                &planned,
-                &reason,
-                &raw_worker_sizing_metadata(&ticket, &worker_provider),
-            )?;
-            eprintln!(
-                "[orchestrator] dispatch refused for {ticket_id} from {}: {reason}",
-                request.source
-            );
-            self.record_queue_drain_after_event(
-                Some(&repo_text),
-                &format!("dispatch-{}-refused", request.source),
-                false,
-            );
-            return Err(Failure::value(reason));
+        let sizing = match resolve_worker_sizing(&ticket, &worker_provider, &sizing_general) {
+            Ok(sizing) => sizing,
+            Err(error) => {
+                let reason = error.message;
+                self.record_dispatch_refusal(
+                    &context,
+                    &planned,
+                    &reason,
+                    &raw_worker_sizing_metadata(&ticket, &worker_provider),
+                )?;
+                eprintln!(
+                    "[orchestrator] dispatch refused for {ticket_id} from {}: {reason}",
+                    request.source
+                );
+                self.record_queue_drain_after_event(
+                    Some(&repo_text),
+                    &format!("dispatch-{}-refused", request.source),
+                    false,
+                );
+                return Err(Failure::value(reason));
+            }
+        };
+
+        let run = self.launch_run(
+            &context,
+            &planned,
+            Launching {
+                request,
+                ticket,
+                ticket_file: &ticket_file,
+                sizing: &sizing,
+                provider: &worker_provider,
+                binary: &worker_bin,
+                base_branch: &base_branch,
+            },
+        )?;
+        drop(dispatching);
+        self.record_queue_drain_after_event(
+            Some(&repo_text),
+            &format!("dispatch-{}-claimed", request.source),
+            false,
+        );
+        self.update_dispatch_command(
+            &context,
+            ticket_id,
+            "dispatched",
+            "ticket-dispatched",
+            &format!("Dispatched {ticket_id}."),
+        )?;
+        let mut result = Dict::new();
+        result.insert("already_active", false);
+        result.insert("run", run);
+        Ok(result)
+    }
+
+    /// The launch half of `dispatch`: the attempt number, the worktree or
+    /// read-only spike snapshot, the run claim, the ticket snapshot, the
+    /// prompt and the worker. The run row as claimed, before its worker
+    /// starts.
+    fn launch_run(
+        &self,
+        context: &Dispatching<'_>,
+        planned: &PlannedRun,
+        launching: Launching<'_>,
+    ) -> Outcome<Option<Dict>> {
+        let Launching {
+            request,
+            mut ticket,
+            ticket_file,
+            sizing,
+            provider,
+            binary,
+            base_branch,
+        } = launching;
+        let ticket_id = context.ticket_id;
+        let repo = &context.repo;
+        let repo_text = &context.repo_text;
+        let source = request.source.as_str();
+        let spike = planned.execution_mode == SPIKE_EXECUTION_MODE;
+        let attempt = self.runs.next_attempt(ticket_id, Some(repo_text))?;
+        let (workspace_path, log_path) = if spike {
+            (
+                PathBuf::from(format!(
+                    "{}-spike-{attempt}",
+                    planned.workspace_path.display()
+                )),
+                self.paths
+                    .workspace_root
+                    .join(".spike-runs")
+                    .join(workspace_slug(repo, ticket_id)?)
+                    .join(format!("run-{attempt}.log")),
+            )
+        } else {
+            (planned.workspace_path.clone(), planned.log_path.clone())
+        };
+        let workspace_text = workspace_path.to_string_lossy().into_owned();
+        let new_run = |state: &str| NewRun {
+            ticket_id: ticket_id.to_string(),
+            repo_path: repo_text.clone(),
+            workspace_path: workspace_text.clone(),
+            branch: planned.branch.clone(),
+            state: state.to_string(),
+            execution_mode: Some(planned.execution_mode.clone()),
+            attempt: Some(attempt),
+            log_path: Some(log_path.to_string_lossy().into_owned()),
+            provider_key: Some(sizing.provider_key.clone()),
+            model_alias: sizing.model_alias.clone(),
+            worker_model: sizing.worker_model.clone(),
+            worker_effort: sizing.worker_effort.clone(),
+            worker_sizing_rationale: sizing.worker_sizing_rationale.clone(),
+            worker_provider_notes: sizing.worker_provider_notes.clone(),
+        };
+        let fail_run = |run_id: i64, reason: &str| {
+            self.runs.update(
+                run_id,
+                &RunUpdate {
+                    state: Some("Failed".to_string()),
+                    last_error: Some(Some(reason.to_string())),
+                    ended: true,
+                    exit_code: Some(-1),
+                    ..RunUpdate::default()
+                },
+            )
+        };
+        // A pre-flight failure is recorded as a failed attempt, for the board.
+        let preflight_failed = |error: Failure, trigger: &str| -> Outcome<Option<Dict>> {
+            if error.class == crate::failure::Class::Runtime {
+                let run_id = self.runs.insert(&new_run("Failed"))?;
+                fail_run(run_id, &error.message)?;
+                self.emit_lifecycle(&LifecycleEvent {
+                    kind: "run-failed",
+                    ticket_id: Some(ticket_id),
+                    run_id: Some(run_id),
+                    source: Some("worker"),
+                    repo_path: Some(repo_text),
+                    provider_key: Some(&sizing.provider_key),
+                    ..LifecycleEvent::default()
+                });
+                self.record_queue_drain_after_event(
+                    Some(repo_text),
+                    &format!("dispatch-{source}-{trigger}"),
+                    false,
+                );
+            }
+            Err(error)
+        };
+        let created = if spike {
+            crate::spike::create_spike_workspace(repo_text, &workspace_path, base_branch)
+        } else {
+            crate::execution::create_worktree(repo, &workspace_path, &planned.branch, base_branch)
+        };
+        if let Err(error) = created {
+            return preflight_failed(error, "worktree-failed");
+        }
+        if !spike
+            && context.lifecycle.is_none()
+            && let Err(error) = crate::execution::materialize_ticket_snapshot(
+                ticket_file,
+                &workspace_path,
+                ticket_id,
+            )
+        {
+            return preflight_failed(error, "snapshot-failed");
         }
 
-        // Part 5 (RR-498) from here: the attempt number, the worktree or
-        // spike workspace, the run claim, the prompt and the worker launch.
-        Err(Failure::execution_deferred("worker dispatch"))
+        let run_id = self.runs.insert(&new_run("Claimed"))?;
+        if let Some(lifecycle) = &context.lifecycle {
+            let claimed = (|| -> Outcome<Ticket> {
+                // Only the daemon may add artifact inputs, before the worker
+                // starts.
+                let mode = std::fs::metadata(&workspace_path)?.permissions();
+                if spike {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(
+                        &workspace_path,
+                        std::fs::Permissions::from_mode(mode.mode() | 0o200),
+                    )?;
+                }
+                let materialized =
+                    lifecycle.claim_and_materialize(ticket_id, run_id, provider, &workspace_path);
+                if spike {
+                    std::fs::set_permissions(&workspace_path, mode)?;
+                }
+                materialized?;
+                let snapshot = workspace_path
+                    .join(".orchestrator")
+                    .join(format!("{ticket_id}.md"));
+                let claimed = tickets::read(&snapshot)?;
+                if claimed.execution_mode != planned.execution_mode {
+                    return Err(Failure::value(
+                        "ticket execution mode changed during dispatch; retry with current inputs",
+                    ));
+                }
+                validate_research_dispatch(&claimed, &std::fs::read_to_string(&snapshot)?)?;
+                Ok(claimed)
+            })();
+            match claimed {
+                Ok(claimed) => ticket = claimed,
+                Err(error) => {
+                    let mut reason =
+                        format!("artifact lifecycle snapshot failed: {}", error.message);
+                    if let Err(recovery) = lifecycle.record_failure(
+                        run_id,
+                        ticket_id,
+                        provider,
+                        &reason,
+                        relay_artifacts::lifecycle::FailureKind::default(),
+                    ) {
+                        reason.push_str(&format!(
+                            "; lifecycle recovery failed: {}",
+                            Failure::from(recovery).message
+                        ));
+                    }
+                    ArtifactLifecycleCoordinator::cleanup_snapshot(&workspace_path);
+                    let (removed, cleanup_error) = if spike {
+                        crate::spike::remove_spike_workspace(&workspace_path)
+                    } else {
+                        let removed = crate::runs::remove_worktree(repo_text, &workspace_path);
+                        crate::runs::delete_branch(repo_text, &planned.branch);
+                        removed
+                    };
+                    if !removed || cleanup_error.is_some() {
+                        reason.push_str(&format!(
+                            "; {}",
+                            cleanup_error
+                                .unwrap_or_else(|| "worker worktree cleanup failed".to_string())
+                        ));
+                    }
+                    fail_run(run_id, &reason)?;
+                    return Err(Failure::runtime(reason));
+                }
+            }
+        }
+        self.notify_orchestration_trace(
+            "dispatch-claimed",
+            Some(ticket_id),
+            Some(run_id),
+            request.voice.relay_command_seq.as_ref(),
+            context.command_id.as_deref(),
+        );
+
+        let mut workflow_path = None;
+        let mut spike_launch = None;
+        let prompt = if spike {
+            ticket.status = "in_progress".to_string();
+            ticket.run_id = Some(run_id);
+            if context.lifecycle.is_none()
+                && let Err(error) = crate::spike::commit_daemon_ticket_update(
+                    repo,
+                    ticket_file,
+                    &ticket,
+                    &format!("chore({ticket_id}): start spike run {run_id}"),
+                )
+            {
+                let (_, cleanup_error) = crate::spike::remove_spike_workspace(&workspace_path);
+                let mut reason = error.message.clone();
+                if let Some(cleanup) = cleanup_error {
+                    reason.push_str(&format!("; {cleanup}"));
+                }
+                fail_run(run_id, &reason)?;
+                return Err(error);
+            }
+            let prepared = (|| -> Outcome<(String, crate::worker::SpikeLaunch)> {
+                let log_directory = log_path.parent().map(Path::to_path_buf).unwrap_or_default();
+                std::fs::create_dir_all(&log_directory)?;
+                let schema_path = log_directory.join(format!("run-{attempt}-result.schema.json"));
+                std::fs::write(
+                    &schema_path,
+                    relay_artifacts::history::dumps_indent(&crate::spike::SPIKE_RESULT_SCHEMA),
+                )?;
+                let git_environment = if provider == "codex" {
+                    Some(crate::spike::prepare_spike_git_environment(
+                        &workspace_text,
+                    )?)
+                } else {
+                    None
+                };
+                let git_path = git_environment.as_ref().and_then(|environment| {
+                    environment
+                        .iter()
+                        .find(|(key, _)| key == "RELAY_SPIKE_GIT")
+                        .map(|(_, value)| value.clone())
+                });
+                let prompt = crate::spike::SpikePrompt {
+                    ticket: &ticket,
+                    repo_path: repo_text,
+                    workspace_path: &workspace_text,
+                    attempt,
+                    run_id,
+                    caller_context: request.context.as_deref(),
+                    agent_kind: provider,
+                    git_path: git_path.as_deref(),
+                }
+                .render();
+                Ok((
+                    prompt,
+                    crate::worker::SpikeLaunch {
+                        result_schema_path: schema_path.to_string_lossy().into_owned(),
+                        git_environment,
+                    },
+                ))
+            })();
+            match prepared {
+                Ok((prompt, launch)) => {
+                    spike_launch = Some(launch);
+                    prompt
+                }
+                Err(error) => {
+                    let mut reason = format!("spike launch preparation failed: {}", error.message);
+                    let current = self.runs.get(run_id)?.unwrap_or_default();
+                    if let Err(reset) =
+                        self.spike_ticket_update(&current, None, Some(&reason), false)
+                    {
+                        reason.push_str(&format!("; ticket reset failed: {}", reset.message));
+                    }
+                    let (removed, cleanup_error) =
+                        crate::spike::remove_spike_workspace(&workspace_path);
+                    if !removed || cleanup_error.is_some() {
+                        reason.push_str(&format!(
+                            "; {}",
+                            cleanup_error
+                                .unwrap_or_else(|| "spike workspace still exists".to_string())
+                        ));
+                    }
+                    fail_run(run_id, &reason)?;
+                    return Err(Failure::runtime(reason));
+                }
+            }
+        } else {
+            let template = if context.lifecycle.is_some() {
+                self.paths.artifact_workflow_path.clone()
+            } else {
+                self.resolve_workflow_for_repo(repo_text)
+            };
+            let built = self.build_prompt(
+                &crate::execution::PromptInputs {
+                    ticket_id,
+                    repo_path: repo_text,
+                    workspace_path: &workspace_text,
+                    branch: &planned.branch,
+                    attempt,
+                    run_id,
+                    caller_context: request.context.as_deref(),
+                },
+                &template,
+            );
+            workflow_path = Some(template);
+            match built {
+                Ok(prompt) => prompt,
+                Err(error) => {
+                    fail_run(run_id, &error.message)?;
+                    return Err(error);
+                }
+            }
+        };
+
+        let run = self.runs.get(run_id)?;
+        self.start_worker(crate::worker::WorkerLaunch {
+            run_id,
+            run: run.clone().unwrap_or_default(),
+            prompt,
+            agent_bin: binary.to_string(),
+            agent_kind: provider.to_string(),
+            workflow_path,
+            log_path,
+            artifact: context.lifecycle.is_some(),
+            spike: spike_launch,
+            completion: context.lifecycle.clone().filter(|_| !spike),
+        });
+        eprintln!(
+            "[orchestrator] dispatch claimed {ticket_id} from {source}: run {run_id} ({provider})"
+        );
+        Ok(run)
     }
 
     /// The answer for a ticket whose run already waits for review or merge.

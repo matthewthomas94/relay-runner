@@ -3,22 +3,20 @@
 //! preserved-run recovery (`services/orchestrator.py`, `Daemon.list_runs`
 //! through `recover_preserved_run_collision` and `cancel_run`).
 //!
-//! Review workers, the merge and the verification close-out are part 5
-//! (RR-498): those routes run every check Python makes before it starts a
-//! reviewer, merges, publishes or redispatches, then answer
-//! [`Failure::execution_deferred`] having written nothing.
+//! The review worker, the merge, a retry, the verification resume and cancel
+//! themselves live in `execution.rs` (RR-498); these routes read the request
+//! and answer.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use relay_artifacts::lifecycle::{ArtifactLifecycleCoordinator, FailureKind};
+use relay_artifacts::lifecycle::ArtifactLifecycleCoordinator;
 use relay_artifacts::tickets::{self, Ticket};
 use relay_artifacts::{ErrorKind, pystr};
 use relay_intents::json::{self, Dict, Value};
 use relay_intents::pattern::Regex;
 use relay_store::runs::{
-    ACTIVE_STATES, MERGEABLE_REVIEW_STATES, REVIEW_BLOCKING_STATES, RunUpdate,
-    SPIKE_EXECUTION_MODE, VERIFICATION_BLOCKED_RUN_STATE, sanitize_identifier,
+    REVIEW_BLOCKING_STATES, VERIFICATION_BLOCKED_RUN_STATE, sanitize_identifier,
 };
 
 use crate::daemon::{Daemon, guard, resolve_path};
@@ -41,7 +39,7 @@ fn unknown_run(run_id: i64) -> Failure {
 }
 
 /// `str(OSError)` for a failure on `path`: `[Errno N] <message>: '<path>'`.
-fn os_error(error: &std::io::Error, path: &Path) -> String {
+pub(crate) fn os_error(error: &std::io::Error, path: &Path) -> String {
     let message = error.to_string();
     let message = match message.rfind(" (os error ") {
         Some(index) => message[..index].to_string(),
@@ -58,13 +56,13 @@ fn os_error(error: &std::io::Error, path: &Path) -> String {
 
 /// Why a ticket file could not be read: `OSError`, `TicketParseError`, or
 /// another failure that is not caught where Python catches those two.
-enum TicketRead {
+pub(crate) enum TicketRead {
     Caught(String),
     Other(Failure),
 }
 
 /// `read_ticket(path)`, with Python's `str(error)` for the two caught kinds.
-fn read_ticket(path: &Path) -> Result<Ticket, TicketRead> {
+pub(crate) fn read_ticket(path: &Path) -> Result<Ticket, TicketRead> {
     let bytes = std::fs::read(path).map_err(|error| TicketRead::Caught(os_error(&error, path)))?;
     let text = pystr::decode_utf8(&bytes).map_err(|error| TicketRead::Other(error.into()))?;
     tickets::parse(&pystr::universal_newlines(text)).map_err(|error| match error.kind {
@@ -108,7 +106,7 @@ fn stderr(output: &Output) -> String {
 }
 
 /// `_git_text(repo_path, *args)`: stdout, or stderr when git failed.
-fn git_text(repo: &str, args: &[&str]) -> String {
+pub(crate) fn git_text(repo: &str, args: &[&str]) -> String {
     match git(repo, args) {
         Ok(output) => {
             let text = json::py_strip(&stdout(&output)).to_string();
@@ -133,7 +131,7 @@ fn git_text(repo: &str, args: &[&str]) -> String {
 }
 
 /// `_git_head(repo_path)`.
-fn git_head(repo: &str) -> Option<String> {
+pub(crate) fn git_head(repo: &str) -> Option<String> {
     let output = git(repo, &["rev-parse", "HEAD"]).ok()?;
     if !output.status.success() {
         return None;
@@ -552,9 +550,16 @@ impl Daemon {
 
     // -- review --------------------------------------------------------------
 
-    /// `GET /v1/runs/{run_id}/review` (`inspect_run_for_review`).
+    /// `GET /v1/runs/{run_id}/review`.
     pub fn inspect_run_for_review_route(&self, request: &Request) -> Outcome<Reply> {
-        let run_id = run_id_segment(request, 2)?;
+        reply(
+            200,
+            self.inspect_run_for_review(run_id_segment(request, 2)?)?,
+        )
+    }
+
+    /// `inspect_run_for_review(run_id)`: the evidence a reviewer reads.
+    pub fn inspect_run_for_review(&self, run_id: i64) -> Outcome<Dict> {
         let run = self.run_or_unknown(run_id)?;
         let repo_path = field(&run, "repo_path");
         let workspace_text = field(&run, "workspace_path");
@@ -644,20 +649,17 @@ impl Daemon {
         body.insert("branch_diff_stat", diff_stat);
         body.insert("branch_diff_name_status", name_status);
         body.insert("verification_evidence", evidence);
-        reply(200, body)
+        Ok(body)
     }
 
     /// `POST /v1/runs/{run_id}/review` (`dispatch_review_worker`).
     pub fn dispatch_review_worker_route(&self, request: &Request) -> Outcome<Reply> {
         let run_id = run_id_segment(request, 2)?;
-        let run = self.run_or_unknown(run_id)?;
-        if !REVIEW_BLOCKING_STATES.contains(&field(&run, "state").as_str()) {
-            return Err(Failure::value(format!(
-                "run {run_id} is not awaiting review"
-            )));
-        }
-        self.effective_worker_agent()?;
-        Err(Failure::execution_deferred("review worker dispatch"))
+        let context = request.optional_text("context");
+        reply(
+            202,
+            self.dispatch_review_worker(run_id, "review-endpoint", context.as_deref())?,
+        )
     }
 
     /// `POST /v1/runs/{run_id}/review/decision`: accept (200) or retry (202).
@@ -668,181 +670,44 @@ impl Daemon {
             .map(Value::py_str)
             .unwrap_or_default();
         match json::py_strip(&decision).to_lowercase().as_str() {
-            "accept" => self.accept_worker_run(run_id_segment(request, 2)?),
-            "retry" => self.request_worker_retry(run_id_segment(request, 2)?),
+            "accept" => reply(200, self.accept_worker_run(run_id_segment(request, 2)?)?),
+            "retry" => {
+                let run_id = run_id_segment(request, 2)?;
+                let reason = request
+                    .get("reason")
+                    .filter(|value| value.truthy())
+                    .map(Value::py_str);
+                let redispatch = request.truthy_or("redispatch", true);
+                reply(
+                    202,
+                    self.request_worker_retry(run_id, reason.as_deref(), redispatch)?,
+                )
+            }
             _ => Err(Failure::value("decision must be 'accept' or 'retry'")),
         }
     }
 
-    /// `accept_worker_run`: its checks before the merge.
-    fn accept_worker_run(&self, run_id: i64) -> Outcome<Reply> {
-        let _merge = guard(&self.merge_lock);
-        let run = self.run_or_unknown(run_id)?;
-        if !MERGEABLE_REVIEW_STATES.contains(&field(&run, "state").as_str()) {
-            return Err(Failure::value(format!(
-                "run {run_id} is not awaiting review"
-            )));
-        }
-        let ticket_id = run.get("ticket_id").map(Value::py_str).unwrap_or_default();
-        if let Some(lifecycle) = self.lifecycle_for(&run)? {
-            if lifecycle.outcome(run_id)?.is_none() {
-                return Err(Failure::value(format!(
-                    "run {run_id} has no structured artifact outcome"
-                )));
-            }
-        } else {
-            let workspace = run
-                .get("workspace_path")
-                .map(Value::py_str)
-                .unwrap_or_default();
-            let path = Path::new(&workspace)
-                .join(".orchestrator")
-                .join(format!("{ticket_id}.md"));
-            let ticket = read_ticket(&path).map_err(|failure| match failure {
-                TicketRead::Caught(message) => Failure::value(format!(
-                    "could not read reviewed ticket for run {run_id}: {message}"
-                )),
-                TicketRead::Other(failure) => failure,
-            })?;
-            if ticket.status != "done" && ticket.status != VERIFICATION_BLOCKED_STATUS {
-                return Err(Failure::value(format!(
-                    "run {run_id} ticket status {} is not a reviewable outcome",
-                    pystr::repr(&ticket.status)
-                )));
-            }
-        }
-        Err(Failure::execution_deferred("review acceptance and merge"))
-    }
-
-    /// `request_worker_retry`: its checks before it publishes the retry.
-    fn request_worker_retry(&self, run_id: i64) -> Outcome<Reply> {
-        let run = self.run_or_unknown(run_id)?;
-        if !REVIEW_BLOCKING_STATES.contains(&field(&run, "state").as_str()) {
-            return Err(Failure::value(format!(
-                "run {run_id} is not awaiting review"
-            )));
-        }
-        Err(Failure::execution_deferred("review retry"))
-    }
-
-    /// `POST /v1/runs/{run_id}/resume-verification`: its checks before it
-    /// publishes the resume.
+    /// `POST /v1/runs/{run_id}/resume-verification`: 202 when it dispatched
+    /// the ticket again, else 200.
     pub fn resume_verification_blocked_route(&self, request: &Request) -> Outcome<Reply> {
         let run_id = run_id_segment(request, 2)?;
-        let run = self.run_or_unknown(run_id)?;
-        if field(&run, "state") != VERIFICATION_BLOCKED_RUN_STATE {
-            return Err(Failure::value(format!(
-                "run {run_id} is not verification blocked"
-            )));
-        }
-        clean_required_text(request.get("reason"), "reason")?;
-        let repo = resolve_path(&field(&run, "repo_path"));
-        let repo_text = repo.to_string_lossy().into_owned();
-        if self.artifact_lifecycle(&repo_text)?.is_none() {
-            let ticket_id = run.get("ticket_id").map(Value::py_str).unwrap_or_default();
-            let pathspec = ticket_pathspec(&ticket_id);
-            let _authoring = guard(&self.authoring_lock);
-            ensure_ticket_authoring_paths_clean(&repo_text, &pathspec)?;
-            let ticket = read_ticket_or_fail(&repo.join(&pathspec))?;
-            if ticket.status != VERIFICATION_BLOCKED_STATUS {
-                return Err(Failure::value(format!(
-                    "ticket {ticket_id} is {}, expected {}",
-                    pystr::repr(&ticket.status),
-                    pystr::repr(VERIFICATION_BLOCKED_STATUS)
-                )));
-            }
-            if ticket.run_id != Some(run_id) {
-                return Err(Failure::value(format!(
-                    "ticket {ticket_id} run_id is {}, expected {run_id}",
-                    ticket
-                        .run_id
-                        .map_or("None".to_string(), |id| id.to_string())
-                )));
-            }
-        }
-        Err(Failure::execution_deferred("verification resume"))
+        let redispatch = request.truthy_or("redispatch", true);
+        let result = self.resume_verification_blocked(run_id, request.get("reason"), redispatch)?;
+        let status = if result.get("redispatched").is_some_and(Value::truthy) {
+            202
+        } else {
+            200
+        };
+        reply(status, result)
     }
 
     // -- cancel ----------------------------------------------------------------
 
-    /// `POST /v1/runs/{run_id}/cancel` (`cancel_run`). The Rust daemon has no
-    /// live workers yet, so this is Python's "no live worker" path.
+    /// `POST /v1/runs/{run_id}/cancel` (`cancel_run`).
     pub fn cancel_run_route(&self, request: &Request) -> Outcome<Reply> {
         let run_id = run_id_segment(request, 2)?;
         let prune = request.truthy_or("prune_worktree", true);
-        let run = self.run_or_unknown(run_id)?;
-        let state = field(&run, "state");
-        if !ACTIVE_STATES.contains(&state.as_str()) && state != "Stalled" {
-            let mut body = Dict::new();
-            body.insert("canceled", false);
-            body.insert("reason", format!("run is in terminal state {state}"));
-            body.insert("run", run);
-            return reply(200, body);
-        }
-        if field(&run, "execution_mode") == SPIKE_EXECUTION_MODE {
-            return Err(Failure::execution_deferred("spike cancellation"));
-        }
-        self.runs.update(
-            run_id,
-            &RunUpdate {
-                state: Some("Canceled".to_string()),
-                last_error: Some(Some("Canceled (no live worker)".to_string())),
-                ended: true,
-                ..RunUpdate::default()
-            },
-        )?;
-        let repo_path = field(&run, "repo_path");
-        let workspace = PathBuf::from(
-            run.get("workspace_path")
-                .map(Value::py_str)
-                .unwrap_or_default(),
-        );
-        if let Some(lifecycle) = self.artifact_lifecycle(&repo_path)? {
-            let current = self.runs.get(run_id)?.unwrap_or_else(|| run.clone());
-            let reason = current
-                .truthy("last_error")
-                .map(Value::py_str)
-                .unwrap_or_else(|| "Canceled by user.".to_string());
-            lifecycle
-                .record_failure(
-                    run_id,
-                    &field(&run, "ticket_id"),
-                    &field(&run, "provider_key"),
-                    &reason,
-                    FailureKind {
-                        canceled: true,
-                        retry: false,
-                    },
-                )
-                .map_err(|error| {
-                    Failure::value(format!(
-                        "run {run_id} stopped, but canonical cancellation could not be published: {error}"
-                    ))
-                })?;
-            if prune {
-                ArtifactLifecycleCoordinator::cleanup_snapshot(&workspace);
-            }
-        }
-        let mut body = Dict::new();
-        body.insert("canceled", true);
-        body.insert("run", self.runs.get(run_id)?);
-        if prune && !repo_path.is_empty() {
-            let (removed, error) = remove_worktree(&repo_path, &workspace);
-            body.insert("worktree_removed", removed);
-            if let Some(error) = error {
-                body.insert("worktree_error", error);
-            }
-            delete_branch(
-                &repo_path,
-                &run.get("branch").map(Value::py_str).unwrap_or_default(),
-            );
-        }
-        self.record_queue_drain_after_event(
-            run.get("repo_path").and_then(Value::as_str),
-            "run-canceled",
-            false,
-        );
-        reply(200, body)
+        reply(200, self.cancel_run(run_id, prune)?)
     }
 
     // -- preserved runs ----------------------------------------------------------

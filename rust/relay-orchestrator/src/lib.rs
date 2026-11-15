@@ -7,15 +7,17 @@
 //! Python daemon. A Rust and a Python daemon can take turns on one data root:
 //! every database, file and commit is written in the Python daemon's form.
 //!
-//! Worker, review and spike execution is part 5 (RR-498). Until it lands the
-//! routes that would start a process run every check that comes before the
-//! launch and then answer a `RuntimeError` (500) naming RR-498, writing
-//! nothing a later Python or Rust daemon would have to undo.
+//! Worker, review and spike execution (part 5, RR-498) starts the Claude and
+//! Codex processes: `worker` runs them, `execution` decides what a
+//! finished run leads to (review, merge, retry, resume, cancel), and `spike`
+//! owns the read-only research snapshot and its report.
 
 pub mod actions;
+pub mod activity;
 pub mod board;
 pub mod daemon;
 pub mod dispatch;
+pub mod execution;
 pub mod failure;
 pub mod followups;
 pub mod general;
@@ -30,4 +32,6 @@ pub mod router;
 pub mod runs;
 pub mod serve;
 pub mod sessions;
+pub mod spike;
 pub mod trace;
+pub mod worker;

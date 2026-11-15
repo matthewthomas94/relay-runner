@@ -6,7 +6,7 @@
 //! review.
 //!
 //! The continuity agent lane (`continuity_agents`) and its recovery broker
-//! need a provider session launcher, which is worker execution (RR-498), so
+//! need the messenger's persistent provider session, which is not ported, so
 //! an incident is recorded to `continuity_incidents.jsonl` and not yet
 //! submitted to an agent.
 

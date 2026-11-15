@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use relay_intents::json::{self, Dict, Value};
+use relay_intents::json::{Dict, Value};
 use relay_services::continuity::providers::command_prefix;
 use relay_services::general_work::{
     CommandFactory, GeneralWorkOptions, PersonalFiles, Preflight, general_worker_environment,
@@ -355,15 +355,18 @@ fn general_command(provider: &str, mut command: Vec<String>) -> Vec<String> {
 }
 
 /// `resolve_codex_family_from_cli(family, command=agent_bin)`.
-fn resolve_codex_family(family: &str, binary: &str) -> Result<catalog::CodexModel, String> {
+pub(crate) fn resolve_codex_family(
+    family: &str,
+    binary: &str,
+) -> Result<catalog::CodexModel, String> {
     let prefix = command_prefix(binary).unwrap_or_else(|| vec![binary.to_string()]);
     let models = catalog::fetch_models(&prefix, CODEX_CATALOG_TIMEOUT)?;
     catalog::resolve_family(family, &models)
 }
 
 /// `_agent_command(agent_kind=, agent_bin=, run=)` for an implementation or
-/// General run (`run` carries only `model_alias` and `worker_effort`).
-/// Spike launch lines belong to worker execution (RR-498).
+/// General run (`run` carries only `model_alias` and `worker_effort`); the
+/// spike and review lines share [`crate::worker::launch_line`].
 pub fn agent_command(
     kind: &str,
     binary: &str,
@@ -371,76 +374,8 @@ pub fn agent_command(
     worker_effort: &str,
     resolve: impl Fn(&str, &str) -> Result<catalog::CodexModel, String>,
 ) -> Outcome<Vec<String>> {
-    let mut model = json::py_strip(model_alias).to_lowercase();
-    let mut effort = json::py_strip(worker_effort).to_lowercase();
-    let mut command = vec![binary.to_string()];
-    let push = |command: &mut Vec<String>, args: &[&str]| {
-        command.extend(args.iter().map(|arg| arg.to_string()));
-    };
-    if kind == "claude" {
-        if model == "default" {
-            model.clear();
-        }
-        if effort == "default" {
-            effort.clear();
-        }
-        push(
-            &mut command,
-            &[
-                "-p",
-                "--dangerously-skip-permissions",
-                "--verbose",
-                "--output-format",
-                "stream-json",
-            ],
-        );
-        if !model.is_empty() {
-            push(&mut command, &["--model", &model]);
-        }
-        if !effort.is_empty() {
-            push(&mut command, &["--effort", &effort]);
-        }
-        return Ok(command);
-    }
-    if !model.is_empty() {
-        let family = catalog::normalize_codex_family(&model, catalog::CODEX_DEFAULT_FAMILY);
-        let unresolved = |model: &str, error: String| {
-            Failure::runtime(format!(
-                "could not resolve Codex worker model {}: {error}",
-                json::str_repr(model)
-            ))
-        };
-        let resolved = resolve(&family, binary).map_err(|error| unresolved(&model, error))?;
-        model = resolved.launch_model().to_string();
-        if !effort.is_empty() {
-            effort = catalog::resolve_effort(&effort, &resolved)
-                .map_err(|error| unresolved(&model, error))?;
-        }
-    }
-    if effort == "default" {
-        effort.clear();
-    }
-    push(
-        &mut command,
-        &[
-            "--search",
-            "exec",
-            "--json",
-            "--ephemeral",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "--dangerously-bypass-hook-trust",
-        ],
-    );
-    if !model.is_empty() {
-        push(&mut command, &["--model", &model]);
-    }
-    if !effort.is_empty() {
-        push(
-            &mut command,
-            &["--config", &format!("model_reasoning_effort={effort}")],
-        );
-    }
-    Ok(command)
+    crate::worker::launch_line(kind, binary, model_alias, worker_effort, None, resolve)
+        .map(|line| line.command)
 }
 
 /// `_general_worker_preflight(provider, command, workspace)`: refuses a run
