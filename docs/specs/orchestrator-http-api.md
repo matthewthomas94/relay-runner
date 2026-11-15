@@ -315,6 +315,10 @@ result; the daemon writes the report into the ticket and never merges.
     so `…-rr-48` never claims `…-rr-485/…`. macOS hides the environment of
     Apple platform binaries such as `/bin/sh`, so their tags cannot be read
     and only a path can attribute them.
+  - This route always reports. The daemon's own background cleanup (RR-507)
+    stops Tier 1 process leftovers at startup and every 15 minutes unless
+    `[orchestrator] leftover_cleanup` is `report` or `off`; see
+    `docs/orchestrator.md`.
 
 ## Program, sessions, messenger and continuity
 
