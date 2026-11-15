@@ -54,8 +54,8 @@ enum BoardDarkSurfaceStyle {
     static let cardFill = Color(nsColor: cardFillNSColor)
     static let cardActiveFill = Color(nsColor: cardActiveFillNSColor)
     static let border = Color(nsColor: borderNSColor)
-    /// The primary (white) action and its lighter hover.
-    static let primaryActionFill = GraphicalTheme.neutral10.opacity(actionOpacity)
+    /// The primary (white) action at 85%, borderless, and its lighter hover.
+    static let primaryActionFill = GraphicalTheme.neutral10.opacity(0.85)
     static let primaryActionHoverFill = GraphicalTheme.neutral10.opacity(0.9)
     /// Hairlines on black controls: selects neutral-4, text fields neutral-5.
     static let selectStroke = GraphicalTheme.neutral4.opacity(0.5)
@@ -74,9 +74,6 @@ enum BoardDarkSurfaceStyle {
         .init(color: Color.white.opacity(0.1), location: 0.5),
         .init(color: Color.white.opacity(0.225), location: 1),
     ]
-    static let glassRimOnLight = LinearGradient(
-        stops: glassRimOnLightStops, startPoint: .topLeading, endPoint: .bottomTrailing
-    )
     /// The shell's black, solid under the notch and 75% at its foot.
     static let shellFill = LinearGradient(
         stops: [

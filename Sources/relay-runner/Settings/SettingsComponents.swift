@@ -399,7 +399,7 @@ extension SharedActionButtonPalette {
         stroke: SettingsSurfaceColor.focusRing
     )
 
-    /// Primary button: white glass at 75%, black label.
+    /// Primary button: white glass at 85%, black label, no border.
     static let settingsPrimary = SharedActionButtonPalette(
         foreground: GraphicalTheme.neutral1,
         fill: BoardDarkSurfaceStyle.primaryActionFill,
@@ -429,7 +429,7 @@ struct SharedActionButtonSurface: View {
             .overlay(shape.fill(GraphicalTheme.neutral10.opacity(
                 prominence == .primary && presentation.isEnabled && presentation.isHovered ? 0.6 : 0
             )))
-            .overlay(shape.strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: 1))
+            .overlay(shape.strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: prominence == .primary ? 0 : 1))
             .overlay(shape.fill(GraphicalTheme.dangerForeground.opacity(
                 prominence == .danger && presentation.isEnabled && presentation.isHovered ? 0.12 : 0
             )))
