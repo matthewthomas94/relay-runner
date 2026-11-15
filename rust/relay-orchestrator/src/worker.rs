@@ -542,6 +542,16 @@ fn for_each_line(stream: impl Read, mut handle: impl FnMut(&str)) {
     }
 }
 
+/// The tags that name a provider process as this run's: a process that
+/// escapes the provider's group but inherits its environment still carries
+/// them. A present tag proves ownership; a missing one proves nothing.
+fn run_tags(run_id: i64, workspace: &str) -> [(String, String); 2] {
+    [
+        ("RELAY_RUN_ID".to_string(), run_id.to_string()),
+        ("RELAY_WORKSPACE".to_string(), workspace.to_string()),
+    ]
+}
+
 /// A started provider: its output stream, fed its prompt.
 struct Started {
     output: std::io::PipeReader,
@@ -1027,11 +1037,13 @@ fn run_worker(daemon: &Arc<Daemon>, process: &RunProcess, launch: &WorkerLaunch)
             log.write(&format!("[orchestrator] {key}={value}\n"));
         }
     }
+    let mut environment = overrides.clone();
+    environment.extend(run_tags(run_id, &workspace));
     let started = match start_process(
         process,
         &line.command,
         &workspace,
-        &overrides,
+        &environment,
         &launch.prompt,
     ) {
         Ok(started) => started,
@@ -1409,7 +1421,13 @@ fn run_review_worker(daemon: &Arc<Daemon>, process: &RunProcess, launch: &Review
             return;
         }
     };
-    let started = match start_process(process, &line.command, &repo_path, &[], &launch.prompt) {
+    let started = match start_process(
+        process,
+        &line.command,
+        &repo_path,
+        &run_tags(run_id, &repo_path),
+        &launch.prompt,
+    ) {
         Ok(started) => started,
         Err(error) => {
             let message = format!(
@@ -1604,6 +1622,26 @@ mod tests {
             failure_tail("codex", 3, &["x".to_string()]),
             "exit=3; tail=x"
         );
+    }
+
+    #[test]
+    fn provider_children_inherit_the_run_tags() {
+        let workspace = std::env::temp_dir();
+        let workspace = workspace.to_str().unwrap();
+        // The provider stands in as a shell whose own child reports the tags,
+        // as a tool process the provider spawns would see them.
+        let command = [
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "/bin/sh -c 'printf \"%s|%s\" \"$RELAY_RUN_ID\" \"$RELAY_WORKSPACE\"'".to_string(),
+        ];
+        let process = RunProcess::default();
+        let mut started =
+            start_process(&process, &command, workspace, &run_tags(388, workspace), "").unwrap();
+        let mut output = String::new();
+        started.output.read_to_string(&mut output).unwrap();
+        assert_eq!(reap(&process), 0);
+        assert_eq!(output, format!("388|{workspace}"));
     }
 
     #[test]
