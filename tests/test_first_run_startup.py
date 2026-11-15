@@ -388,6 +388,63 @@ esac
             self.assertEqual(percentages, [80, 82, 85, 88, 92, 95, 98])
             self.assertNotIn(100, percentages)
 
+    def test_status_reports_only_the_launchd_job_not_workspace_test_daemons(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scripts = root / "scripts"
+            fake_bin = root / "bin"
+            home = root / "home"
+            scripts.mkdir()
+            fake_bin.mkdir()
+            home.mkdir()
+            launcher = scripts / "relay-orchestrator"
+            shutil.copy2(ROOT / "scripts" / "relay-orchestrator", launcher)
+            # A test daemon a worker started from its workspace, named like
+            # the real binary.
+            decoy = self.fake_daemon(
+                root / "workspaces/relay-runner-x-rr-1", "#!/bin/bash\nexec sleep 30\n"
+            )
+            test_daemon = subprocess.Popen([str(decoy)], stdout=subprocess.DEVNULL)
+            self.addCleanup(test_daemon.wait)
+            self.addCleanup(test_daemon.kill)
+            job = subprocess.Popen(["/bin/sleep", "30"])
+            self.addCleanup(job.wait)
+            self.addCleanup(job.kill)
+            self.write_executable(
+                fake_bin / "launchctl",
+                """#!/bin/bash
+[ "$1" = print ] && [ -n "${FAKE_JOB_PID:-}" ] || exit 113
+printf 'gui/501/com.relay.orchestrator = {\\n\\tstate = running\\n\\tpid = %s\\n}\\n' "$FAKE_JOB_PID"
+""",
+            )
+            env = {
+                **os.environ,
+                "HOME": str(home),
+                "PATH": f"{fake_bin}:/usr/bin:/bin",
+                "RELAY_ORCHESTRATOR_PORT_FILE": str(root / "absent.port"),
+                "RELAY_ORCHESTRATOR_ERR_FILE": str(root / "orchestrator.err"),
+            }
+
+            def status(job_pid: str) -> str:
+                result = subprocess.run(
+                    [str(launcher), "--status"],
+                    env={**env, "FAKE_JOB_PID": job_pid},
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return result.stdout.split("Port file", 1)[0]
+
+            unloaded = status("")
+            self.assertIn("(not running)", unloaded)
+            self.assertNotIn("relay-orchestrator", unloaded)
+
+            loaded = status(str(job.pid))
+            self.assertIn(f"{job.pid} /bin/sleep 30", loaded)
+            self.assertNotIn(str(test_daemon.pid), loaded)
+            self.assertNotIn("workspaces", loaded)
+
     def run_launcher(self, *, stale_bootstrap: bool, healthy: bool) -> subprocess.CompletedProcess:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

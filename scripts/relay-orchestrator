@@ -58,10 +58,6 @@ LEGACY_WORKFLOW_MD="$CMDS_DIR/relay-workflow.md"
 LEGACY_LINK_MD="$CMDS_DIR/relay-link-project.md"
 LEGACY_ORCHESTRATE_MD="$CMDS_DIR/relay-orchestrate.md"
 
-# The daemon's process. services/orchestrator.py is the Python daemon of
-# releases before RR-487, matched so --status still reports one left running.
-DAEMON_PROCESS_PATTERN='services/orchestrator[.]py|(MacOS|release|debug)/relay-orchestrator( |$)'
-
 # -- Common helpers --
 
 # The Rust daemon from this bundle's Contents/MacOS, or a source checkout's
@@ -380,6 +376,14 @@ launchctl_loaded() {
     launchctl print "$LAUNCHCTL_SERVICE" >/dev/null 2>&1
 }
 
+# The pid of the launchd job's running daemon, or nothing. --status reports
+# only this process, so test daemons started from a worker workspace (RR-501)
+# never look like the real one.
+launchd_job_pid() {
+    launchctl print "$LAUNCHCTL_SERVICE" 2>/dev/null \
+        | awk '$1 == "pid" && $2 == "=" && $3 ~ /^[0-9]+$/ { print $3; exit }'
+}
+
 active_worker_count() {
     local db="$ORCH_DIR/runs.db"
     if [ ! -f "$db" ]; then
@@ -462,8 +466,13 @@ launchctl_unload() {
 
 cmd_status() {
     echo "Daemon process:"
-    if pgrep -f "$DAEMON_PROCESS_PATTERN" >/dev/null 2>&1; then
-        pgrep -fl "$DAEMON_PROCESS_PATTERN" | head -3 | sed 's/^/  /'
+    local daemon_pid daemon_line=""
+    daemon_pid="$(launchd_job_pid || true)"
+    if [ -n "$daemon_pid" ]; then
+        daemon_line="$(ps -o pid=,command= -p "$daemon_pid" 2>/dev/null || true)"
+    fi
+    if [ -n "$daemon_line" ]; then
+        printf '%s\n' "$daemon_line" | sed 's/^ */  /'
     else
         echo "  (not running)"
     fi
