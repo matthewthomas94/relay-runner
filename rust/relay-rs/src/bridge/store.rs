@@ -170,8 +170,26 @@ pub fn write_command_state(path: &str, metadata: &Dict) -> io::Result<()> {
     if !sessions.is_empty() {
         payload.insert("session_commands", sessions);
     }
+    // RR-512: the inbox's view belongs to the inbox, and only
+    // `sync_deliverable_state` changes it. Dropping it here left a window in
+    // which a terminal saw its materialized command as undeliverable.
+    for field in INBOX_STATE_FIELDS {
+        if payload.get(field).is_none()
+            && let Some(value) = previous.get(field)
+        {
+            payload.insert(field, value.clone());
+        }
+    }
     atomic_write_json(path, &payload)
 }
+
+/// The command-state fields `sync_deliverable_state` mirrors from the inbox.
+const INBOX_STATE_FIELDS: [&str; 4] = [
+    "deliverable_commands",
+    "cancelled_intent_ids",
+    "inbox_recovery_blocker",
+    "intent_inbox_version",
+];
 
 /// `sync_deliverable_state`: the inbox's view into the state file, mirrored.
 pub fn sync_deliverable_state(state_path: &str, inbox: &IntentInbox) -> io::Result<()> {
@@ -519,4 +537,54 @@ pub fn remove(path: &str) {
 /// `os.path.exists(path)`.
 pub fn exists(path: &str) -> bool {
     Path::new(path).exists()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_state_write_keeps_the_inbox_deliverable_view() {
+        let dir = std::env::temp_dir().join(format!("rr512-state-{}", std::process::id()));
+        make_private_dirs(&dir.to_string_lossy()).unwrap();
+        let path = dir.join("voice_command_state.json");
+        let path = path.to_string_lossy().into_owned();
+        // The inbox view after item 1 of command 375 was materialized.
+        fs::write(
+            &path,
+            r#"{"relay_command_seq":375,"relay_command_id":"cmd-375","intent_id":"cmd-375:item:1",
+                "deliverable_commands":[{"relay_command_seq":375,"relay_command_id":"cmd-375",
+                "intent_id":"cmd-375:item:1","state":"delivered"}],
+                "cancelled_intent_ids":["old"],"inbox_recovery_blocker":null,
+                "intent_inbox_version":6}"#,
+        )
+        .unwrap();
+        // Item 2 of the same turn is published before the inbox syncs back.
+        let mut item2 = Dict::new();
+        item2.insert("relay_command_seq", 375);
+        item2.insert("relay_command_id", "cmd-375");
+        item2.insert("intent_id", "cmd-375:item:2");
+        write_command_state(&path, &item2).unwrap();
+
+        let state = read_json_file(&path);
+        assert_eq!(state.string("intent_id"), "cmd-375:item:2");
+        let Some(Value::List(deliverable)) = state.get("deliverable_commands") else {
+            panic!("the deliverable view was dropped: {state:?}");
+        };
+        assert_eq!(deliverable.len(), 1);
+        assert!(
+            matches!(state.get("cancelled_intent_ids"), Some(Value::List(ids)) if ids.len() == 1)
+        );
+        assert!(state.get("intent_inbox_version").is_some());
+
+        // A write that carries its own view replaces the previous one.
+        let mut synced = item2.clone();
+        synced.insert("deliverable_commands", Value::List(Vec::new()));
+        write_command_state(&path, &synced).unwrap();
+        assert!(matches!(
+            read_json_file(&path).get("deliverable_commands"),
+            Some(Value::List(list)) if list.is_empty()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

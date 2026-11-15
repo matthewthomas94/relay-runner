@@ -40,12 +40,15 @@ func contextContinuationLineage(environment: [String: String], binding: [String:
             && $0["recovery_generation"] as? String == environment["RELAY_RECOVERY_GENERATION"]
             && $0["foreground_gate_handle"] as? String == environment["RELAY_FOREGROUND_GATE_HANDLE"]
     }.max { ($0["created_at"] as? Double ?? 0) < ($1["created_at"] as? Double ?? 0) }
-    guard let current, (current["manual_submission_id"] as? String)?.hasPrefix("continuation-") == true else { return nil }
+    guard let current, let submission = current["manual_submission_id"] as? String, !submission.isEmpty else { return nil }
     // Preserve revoked parents too: the daemon must reject them instead of
     // silently converting a cancelled voice request to unrestricted typed work.
-    if let seq = optionalInt(current["relay_command_seq"]), let id = current["relay_command_id"] as? String {
+    if submission.hasPrefix("continuation-"),
+       let seq = optionalInt(current["relay_command_seq"]), let id = current["relay_command_id"] as? String {
         return .voice(seq: seq, id: id, intentID: current["intent_id"] as? String)
     }
+    // RR-512: a typed turn never borrows the last claimed voice command, so
+    // its mutations are not refused under that command's authorization.
     return .typed
 }
 
