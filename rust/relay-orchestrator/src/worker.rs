@@ -700,8 +700,13 @@ fn watch_output(process: &RunProcess, output: impl Read, handle: impl FnMut(&str
     });
 }
 
-/// The exit status once the output has ended.
+/// The exit status once the output has ended. A caller that read the
+/// output without `watch_output` has no supervisor, so supervise here: the
+/// child is still reaped only after what it left behind has been stopped.
 fn reap(process: &RunProcess) -> i64 {
+    if guard(&process.slot).poll().is_none() {
+        process.supervise();
+    }
     loop {
         if let Some(status) = guard(&process.slot).poll() {
             return return_code(status);
