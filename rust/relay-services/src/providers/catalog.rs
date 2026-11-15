@@ -18,7 +18,8 @@ pub const CODEX_MESSENGER_DEFAULT_FAMILY: &str = "luna";
 /// `CODEX_WORKER_TIER_FAMILIES`: the family each shared worker tier runs on.
 pub const CODEX_WORKER_TIER_FAMILIES: [(&str, &str); 3] =
     [("fast", "luna"), ("balanced", "sol"), ("strong", "astra")];
-const PROVIDER_DEFAULT_EFFORT: &str = "default";
+/// `CODEX_PROVIDER_DEFAULT_EFFORT`: the effort that means the model's own default.
+pub const PROVIDER_DEFAULT_EFFORT: &str = "default";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CodexModel {
@@ -237,6 +238,16 @@ pub fn resolve_effort(effort: &str, model: &CodexModel) -> Result<String, String
 /// `fetch_codex_models_from_cli`: `model/list` from a short-lived
 /// `codex app-server`, or the `RELAY_CODEX_MODEL_LIST_JSON` fixture.
 pub fn fetch_models(prefix: &[String], timeout: Duration) -> Result<Vec<CodexModel>, String> {
+    fetch_models_with_hidden(prefix, timeout, false)
+}
+
+/// `fetch_codex_models_from_cli(include_hidden=...)`: `fetch_models`, also
+/// asking the app-server for hidden models when `include_hidden` is set.
+pub fn fetch_models_with_hidden(
+    prefix: &[String],
+    timeout: Duration,
+    include_hidden: bool,
+) -> Result<Vec<CodexModel>, String> {
     if let Some(fixture) = std::env::var("RELAY_CODEX_MODEL_LIST_JSON")
         .ok()
         .filter(|f| !f.is_empty())
@@ -265,7 +276,7 @@ pub fn fetch_models(prefix: &[String], timeout: Duration) -> Result<Vec<CodexMod
             true
         });
     });
-    let result = list_models(&proc, &responses, timeout);
+    let result = list_models(&proc, &responses, timeout, include_hidden);
     proc.stop();
     result
 }
@@ -274,6 +285,7 @@ fn list_models(
     proc: &Proc,
     responses: &(Mutex<HashMap<i64, Dict>>, Condvar),
     timeout: Duration,
+    include_hidden: bool,
 ) -> Result<Vec<CodexModel>, String> {
     let write = |payload: Dict| {
         if !proc.is_running() {
@@ -323,7 +335,7 @@ fn list_models(
     loop {
         let mut params = Dict::new();
         params.insert("cursor", cursor);
-        params.insert("includeHidden", false);
+        params.insert("includeHidden", include_hidden);
         params.insert("limit", 100_i64);
         write(request(Some(request_id), "model/list", params))?;
         let remaining = deadline

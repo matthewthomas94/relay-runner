@@ -2,7 +2,7 @@ import Foundation
 import Observation
 
 /// How the session routes change requests. Mirrors `WORK_STYLES` in
-/// services/command_actions.py, which reads the choice from `session-work-style.json`.
+/// rust/relay-services/src/command_actions.rs, which reads the choice from `session-work-style.json`.
 enum ProjectWorkStyle: String, CaseIterable, Identifiable, Codable {
     case auto
     case direct
@@ -28,7 +28,7 @@ enum ProjectWorkStyle: String, CaseIterable, Identifiable, Codable {
 }
 
 /// The session-wide work style picked from the Start button's menu. The
-/// Python router reads the same file on every request, so a change applies
+/// bridge's router reads the same file on every request, so a change applies
 /// from the next request and wins over a project's `.relay-runner.toml`.
 /// No file means no choice yet: the menu shows Auto.
 @MainActor

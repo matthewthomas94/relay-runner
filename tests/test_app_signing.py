@@ -240,7 +240,8 @@ class RustHelperPackagingTests(unittest.TestCase):
             r'\s+"\$APP_DIR/Contents/MacOS/([^"]+)"', script)
         self.assertIn("relay-speech", signed)
         self.assertLess(script.index('"$APP_DIR/Contents/MacOS/relay-speech"\n    # relay-rs'), script.index('"$APP_DIR"\nelse'))
-        self.assertIn("requirements-python-speech.txt", script)
+        self.assertNotIn("requirements-python-speech.txt", script)
+        self.assertIn("BUNDLED_PYTHON=", script)
 
     def test_speech_service_must_be_packaged_and_signed_as_itself(self):
         with tempfile.TemporaryDirectory() as directory:

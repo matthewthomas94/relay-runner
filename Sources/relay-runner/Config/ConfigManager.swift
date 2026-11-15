@@ -33,9 +33,9 @@ final class ConfigManager {
     func load() -> AppConfig {
         guard FileManager.default.fileExists(atPath: configPath.path) else {
             // First-launch bootstrap: persist Swift's defaults to disk so the
-            // Python services (voice_bridge, tts_worker) read the same values.
-            // Without this, Python falls back to its own defaults — which
-            // diverged from Swift's intent (e.g. auto_play=True in Python vs
+            // voice services (the relay-rs bridge, relay-speech) read the same
+            // values. Without this, they fall back to their own defaults — which
+            // diverged from Swift's intent (e.g. auto_play=True in the services vs
             // False in Swift) and caused TTS to fire on the very first session
             // before the user had a chance to configure anything.
             var defaults = AppConfig()
@@ -136,7 +136,7 @@ final class ConfigManager {
         try toml.write(to: configPath, atomically: true, encoding: .utf8)
     }
 
-    // Hand-rolled TOML writer — guaranteed compatible with Python's fallback parser
+    // Hand-rolled TOML writer — guaranteed compatible with the bridge's TOML reader
     private func serialize(_ c: AppConfig) -> String {
         var lines: [String] = []
 

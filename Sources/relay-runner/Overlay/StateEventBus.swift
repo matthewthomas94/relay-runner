@@ -191,7 +191,7 @@ struct ContinuityRecoveryResponse: Equatable {
     }
 }
 
-/// Listens on /tmp/voice_state.sock for JSON state updates from Python services.
+/// Listens on /tmp/voice_state.sock for JSON state updates from the voice services.
 /// Dispatches parsed events to the StateMachine on the main actor.
 actor StateEventBus {
 

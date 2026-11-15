@@ -64,18 +64,17 @@ class SkillCleanupTests(unittest.TestCase):
         self.assertIn("nonblocking app-managed transport", script)
         self.assertIn("bridge startup, heartbeat, and PTY delivery", script)
 
-    def test_manual_bridge_records_ready_only_from_python_and_records_launch_failure(self):
+    def test_manual_bridge_records_ready_only_from_the_bridge_and_records_launch_failure(self):
         script = (ROOT / "scripts" / "relay-bridge").read_text()
         launch = script.split("# -- Start voice bridge --", 1)[1]
         # Joining an already-live daemon can report ready; a new manual
-        # bridge must wait for Python to establish readiness itself.
+        # bridge must wait for the bridge to establish readiness itself.
         launch = launch.split("# Record the launching cwd", 1)[1]
 
         self.assertNotIn("record_support_event shell bridge_readiness ready", launch)
-        # RR-493: relay-rs bridge by default, voice_bridge.py as the rollback.
-        self.assertIn('BRIDGE_COMMAND=("$RUST_BRIDGE" bridge)', launch)
-        self.assertIn('BRIDGE_COMMAND=("$PYTHON" "$SERVICES_BUNDLE/voice_bridge.py")', launch)
-        self.assertIn('if "${BRIDGE_COMMAND[@]}" --config "$CONFIG_PATH" --relay "$@"; then', launch)
+        # RR-487: relay-rs bridge is the only bridge.
+        self.assertNotIn("voice_bridge.py", launch)
+        self.assertIn('if "$RUST_BRIDGE" bridge --config "$CONFIG_PATH" --relay "$@"; then', launch)
         self.assertIn("record_support_event shell bridge_readiness failed", launch)
 
     def test_shell_installers_prefer_chatgpt_codex_before_legacy_app(self):

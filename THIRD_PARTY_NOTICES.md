@@ -2,7 +2,7 @@
 
 Relay Runner's original source, documentation, project artwork, and public product screenshots are distributed under the repository's [MIT License](LICENSE). Third-party components and downloaded models retain the terms below.
 
-This inventory reflects `Package.resolved`, `rust/Cargo.lock`, `services/requirements.txt`, `services/requirements-python-speech.txt`, and the first-run download paths on 2026-08-06, updated for the Rust speech service on 2026-11-13. A release artifact includes this file, Relay Runner's license, and the license files shipped by the resolved Swift packages. Python wheels retain their package metadata in the local venv created after installation.
+This inventory reflects `Package.resolved`, `rust/Cargo.lock`, and the first-run download paths on 2026-08-06, updated for the Rust speech service on 2026-11-13 and for the removal of the Python services on 2026-11-15 (RR-487). A release artifact includes this file, Relay Runner's license, and the license files shipped by the resolved Swift packages.
 
 ## Compiled into the macOS app
 
@@ -129,7 +129,7 @@ The app bundle ships `relay-rs`, `relay-speech` and `relay-orchestrator`, Relay 
 
 `webpki-root-certs` is used only by the `ort-sys` build script, which downloads ONNX Runtime while `relay-speech` is compiled; nothing of it is linked into or shipped with the app. `scripts/rust-licenses` allows its CDLA-Permissive-2.0 licence for that use only.
 
-`relay-speech` also links or embeds material that is not a Rust crate. None of it is GPL-licensed; the espeak-ng phonemiser the Python speech service uses is not part of it.
+`relay-speech` also links or embeds material that is not a Rust crate. None of it is GPL-licensed; the espeak-ng phonemiser of the earlier Python speech service is not part of it.
 
 | Component | Version | Use | License |
 | --- | --- | --- | --- |
@@ -140,34 +140,9 @@ The app bundle ships `relay-rs`, `relay-speech` and `relay-orchestrator`, Relay 
 
 `loqui-g2p`'s `NOTICE` at that commit is authoritative for its embedded data; its part-of-speech tagger weights are the crate authors' own, under the crate's MIT License. The Kokoro model `relay-speech` runs is downloaded to user storage and listed under [Downloaded speech models](#downloaded-speech-models).
 
-## Installed into the local voice environment
+## Python packages of earlier releases
 
-These packages are not committed to the repository or pre-bundled in the signed app. First-run setup installs the ranges in `services/requirements.txt` into `~/Library/Application Support/relay-runner/services/.venv/`. Since RR-481 that is only `tomli` on Python 3.10. The speech packages below are the Python speech service's, which `relay-speech` replaced; setup installs them from `services/requirements-python-speech.txt` only when `RELAY_SPEECH_RUNTIME=python` selects that service as the fallback (see [Speech runtime](docs/fresh-install.md#speech-runtime)):
-
-| Direct package | Declared range | License |
-| --- | --- | --- |
-| [NumPy](https://github.com/numpy/numpy) | `>=1.26,<3` | BSD 3-Clause |
-| [ONNX Runtime](https://github.com/microsoft/onnxruntime) | `>=1.20,<2` | MIT License |
-| [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) | `>=0.4.9,<0.6` | MIT License; its Kokoro model is Apache License 2.0 |
-| [huggingface_hub](https://github.com/huggingface/huggingface_hub) | `>=0.20,<1` | Apache License 2.0 |
-
-Those packages install transitive dependencies. Their wheel metadata and license files remain authoritative for the concrete environment; use `python -m pip show <package>` and the installed `.dist-info` directories when auditing a release machine.
-
-### Copyleft-licensed transitive packages
-
-Resolving the Python speech packages (then in `services/requirements.txt`, now `services/requirements-python-speech.txt`) on Python 3.13 (macOS arm64) on 2026-11-11 installed 41 packages. The ones below carry a copyleft license; the rest declare MIT, BSD, Apache 2.0, PSF 2.0 or similar permissive terms. pip downloads all of them from PyPI into the services venv named above, at first run before RR-481 and now only for the fallback. None of them is committed to this repository, compiled into the app or included in the signed app bundle or DMG.
-
-| Package | Resolved version | Required by | License |
-| --- | --- | --- | --- |
-| [phonemizer-fork](https://pypi.org/project/phonemizer-fork/) (fork of [bootphon/phonemizer](https://github.com/bootphon/phonemizer)) | 3.3.2 | kokoro-onnx (`>=3.3.2`) | GNU General Public License v3 or later |
-| [espeak-ng](https://github.com/espeak-ng/espeak-ng) (`libespeak-ng.dylib` and `espeak-ng-data`) | 1.52.0, prebuilt inside the `espeakng-loader` wheel | espeakng-loader | GNU General Public License v3 or later |
-| [espeakng-loader](https://github.com/thewh1teagle/espeakng-loader) | 0.2.4 | kokoro-onnx (`>=0.2.4`) | MIT License for the loader code in its upstream repository; the wheel declares no license metadata and carries the GPL-licensed espeak-ng library and data above |
-| [certifi](https://github.com/certifi/python-certifi) | 2026.10.23 | requests, through huggingface_hub | Mozilla Public License 2.0 |
-| [tqdm](https://github.com/tqdm/tqdm) | 4.70.1 | huggingface_hub | Mozilla Public License 2.0 and MIT License |
-
-kokoro-onnx imports `phonemizer` and `espeakng_loader` to convert text to phonemes, so the Python speech services (`tts_worker.py`, `preview_voice.py`) load the espeak-ng shared library from the venv whenever Kokoro speech is generated. Later installs can resolve newer versions within the declared ranges.
-
-When no compatible system Python exists, setup downloads a checksum-verified [python-build-standalone](https://github.com/astral-sh/python-build-standalone) CPython distribution. Python and the libraries included in that distribution retain their upstream licenses.
+Since RR-487 Relay Runner installs no Python packages and downloads no Python interpreter. Releases before it installed packages from PyPI into `~/Library/Application Support/relay-runner/services/.venv/` at first run: up to RR-481 the Python speech stack (NumPy, ONNX Runtime, kokoro-onnx and huggingface_hub), whose transitive dependencies included the GPL-3.0-or-later `phonemizer-fork` and espeak-ng (`espeakng-loader`), and could download a [python-build-standalone](https://github.com/astral-sh/python-build-standalone) CPython into `~/Library/Application Support/relay-runner/python`. None of them was committed to this repository, compiled into the app or included in the signed app bundle or DMG. The first setup run of a current release removes both folders; see [Upgrading from a release with Python services](docs/fresh-install.md#upgrading-from-a-release-with-python-services).
 
 ## Downloaded speech models
 

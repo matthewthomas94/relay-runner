@@ -6,29 +6,29 @@ import XCTest
 final class OnboardingProgressTests: XCTestCase {
 
     func testRuntimeProgressParsesChunkedAndMultilineOutput() {
-        var state = VenvInstallProgressState()
+        var state = RelaySetupProgressState()
 
         XCTAssertTrue(state.consume(Data("RELAY_PRO".utf8)).isEmpty)
         XCTAssertNil(state.progress)
 
-        let lines = state.consume(Data("GRESS:65:Installing dependencies...\nCollecting numpy\r\n".utf8))
+        let lines = state.consume(Data("GRESS:65:Installing voice and agent tools...\nDownloading speech model\r\n".utf8))
 
         XCTAssertEqual(lines, [
-            "RELAY_PROGRESS:65:Installing dependencies...",
-            "Collecting numpy",
+            "RELAY_PROGRESS:65:Installing voice and agent tools...",
+            "Downloading speech model",
         ])
-        XCTAssertEqual(state.progress ?? -1, 0.67, accuracy: 0.001)
-        XCTAssertEqual(state.message, "Collecting numpy")
+        XCTAssertEqual(state.progress ?? -1, 0.65, accuracy: 0.001)
+        XCTAssertEqual(state.message, "Downloading speech model")
     }
 
     func testNestedCompletionReservesOuterCapacityAndProgressStaysMonotonic() {
-        var state = VenvInstallProgressState()
+        var state = RelaySetupProgressState()
 
         state.consume(Data("RELAY_PROGRESS:80:Runtime ready.\n".utf8))
         state.consume(Data("RELAY_PROGRESS:100:Nested setup complete.\n".utf8))
         XCTAssertEqual(
             state.progress ?? -1,
-            VenvInstallProgressState.maximumRunningProgress,
+            RelaySetupProgressState.maximumRunningProgress,
             accuracy: 0.001
         )
         XCTAssertLessThan(state.progress ?? 1, 1)
@@ -36,14 +36,14 @@ final class OnboardingProgressTests: XCTestCase {
         state.consume(Data("RELAY_PROGRESS:70:Out-of-order phase.\nStill checking readiness\n".utf8))
         XCTAssertEqual(
             state.progress ?? -1,
-            VenvInstallProgressState.maximumRunningProgress,
+            RelaySetupProgressState.maximumRunningProgress,
             accuracy: 0.001
         )
         XCTAssertEqual(state.message, "Still checking readiness")
     }
 
     func testRuntimeProgressStartsIndeterminateAndRetryResetsPriorCompletion() {
-        var state = VenvInstallProgressState()
+        var state = RelaySetupProgressState()
         XCTAssertNil(state.progress)
 
         state.consume(Data("RELAY_PROGRESS:100:Nested setup complete.\n".utf8))
@@ -53,14 +53,14 @@ final class OnboardingProgressTests: XCTestCase {
         XCTAssertNil(state.progress)
         XCTAssertEqual(state.message, "Starting setup…")
 
-        state.consume(Data("RELAY_PROGRESS:0:Locating Python...\n".utf8))
+        state.consume(Data("RELAY_PROGRESS:0:Downloading speech model...\n".utf8))
         XCTAssertEqual(state.progress, 0)
     }
 
     func testOuterProcessOwnsSuccessFailureAndProviderReadiness() {
         for provider in [GeneralConfig.AgentProvider.codex, .claude] {
             XCTAssertEqual(
-                VenvInstaller.terminalStatus(
+                RelaySetupInstaller.terminalStatus(
                     terminationStatus: 0,
                     provider: provider,
                     providerReady: true,
@@ -70,7 +70,7 @@ final class OnboardingProgressTests: XCTestCase {
                 .succeeded
             )
 
-            guard case .failed(let missingProvider) = VenvInstaller.terminalStatus(
+            guard case .failed(let missingProvider) = RelaySetupInstaller.terminalStatus(
                 terminationStatus: 0,
                 provider: provider,
                 providerReady: false,
@@ -81,7 +81,7 @@ final class OnboardingProgressTests: XCTestCase {
             }
             XCTAssertTrue(missingProvider.contains(provider.displayName))
 
-            guard case .failed(let processFailure) = VenvInstaller.terminalStatus(
+            guard case .failed(let processFailure) = RelaySetupInstaller.terminalStatus(
                 terminationStatus: 9,
                 provider: provider,
                 providerReady: true,
@@ -300,7 +300,7 @@ final class OnboardingProgressTests: XCTestCase {
             permissionStatus: { kind in
                 kind == .microphone ? .denied : .granted
             },
-            venvInstalled: true,
+            servicesInstalled: true,
             agentSignedIn: true
         )
 
@@ -313,15 +313,15 @@ final class OnboardingProgressTests: XCTestCase {
             simplified: false,
             requiresAgentChoice: false,
             permissionStatus: { _ in .granted },
-            venvInstalled: true,
+            servicesInstalled: true,
             agentSignedIn: true
         )
-        let python = OnboardingView.progressLabel(
-            for: .pythonSetup,
+        let voiceSetup = OnboardingView.progressLabel(
+            for: .voiceSetup,
             simplified: false,
             requiresAgentChoice: false,
             permissionStatus: { _ in .granted },
-            venvInstalled: true,
+            servicesInstalled: true,
             agentSignedIn: true
         )
         let login = OnboardingView.progressLabel(
@@ -329,12 +329,12 @@ final class OnboardingProgressTests: XCTestCase {
             simplified: false,
             requiresAgentChoice: false,
             permissionStatus: { _ in .granted },
-            venvInstalled: true,
+            servicesInstalled: true,
             agentSignedIn: true
         )
 
         XCTAssertEqual(agentChoice, "1 of 3")
-        XCTAssertEqual(python, "2 of 3")
+        XCTAssertEqual(voiceSetup, "2 of 3")
         XCTAssertEqual(login, "3 of 3")
     }
 
@@ -344,16 +344,16 @@ final class OnboardingProgressTests: XCTestCase {
             simplified: true,
             requiresAgentChoice: true,
             permissionStatus: { _ in .granted },
-            venvInstalled: true,
+            servicesInstalled: true,
             agentSignedIn: true,
             parentPermissionsReviewed: false
         )
-        let python = OnboardingView.progressLabel(
+        let voiceSetup = OnboardingView.progressLabel(
             for: .parentAccessibility,
             simplified: true,
             requiresAgentChoice: true,
             permissionStatus: { _ in .granted },
-            venvInstalled: false,
+            servicesInstalled: false,
             agentSignedIn: true,
             parentPermissionsReviewed: false
         )
@@ -362,13 +362,13 @@ final class OnboardingProgressTests: XCTestCase {
             simplified: true,
             requiresAgentChoice: true,
             permissionStatus: { _ in .granted },
-            venvInstalled: true,
+            servicesInstalled: true,
             agentSignedIn: false,
             parentPermissionsReviewed: false
         )
 
         XCTAssertEqual(choice, "1 of 1")
-        XCTAssertNil(python)
+        XCTAssertNil(voiceSetup)
         XCTAssertNil(login)
     }
 
@@ -379,7 +379,7 @@ final class OnboardingProgressTests: XCTestCase {
             requiresAgentChoice: false,
             requiresParentPermissionGuidance: true,
             permissionStatus: { _ in .granted },
-            venvInstalled: true,
+            servicesInstalled: true,
             agentSignedIn: true,
             parentPermissionsReviewed: false
         )
@@ -397,7 +397,7 @@ final class OnboardingProgressTests: XCTestCase {
             requiresParentPermissionGuidance: true,
             parentPermissionsReviewed: false,
             permissionStatus: { _ in .granted },
-            venvInstalled: true,
+            servicesInstalled: true,
             agentSignedIn: true
         )
 
@@ -417,11 +417,11 @@ final class OnboardingProgressTests: XCTestCase {
             requiresParentPermissionGuidance: true,
             parentPermissionsReviewed: false,
             permissionStatus: { _ in .granted },
-            venvInstalled: false,
+            servicesInstalled: false,
             agentSignedIn: true
         )
 
-        XCTAssertEqual(next, .pythonSetup)
+        XCTAssertEqual(next, .voiceSetup)
     }
 
     func testSimplifiedAccessibilityAndScreenRecordingDoNotParticipateInSettingsProgress() {
@@ -432,7 +432,7 @@ final class OnboardingProgressTests: XCTestCase {
             permissionStatus: { kind in
                 kind == .accessibility || kind == .screenRecording ? .denied : .granted
             },
-            venvInstalled: true,
+            servicesInstalled: true,
             agentSignedIn: true
         )
         let screenRecording = OnboardingView.progressLabel(
@@ -442,7 +442,7 @@ final class OnboardingProgressTests: XCTestCase {
             permissionStatus: { kind in
                 kind == .accessibility || kind == .screenRecording ? .denied : .granted
             },
-            venvInstalled: true,
+            servicesInstalled: true,
             agentSignedIn: true
         )
 
@@ -580,18 +580,18 @@ final class OnboardingProgressTests: XCTestCase {
         ))
     }
 
-    func testPythonStatusPhaseKeepsStreamedProgressInOnePhase() {
-        XCTAssertEqual(OnboardingView.pythonStatusPhase(for: .idle), .idle)
+    func testVoiceSetupStatusPhaseKeepsStreamedProgressInOnePhase() {
+        XCTAssertEqual(OnboardingView.voiceSetupStatusPhase(for: .idle), .idle)
         XCTAssertEqual(
-            OnboardingView.pythonStatusPhase(for: .running(message: "Starting setup…", progress: nil)),
+            OnboardingView.voiceSetupStatusPhase(for: .running(message: "Starting setup…", progress: nil)),
             .running
         )
         XCTAssertEqual(
-            OnboardingView.pythonStatusPhase(for: .running(message: "Collecting numpy", progress: 0.42)),
+            OnboardingView.voiceSetupStatusPhase(for: .running(message: "Downloading speech model", progress: 0.42)),
             .running
         )
-        XCTAssertEqual(OnboardingView.pythonStatusPhase(for: .succeeded), .succeeded)
-        XCTAssertEqual(OnboardingView.pythonStatusPhase(for: .failed(message: "Incident 1")), .failed)
+        XCTAssertEqual(OnboardingView.voiceSetupStatusPhase(for: .succeeded), .succeeded)
+        XCTAssertEqual(OnboardingView.voiceSetupStatusPhase(for: .failed(message: "Incident 1")), .failed)
     }
 
     func testReadyDetailPhaseKeepsModelLoadingMessagesInOnePhase() {

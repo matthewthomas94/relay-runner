@@ -3,7 +3,7 @@ import Foundation
 /// Claude Code install discovery and Relay's Claude readiness.
 ///
 /// Relay Runner is subscription-only, so Claude is ready only when
-/// services/claude_subscription.py verifies that a launch would use the
+/// `relay-rs claude-subscription` verifies that a launch would use the
 /// user's Claude.ai subscription. A keychain login or `claude auth status`
 /// reporting `loggedIn` is not enough: an API key, gateway or cloud route can
 /// take precedence. The gate runs the CLI, so it is slow; polling UIs read

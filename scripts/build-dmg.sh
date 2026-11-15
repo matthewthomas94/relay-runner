@@ -208,11 +208,10 @@ cp "$BUILD_DIR/relay-remote-shell" "$APP_DIR/Contents/MacOS/relay-remote-shell"
 cp "$RUST_DIR/target/$RUST_TARGET/release/relay-rs" "$APP_DIR/Contents/MacOS/relay-rs"
 # Speech service: relay-speech, from the same workspace (RR-481). It links ONNX
 # Runtime statically, so there is no library beside it to bundle or sign. The
-# bridge, the tutorial voice and the Settings preview run it by default.
+# bridge, the tutorial voice and the Settings preview run it.
 cp "$RUST_DIR/target/$RUST_TARGET/release/relay-speech" "$APP_DIR/Contents/MacOS/relay-speech"
 # Orchestrator daemon: relay-orchestrator, from the same workspace (RR-500).
-# scripts/relay-orchestrator runs it by default; RELAY_ORCHESTRATOR_RUNTIME=python
-# runs services/orchestrator.py for one release.
+# scripts/relay-orchestrator runs it under launchd.
 cp "$RUST_DIR/target/$RUST_TARGET/release/relay-orchestrator" "$APP_DIR/Contents/MacOS/relay-orchestrator"
 
 # Keep Awake power helper (RR-437). A root launchd daemon registered with
@@ -334,20 +333,12 @@ fi
 # verified LICENSE is copied from the fetch cache.
 cp "$AGENT_DESKTOP_DIR/LICENSE" "$THIRD_PARTY_LICENSES_DIR/agent-desktop.txt"
 
-# Python services
-for f in voice_bridge.py relay_completion_hook.py relay_reply.py messenger.py command_actions.py work_style_cli.py intent_qualification.py continuity_incidents.py continuity_agent.py continuity_recovery.py continuity_reports.py continuity_resume.py relay_authorization.py relay_remote.py relay_remote_protocol.py intent_arbitration.py intent_inbox.py provider_turn_broker.py sidecar_lane.py speech_coordinator.py pm_frontstage.py tts_worker.py tts_filter.py config.py voice_wrap.py preview_voice.py codex_model_catalog.py claude_subscription.py rust_messenger.py harness_update.py \
-         voice_audio_lease.py speech_player.py remote_audio.py speech_service.py speech_client.py requirements-python-speech.txt \
-         artifact_lifecycle.py artifact_migration.py artifact_migration_cli.py artifact_history_cli.py automatic_retention.py \
-         artifact_catalog.py artifact_retention.py artifact_rollout.py artifact_rollout_cli.py artifact_store.py artifact_sync.py note_contract.py project_notes.py global_notes.py general_work.py personal_file_storage.py personal_notes.py note_metadata.py \
-         artifact_verification.py artifact_verification_cli.py app_signing.py fresh_install.py fresh_install_cli.py \
-         followup_tickets.py graphify_core.py graphify_ingest.py orchestrator.py orchestrator_artifact_workflow.md orchestrator_workflow.md \
-         program_artifacts.py program_status.py requirements.txt sampling_profiler.py session_capture.py support_diagnostics.py tickets.py toml_compat.py; do
+# Worker prompt templates the orchestrator daemon reads from
+# SharedSupport/services. Since RR-487 the bundle ships no Python: every
+# service is a Rust or Swift binary in Contents/MacOS.
+for f in orchestrator_workflow.md orchestrator_artifact_workflow.md; do
     cp "$PROJECT_ROOT/services/$f" "$APP_DIR/Contents/SharedSupport/services/"
 done
-find "$APP_DIR/Contents/SharedSupport/services" -name "__pycache__" -type d -prune -exec rm -rf {} +
-# Python services run from the signed app bundle. Keep the shipped source
-# directory read-only so older launchers cannot add __pycache__ files and
-# invalidate the bundle after Sparkle installs an update.
 chmod -R a-w "$APP_DIR/Contents/SharedSupport/services"
 
 # Scripts
@@ -368,23 +359,13 @@ chmod +x "$APP_DIR/Contents/SharedSupport/scripts/relay-artifact-verify"
 cp "$PROJECT_ROOT/scripts/relay-artifact-rollout" "$APP_DIR/Contents/SharedSupport/scripts/"
 chmod +x "$APP_DIR/Contents/SharedSupport/scripts/relay-artifact-rollout"
 
-# Setup script for Python venv (runs on first launch if needed)
-cat > "$APP_DIR/Contents/SharedSupport/setup-venv.sh" << 'SETUP_EOF'
-#!/bin/bash
-# Creates a Python venv with required packages for Relay Runner services.
-SERVICES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/services" && pwd)"
-VENV_DIR="$SERVICES_DIR/.venv"
-
-if [ -d "$VENV_DIR" ] && [ -x "$VENV_DIR/bin/python3" ]; then
-    exit 0  # Already set up
+# Acceptance for RR-487: nothing in the bundle needs Python.
+BUNDLED_PYTHON="$(find "$APP_DIR" \( -name '*.py' -o -name '*.pyc' -o -name 'requirements*.txt' \) -print)"
+if [ -n "$BUNDLED_PYTHON" ]; then
+    echo "error: the app bundle must not contain Python files:" >&2
+    printf '%s\n' "$BUNDLED_PYTHON" >&2
+    exit 1
 fi
-
-echo "[Relay Runner] Setting up Python environment..."
-python3 -m venv "$VENV_DIR"
-"$VENV_DIR/bin/pip" install --quiet -r "$SERVICES_DIR/requirements.txt"
-echo "[Relay Runner] Setup complete."
-SETUP_EOF
-chmod +x "$APP_DIR/Contents/SharedSupport/setup-venv.sh"
 
 echo "==> Code signing..."
 
@@ -396,9 +377,8 @@ if [ -n "$SIGN_IDENTITY" ]; then
         exit 1
     fi
     # Sign nested Mach-O content first (inside-out is required by codesign).
-    # The bundled Python services are .py text files — those don't need
-    # signing. The only executables are the main binary and the relay-bridge
-    # shell script, plus any dylibs / frameworks SPM dropped into the bundle.
+    # The shell scripts in SharedSupport need no signing; every Mach-O
+    # executable, dylib and framework below does.
     echo "  identity: $SIGN_IDENTITY"
     # Any embedded frameworks / dylibs (FluidAudio ships .dylibs via SPM plugins).
     # Sparkle's framework also contains nested apps, XPC services, and helper

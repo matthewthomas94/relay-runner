@@ -13,8 +13,9 @@
 //!
 //! Each pattern is the Python module's, compiled with the same meaning (see
 //! `relay_intents::pattern::compile`). Legacy ticket authoring
-//! (`create_ticket_for_command` and its worker-sizing helpers) and
-//! `set_session_work_style` are reached by neither and are not here.
+//! (`create_ticket_for_command` and its worker-sizing helpers) is reached by
+//! neither and is not here. `set_session_work_style` and
+//! `work_style_and_source` are public for `relay-rs work-style`.
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -42,7 +43,7 @@ const CONTROL_COMMANDS: [(&str, &str); 5] = [
     ("__CANCEL__", "cancel"),
 ];
 
-const WORK_STYLES: [&str; 3] = ["auto", "direct", "orchestrated"];
+pub const WORK_STYLES: [&str; 3] = ["auto", "direct", "orchestrated"];
 const WORK_STYLE_FILE: &str = ".relay-runner.toml";
 
 static TICKET_ID_RE: LazyLock<Regex> =
@@ -609,6 +610,45 @@ fn work_style_and_source(
         }
     }
     ("auto", "default")
+}
+
+/// `work_style_and_source(repo_path)` with the process environment: the
+/// effective style and "env", "session", "project" or "default".
+pub fn current_work_style_and_source(repo_path: Option<&str>) -> (&'static str, &'static str) {
+    work_style_and_source(&Environment::current(), repo_path)
+}
+
+/// `set_session_work_style`: save the session's work style where the Start
+/// button's menu keeps it, through a temporary file in the same directory.
+/// An unknown style is Python's `ValueError` message.
+pub fn set_session_work_style(style: &str) -> Result<&'static str, String> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let Some(style) = known_work_style(&json::py_strip(style).to_lowercase()) else {
+        return Err(format!(
+            "work style must be one of {}",
+            WORK_STYLES.join(", ")
+        ));
+    };
+    let path = Environment::current().session_work_style_file;
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let failed = |error: std::io::Error| error.to_string();
+    fs::create_dir_all(parent).map_err(failed)?;
+    let temporary = parent.join(format!("tmp{}.tmp", relay_artifacts::store::random_hex()));
+    let mut document = Dict::new();
+    document.insert("work_style", style);
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)
+        .and_then(|mut file| file.write_all(json::dumps(&Value::Dict(document)).as_bytes()))
+        .and_then(|()| fs::rename(&temporary, &path));
+    if let Err(error) = written {
+        let _ = fs::remove_file(&temporary);
+        return Err(failed(error));
+    }
+    Ok(style)
 }
 
 /// `project_work_style`: auto (default), direct or orchestrated.

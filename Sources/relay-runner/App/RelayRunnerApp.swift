@@ -4,7 +4,7 @@ import SwiftUI
 /// Ignore SIGPIPE process-wide. Any write to a closed socket or FIFO will
 /// surface as an EPIPE return value at the call site, which we already
 /// check — without this, the kernel kills the whole process the moment a
-/// peer (voice_bridge.py, relay-actions-mcp, or an MCP propose_action
+/// peer (the relay-rs bridge, relay-actions-mcp, or an MCP propose_action
 /// client) goes away mid-write. Must run before any I/O is set up.
 private let _installSIGPIPEHandler: Void = {
     signal(SIGPIPE, SIG_IGN)

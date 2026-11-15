@@ -60,7 +60,7 @@ Tracked PNG, TIFF, SVG, and HTML files are intentional app resources, DMG artwor
 
 The prior README embedded an MIT grant but the repository had no standalone license. RR-174 adds `LICENSE`, this audit, contribution/security/support/conduct/testing routes, and [third-party notices](../THIRD_PARTY_NOTICES.md).
 
-Resolved Swift dependency licenses are permissive and compatible with distribution under the project's MIT license while preserving their notices. The build now copies the project license, third-party inventory, and resolved Swift checkout licenses into the app. Runtime Python packages and speech models download under the terms recorded in `THIRD_PARTY_NOTICES.md`; proprietary PP font files are not bundled and system fonts are the deterministic fallback.
+Resolved Swift dependency licenses are permissive and compatible with distribution under the project's MIT license while preserving their notices. The build now copies the project license, third-party inventory, and resolved Swift checkout licenses into the app. Speech models download under the terms recorded in `THIRD_PARTY_NOTICES.md`; proprietary PP font files are not bundled and system fonts are the deterministic fallback.
 
 ## Release consistency
 

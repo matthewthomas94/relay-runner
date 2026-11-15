@@ -1,10 +1,9 @@
-"""The route table: the API document, the reference source and a live daemon agree.
+"""The route table: the API document and a live daemon agree.
 
 docs/specs/orchestrator-http-api.md lists every route in its "Route index".
-The inventory cases compare that list with the routes `Handler._route`
-serves; the probe case sends every listed route to a running daemon with empty
-input and compares each answer with a golden file, which pins the principal
-error (or the success shape) of every route.
+The probe case sends every listed route to a running daemon with empty input
+and compares each answer with a golden file, which pins the principal error
+(or the success shape) of every route.
 """
 
 from __future__ import annotations
@@ -12,9 +11,7 @@ from __future__ import annotations
 import unittest
 
 from orchestrator_contract_support import DaemonCase
-from orchestrator_route_inventory import (
-    DAEMON_SOURCE, PARAMETER, documented_routes, normalise, source_routes,
-)
+from orchestrator_route_inventory import PARAMETER, documented_routes, normalise
 
 # Path parameters for the probe. Each names nothing that exists.
 PROBE_PARAMETER = "999"
@@ -27,29 +24,8 @@ PROBE_BODIES = {
 
 
 class RouteInventoryTests(unittest.TestCase):
-    maxDiff = None
-
-    def test_every_route_the_handler_serves_is_documented(self):
-        served = source_routes()
-        documented = documented_routes()
-        self.assertEqual(len(served), 76, "route count changed; update the API document")
-        missing = sorted("%s %s" % route for route in served - set(documented))
-        self.assertEqual(missing, [], "routes missing from docs/specs/orchestrator-http-api.md")
-
-    def test_every_documented_route_is_served(self):
-        extra = sorted("%s %s" % route for route in set(documented_routes()) - source_routes())
-        self.assertEqual(extra, [], "the API document lists routes the handler does not serve")
-
-    def test_a_new_route_in_the_handler_fails_the_inventory(self):
-        source = DAEMON_SOURCE.read_text(encoding="utf-8")
-        anchor = '            if method == "GET" and segments == ["v1", "health"]:\n'
-        self.assertIn(anchor, source)
-        edited = source.replace(anchor, (
-            '            if method == "GET" and segments == ["v1", "contract", "probe"]:\n'
-            '                return 200, {}\n'
-        ) + anchor, 1)
-        added = source_routes(daemon_text=edited) - set(documented_routes())
-        self.assertEqual(added, {("GET", "/v1/contract/probe")})
+    def test_the_document_lists_every_route_once(self):
+        self.assertEqual(len(documented_routes()), 76, "route count changed; update the API document")
 
     def test_parameters_are_normalised(self):
         self.assertEqual(normalise("/v1/runs/{run_id}/review"), "/v1/runs/%s/review" % PARAMETER)

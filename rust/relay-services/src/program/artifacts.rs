@@ -692,6 +692,91 @@ pub fn replace_graphify_with_clean_rebuild(
     outcome
 }
 
+/// `ArtifactMigrationCoordinator._migrate_program_and_rebuild` (the part
+/// after the journal check), as the
+/// `relay_artifacts::migration::ProgramMigration` the legacy-board migration
+/// runs at its `materialized` stage: export the project's legacy Graphify
+/// captures when the journal recorded Program references, then rebuild
+/// Graphify from the artifact ref's Program events. Returns the
+/// `program_migration` report and the expected capture manifest. It runs
+/// under the migration's writer lock, which the store re-enters.
+pub fn migrate_program_and_rebuild(
+    coordinator: &relay_artifacts::migration::ArtifactMigrationCoordinator,
+    journal: &Dict,
+) -> relay_artifacts::Result<(Dict, Dict)> {
+    let mut report = Dict::new();
+    report.insert("exported", 0_i64);
+    report.insert("rebuild", Value::Null);
+    let Some(graphify_path) = &coordinator.graphify_path else {
+        return Ok((report, Dict::new()));
+    };
+    let graph = GraphifyStore::open(graphify_path).map_err(|error| artifact_kind(error.into()))?;
+    if journal.truthy("program_references").is_some() {
+        let export = export_graphify_project_captures(
+            &graph,
+            &coordinator.store,
+            &coordinator.state_root,
+            &coordinator.device_id,
+            coordinator.provider.as_deref(),
+            None,
+        )
+        .map_err(|failure| {
+            if failure.error.class != MIGRATION_ERROR {
+                return artifact_kind(failure.error);
+            }
+            relay_artifacts::Error::new(
+                ArtifactErrorKind::MigrationBlocked,
+                format!(
+                    "Program capture export requires review: {}",
+                    failure.error.message
+                ),
+            )
+            .with_recovery("Resolve every Program ownership issue in the export report.")
+            .with_report(Value::Dict(failure.report.unwrap_or_default()))
+        })?;
+        let records = export
+            .get("records")
+            .filter(|records| records.truthy())
+            .and_then(Value::py_int)
+            .unwrap_or(0);
+        report.insert("exported", records);
+        report.insert("export", export);
+    }
+    let mut documents = Vec::new();
+    for (path, content) in coordinator.store.snapshot()?.files {
+        if path.starts_with(EVENTS_PREFIX) {
+            match json::parse_bytes(&content) {
+                Some(Value::Dict(document)) => documents.push(document),
+                _ => {
+                    return Err(relay_artifacts::Error::new(
+                        ArtifactErrorKind::Value,
+                        format!("{path} is not a JSON object"),
+                    ));
+                }
+            }
+        }
+    }
+    let expected_manifest = expected_graph_manifest(&documents).map_err(artifact_kind)?;
+    let rebuild = replace_graphify_with_clean_rebuild(
+        graphify_path,
+        &coordinator.registry_path,
+        coordinator.runs_db_path.as_deref(),
+        &expected_manifest,
+        &coordinator.graphify_rebuild_backup_path,
+    )
+    .map_err(artifact_kind)?;
+    report.insert("rebuild", rebuild);
+    Ok((report, expected_manifest))
+}
+
+/// A service error as the artifact error of the same Python class
+/// (`RuntimeError` for a class the artifact crate does not name).
+fn artifact_kind(error: Error) -> relay_artifacts::Error {
+    let kind =
+        ArtifactErrorKind::from_python_class(error.class).unwrap_or(ArtifactErrorKind::Runtime);
+    relay_artifacts::Error::new(kind, error.message)
+}
+
 /// `graph_capture_manifest`: each durable capture node's digest by event id.
 pub fn graph_capture_manifest(store: &GraphifyStore) -> Result<Dict> {
     let mut manifest = BTreeMap::new();

@@ -1,16 +1,26 @@
 //! relay-rs, Relay Runner's Rust helper. `hook` is the provider lifecycle hook
 //! and `reply` the foreground reply helper (RR-478); docs/specs/hook-contract.md
-//! describes both. `messenger` serves the voice messenger's provider backends
-//! (RR-490), `remote` is the Relay Remote server (RR-491) and `bridge` the
-//! voice bridge (RR-492). Later stages of the Rust port add subcommands or
-//! sibling crates.
+//! describes both. `bridge` is the voice bridge (RR-492), which runs the
+//! messenger backends (RR-490) and the Relay Remote server (RR-491)
+//! in-process. The per-invocation tools that were Python scripts
+//! are subcommands too (RR-487), with the scripts' arguments, output and exit
+//! statuses: `fresh-install` (`relay-runner-fresh-install`), `work-style`
+//! (`relay-work-style`), `harness-update`, `claude-subscription`,
+//! `codex-model`, and the artifact CLIs `ticket-history`
+//! (`relay-ticket-history`), `artifact-rollout`, `artifact-verify` and
+//! `artifact-migrate`.
 
 mod bridge;
+mod cli;
+mod fresh_install;
+mod harness_update;
 mod hook;
 mod messenger;
+mod provider_gates;
 mod remote;
 mod reply;
 mod support;
+mod work_style;
 
 use std::process::ExitCode;
 
@@ -29,9 +39,16 @@ const VERSION: &str = concat!(
 const USAGE: &str = "usage: relay-rs --version\n       \
      relay-rs hook [--record-process | --record-codex-startup | --context-continuation]\n       \
      relay-rs reply\n       \
-     relay-rs messenger\n       \
-     relay-rs remote [--socket <path>]\n       \
-     relay-rs bridge --config <path> --relay [--suppress-startup-greeting]";
+     relay-rs bridge --config <path> --relay [--suppress-startup-greeting]\n       \
+     relay-rs fresh-install [...]\n       \
+     relay-rs work-style [show|set] [STYLE] [--repo REPO]\n       \
+     relay-rs harness-update --provider {codex,claude} --command COMMAND\n       \
+     relay-rs claude-subscription [--binary BINARY] [--cwd CWD] [--signal-login-required]\n       \
+     relay-rs codex-model [--command COMMAND] --family FAMILY [--effort EFFORT] [--include-hidden]\n       \
+     relay-rs ticket-history ...\n       \
+     relay-rs artifact-rollout ...\n       \
+     relay-rs artifact-verify ...\n       \
+     relay-rs artifact-migrate ...";
 
 fn run(arguments: &[String]) -> Result<&'static str, &'static str> {
     match arguments {
@@ -46,11 +63,41 @@ fn main() -> ExitCode {
     match arguments.split_first() {
         Some((command, mode)) if command == "hook" => return ExitCode::from(hook::run(mode)),
         Some((command, _)) if command == "reply" => return ExitCode::from(reply::run()),
-        Some((command, rest)) if command == "messenger" && rest.is_empty() => {
-            return ExitCode::from(messenger::run());
-        }
-        Some((command, rest)) if command == "remote" => return ExitCode::from(remote::run(rest)),
         Some((command, rest)) if command == "bridge" => return ExitCode::from(bridge::run(rest)),
+        Some((command, rest)) if command == "fresh-install" => {
+            return ExitCode::from(fresh_install::run(rest));
+        }
+        Some((command, rest)) if command == "work-style" => {
+            return ExitCode::from(work_style::run(rest));
+        }
+        Some((command, rest)) if command == "harness-update" => {
+            return ExitCode::from(harness_update::run_cli(rest));
+        }
+        Some((command, rest)) if command == "claude-subscription" => {
+            return ExitCode::from(provider_gates::claude_subscription(rest));
+        }
+        Some((command, rest)) if command == "codex-model" => {
+            return ExitCode::from(provider_gates::codex_model(rest));
+        }
+        Some((command, rest)) if command == "ticket-history" => {
+            return ExitCode::from(relay_artifacts::history::cli_main(rest));
+        }
+        Some((command, rest)) if command == "artifact-rollout" => {
+            return ExitCode::from(relay_artifacts::rollout::cli_main(rest));
+        }
+        Some((command, rest)) if command == "artifact-verify" => {
+            return ExitCode::from(relay_artifacts::verification::cli_main(rest));
+        }
+        Some((command, rest)) if command == "artifact-migrate" => {
+            // The Program export and Graphify rebuild live in relay-services,
+            // which the artifact crate cannot depend on.
+            return ExitCode::from(relay_artifacts::migration::cli_main_with_program_migration(
+                rest,
+                Some(Box::new(
+                    relay_services::program::artifacts::migrate_program_and_rebuild,
+                )),
+            ));
+        }
         _ => {}
     }
     match run(&arguments) {

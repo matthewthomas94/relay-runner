@@ -36,28 +36,41 @@ FIFO_BUFFER_BYTES = 8192
 SLOW_READER_DELAY_SECONDS = 0.02
 
 
-def _command(variable: str, script: str) -> list:
+# The Rust binaries under test: a cargo build of rust/ (`cargo build` there),
+# or the folder RELAY_RUST_BIN_DIR names, such as an app's Contents/MacOS.
+RUST_BIN_DIR = Path(os.environ.get("RELAY_RUST_BIN_DIR") or REPO_ROOT / "rust" / "target" / "debug")
+
+
+def require_built(command: list) -> None:
+    """Skip the case when the default Rust binary has not been built."""
+    program = command[0]
+    if not (os.access(program, os.X_OK) or shutil.which(program)):
+        raise unittest.SkipTest("%s is not built; run cargo build in rust/" % program)
+
+
+def _command(variable: str, mode: str) -> list:
     configured = os.environ.get(variable, "").strip()
     if configured:
         return shlex.split(configured)
-    # Relay Runner starts both scripts with the system interpreter.
-    interpreter = "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else sys.executable
-    return [interpreter, str(REPO_ROOT / "services" / script)]
+    return [str(RUST_BIN_DIR / "relay-rs"), mode]
 
 
-HOOK_CMD = _command("RELAY_HOOK_CMD", "relay_completion_hook.py")
-REPLY_CMD = _command("RELAY_REPLY_CMD", "relay_reply.py")
-HOOK_IS_REFERENCE = not os.environ.get("RELAY_HOOK_CMD", "").strip()
-REPLY_IS_REFERENCE = not os.environ.get("RELAY_REPLY_CMD", "").strip()
+HOOK_CMD = _command("RELAY_HOOK_CMD", "hook")
+REPLY_CMD = _command("RELAY_REPLY_CMD", "reply")
+# The Python scripts these cases were first written against were removed in
+# RR-487, so no command under test is the reference any more: a case marked
+# `known_difference` must pass.
+HOOK_IS_REFERENCE = False
+REPLY_IS_REFERENCE = False
 # The providers stop a hook after 2 seconds.
 HOOK_BUDGET_SECONDS = float(os.environ.get("RELAY_HOOK_BUDGET_SECONDS", "2.0"))
 
 
 def known_difference(reason: str, *, reference: bool = HOOK_IS_REFERENCE):
-    """Mark a case whose intended contract the Python implementation misses.
+    """Mark a case whose intended contract the removed Python scripts missed.
 
-    The case states the contract. It is an expected failure only while the
-    default Python script is under test; a replacement must pass it.
+    The case states the contract. It was an expected failure only while the
+    Python scripts were under test; every command under test now must pass it.
     """
 
     def decorate(test):
@@ -289,6 +302,7 @@ class Sandbox:
     # -- running ---------------------------------------------------------
 
     def hook(self, stdin, *args, env=None, cwd=None, timeout: float = 60) -> Result:
+        require_built(HOOK_CMD)
         return run_command(
             [*HOOK_CMD, *args], stdin, self.env() if env is None else env,
             cwd=str(cwd or self.workdir), timeout=timeout,
@@ -296,10 +310,12 @@ class Sandbox:
 
     def reply(self, text, *, env=None) -> Result:
         data = text if isinstance(text, bytes) else text.encode("utf-8")
+        require_built(REPLY_CMD)
         return run_command(REPLY_CMD, data, self.env() if env is None else env, cwd=str(self.workdir))
 
     def start_hook(self, *args, env=None) -> subprocess.Popen:
         """Start a hook mode that waits, without feeding it stdin."""
+        require_built(HOOK_CMD)
         process = subprocess.Popen(
             [*HOOK_CMD, *args], env=self.env() if env is None else env, cwd=str(self.workdir),
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

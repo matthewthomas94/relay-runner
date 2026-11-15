@@ -22,7 +22,7 @@ struct GuidedSetupPlan {
             Item(
                 id: "voice-runtime",
                 title: "Prepare local voice runtime",
-                detail: "Install or verify the bundled Python environment, speech model, voice bridge, and TTS worker."
+                detail: "Install or verify the speech model, Relay skills, and the orchestrator that voice sessions use."
             ),
             providerToolsItem(for: provider),
             Item(
@@ -72,12 +72,12 @@ struct GuidedSetupReadiness: Equatable {
     let microphone: PermissionStatus
     let accessibility: PermissionStatus
     let screenRecording: PermissionStatus
-    let pythonInstalled: Bool
+    let servicesInstalled: Bool
     let agentSignedIn: Bool
     let parentPermissionsReviewed: Bool
 
     var voiceReady: Bool {
-        microphone == .granted && pythonInstalled && agentSignedIn
+        microphone == .granted && servicesInstalled && agentSignedIn
     }
 
     var screenControlAndBoardReady: Bool {
@@ -117,8 +117,8 @@ struct GuidedSetupReadiness: Equatable {
         if microphone != .granted {
             items.append("Microphone access is required before voice sessions can start.")
         }
-        if !pythonInstalled {
-            items.append("The bundled Python voice environment still needs to finish installing.")
+        if !servicesInstalled {
+            items.append("Voice and services setup still needs to finish installing.")
         }
         if !agentSignedIn {
             items.append("\(provider.displayName) sign-in still needs to complete.")

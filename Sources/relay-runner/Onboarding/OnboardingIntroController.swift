@@ -102,7 +102,7 @@ extension OnboardingIntroPresenting {
 
 struct OnboardingRuntimePromptPresentation: Equatable {
     let provider: GeneralConfig.AgentProvider
-    let status: VenvInstaller.Status
+    let status: RelaySetupInstaller.Status
 }
 
 struct OnboardingAgentLoginPromptPresentation: Equatable {
@@ -1683,7 +1683,7 @@ private enum OnboardingRuntimeVisualPhase: Equatable {
     case succeeded
     case failed
 
-    init(status: VenvInstaller.Status) {
+    init(status: RelaySetupInstaller.Status) {
         switch status {
         case .idle:
             self = .idle
@@ -1711,7 +1711,7 @@ enum OnboardingRuntimeAccessibility {
         }
     }
 
-    static func value(for status: VenvInstaller.Status) -> String {
+    static func value(for status: RelaySetupInstaller.Status) -> String {
         switch status {
         case .idle, .running(_, nil):
             return "In progress"

@@ -143,7 +143,7 @@ impl Paths {
     }
 }
 
-/// A file of `services/` beside the Python daemon (`orchestrator_workflow.md`,
+/// A file of the shipped `services/` directory (`orchestrator_workflow.md`,
 /// `orchestrator_artifact_workflow.md`). The Rust binary looks for it in the
 /// app bundle's `services/` directory next to `Contents/MacOS`, then in the
 /// source checkout it was built from.

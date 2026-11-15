@@ -12,7 +12,9 @@ enum OnboardingStepID: String, CaseIterable {
     /// Legacy resume value from builds that showed one combined parent
     /// permission screen.
     case parentPermissions
-    case pythonSetup
+    /// Installs the speech model, skills and the orchestrator. Stored as
+    /// `pythonSetup` by releases that also set up a Python environment.
+    case voiceSetup
     case agentLogin
     case ready
     case tutorialIntro
@@ -22,6 +24,11 @@ enum OnboardingStepID: String, CaseIterable {
     case tutorialCancellation
     case tutorialWorkspace
     case tutorialSessionRetry
+
+    /// Decodes a stored resume value, including the names older releases saved.
+    init?(storedValue: String) {
+        self.init(rawValue: storedValue == "pythonSetup" ? Self.voiceSetup.rawValue : storedValue)
+    }
 }
 
 enum OnboardingResumeState {
@@ -47,7 +54,7 @@ enum OnboardingResumeState {
     static func load() -> Snapshot? {
         let defaults = UserDefaults.standard
         guard let rawStep = defaults.string(forKey: stepKey),
-              let step = OnboardingStepID(rawValue: rawStep) else {
+              let step = OnboardingStepID(storedValue: rawStep) else {
             return nil
         }
         let rawProvider = defaults.string(forKey: providerKey)

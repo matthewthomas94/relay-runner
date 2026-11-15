@@ -4,7 +4,7 @@ import Foundation
 /// state the board overlays on top of the on-disk ticket `status:` — it never
 /// touches ticket files. The daemon rewrites the file on every state
 /// transition and prunes completed entries after a retention window; see
-/// `RunsStore.write_index` in services/orchestrator.py. (RR-11)
+/// `RunsStore::write_index` in rust/relay-store/src/runs.rs. (RR-11)
 struct RunState: Equatable, Decodable {
     let ticketId: String
     let repoPath: String
@@ -146,7 +146,7 @@ enum RunPill: Equatable {
 enum RunStateStore {
 
     /// `~/Library/Application Support/relay-runner/orchestrator/runs.json` —
-    /// matches `_data_root()` in services/orchestrator.py.
+    /// matches `data_root()` in rust/relay-store/src/daemon.rs.
     static var indexURL: URL? {
         guard let base = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask

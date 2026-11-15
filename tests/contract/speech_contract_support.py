@@ -27,11 +27,23 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PROTOCOL_VERSION = 1
 
 
+# The Rust binaries under test: a cargo build of rust/ (`cargo build` there),
+# or the folder RELAY_RUST_BIN_DIR names, such as an app's Contents/MacOS.
+RUST_BIN_DIR = Path(os.environ.get("RELAY_RUST_BIN_DIR") or REPO_ROOT / "rust" / "target" / "debug")
+
+
+def require_built(command: list) -> None:
+    """Skip the case when the default Rust binary has not been built."""
+    program = command[0]
+    if not (os.access(program, os.X_OK) or shutil.which(program)):
+        raise unittest.SkipTest("%s is not built; run cargo build in rust/" % program)
+
+
 def _command() -> list:
     configured = os.environ.get("RELAY_SPEECH_SERVICE_CMD", "").strip()
     if configured:
         return shlex.split(configured)
-    return [sys.executable, str(REPO_ROOT / "services" / "speech_service.py")]
+    return [str(RUST_BIN_DIR / "relay-speech")]
 
 
 SERVICE_CMD = _command()
@@ -280,6 +292,7 @@ class Sandbox:
     # -- Process -----------------------------------------------------------
 
     def command(self) -> list:
+        require_built(SERVICE_CMD)
         return [*SERVICE_CMD, "--socket", self.socket_path, "--config", str(self.config_path)]
 
     def spawn(self, **env) -> subprocess.Popen:

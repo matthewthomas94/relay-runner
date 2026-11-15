@@ -207,7 +207,7 @@ If you need user permission for a risky screen action:
 
 ## Where things live
 
-- `services/orchestrator.py` — the daemon (HTTP + SQLite + worker spawn)
+- `rust/relay-orchestrator/` — the daemon (HTTP + SQLite + worker spawn), shipped as `Contents/MacOS/relay-orchestrator`
 - `services/orchestrator_workflow.md` — default sub-agent prompt template (`{{caller_context}}` slot included)
 - `Sources/relay-orchestrator-mcp/` — Swift MCP proxy
 - `Sources/relay-actions-mcp/` — Swift MCP server for RelayActions screen-manipulation tools

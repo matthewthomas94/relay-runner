@@ -37,7 +37,7 @@ FIRST = {"segment_id": "s1", "captured_at": T0, "text": "We decided to ship the 
 SECOND = {"segment_id": "s2", "captured_at": T1, "text": "The port follows next quarter.",
           "start_ms": 1200, "end_ms": 2000, "speaker": None}
 
-# The status each route gives an error class (services/orchestrator.py).
+# The status each route gives an error class (relay-orchestrator, as the Python daemon gave it).
 STATUS = {"ArtifactValidationError": 422, "StorageError": 409, "ValueError": 400,
           "NoteContractError": 400}
 

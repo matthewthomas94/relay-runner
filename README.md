@@ -39,14 +39,14 @@ You need an Apple Silicon Mac running macOS 14 or later, an internet connection 
 1. Download `RelayRunner.dmg` from the [latest GitHub release](https://github.com/matthewthomas94/relay-runner/releases/latest).
 2. Open the DMG, run **Relay Runner.app**, and let the installer place it in `/Applications`.
 3. In onboarding, choose Codex or Claude, complete that provider's sign-in, and grant Microphone access. Accessibility, Input Monitoring, and Screen Recording remain optional.
-4. Let setup prepare the local Python voice runtime, Relay skills, MCP tools, and speech models. The first setup downloads several hundred megabytes and can take a few minutes.
+4. Let setup download the speech model and install Relay skills and MCP tools. The first setup downloads several hundred megabytes and can take a few minutes. Relay Runner needs no Python on your Mac.
 5. Add a Git repository in Workspace, select it, and choose **Start Session**.
 
 Relay Runner starts the chosen provider in its embedded terminal and keeps the session alive when Workspace closes. **End Session** stops it. Terminal.app remains available as a compatibility path.
 
 ### Build from source
 
-Source builds require Xcode 16 or later, its command-line tools, Git, and a Python installation that can import `dmgbuild`.
+Source builds require Xcode 16 or later, its command-line tools, Git, the pinned Rust toolchain (see [Testing](TESTING.md#rust-workspace)), and a Python installation that can import `dmgbuild`. Python is build tooling only; nothing in the app runs it.
 
 ```bash
 git clone https://github.com/matthewthomas94/relay-runner.git
@@ -138,7 +138,7 @@ microphone → Parakeet STT → foreground Codex or Claude session → provider
                     └─ tool-free provider messenger → Kokoro TTS → speakers
 ```
 
-The Swift app owns audio, Workspace, the embedded terminal, permissions, and the visible overlays. Local Python services coordinate voice, messaging, tickets, and worker lifecycle. Bundled MCP helpers expose Relay Desktop, Relay Actions, Relay Vision, and the orchestrator to both supported providers. See the [architecture overview](docs/architecture.md) for process and storage boundaries.
+The Swift app owns audio, Workspace, the embedded terminal, permissions, and the visible overlays. Bundled Rust services coordinate voice, speech, messaging, tickets, and worker lifecycle. Bundled MCP helpers expose Relay Desktop, Relay Actions, Relay Vision, and the orchestrator to both supported providers. See the [architecture overview](docs/architecture.md) for process and storage boundaries.
 
 ## Go further
 

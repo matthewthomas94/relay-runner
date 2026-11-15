@@ -1,11 +1,10 @@
 //! Shared by the integration tests: temporary data roots, the repository's
-//! fixtures and services, and the schema of a database file.
+//! fixtures, the schema of a database file and earlier schema versions.
 
 #![allow(dead_code)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rusqlite::Connection;
@@ -102,64 +101,6 @@ pub fn master(path: &Path) -> Vec<(String, String, String, Option<String>)> {
         .unwrap()
 }
 
-pub fn journal_mode(path: &Path) -> String {
-    let connection = Connection::open(path).expect("open database");
-    connection
-        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
-        .unwrap()
-}
-
-/// A Python 3.10 or newer that can import the daemon's stores, or `None`
-/// (with the reason on stderr). `RELAY_STORE_PYTHON` names one; otherwise
-/// Homebrew's, then `python3` on `PATH`.
-pub fn python() -> Option<PathBuf> {
-    let candidates: Vec<PathBuf> = match std::env::var_os("RELAY_STORE_PYTHON") {
-        Some(configured) => vec![PathBuf::from(configured)],
-        None => vec![
-            PathBuf::from("/opt/homebrew/bin/python3"),
-            PathBuf::from("python3"),
-        ],
-    };
-    let services = repo_root().join("services");
-    for candidate in candidates {
-        let probe = Command::new(&candidate)
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .arg("-c")
-            .arg(
-                "import sys; sys.path.insert(0, sys.argv[1]); \
-                 assert sys.version_info >= (3, 10); \
-                 import orchestrator, general_work, graphify_core, personal_file_storage",
-            )
-            .arg(&services)
-            .output();
-        if probe.is_ok_and(|output| output.status.success()) {
-            return Some(candidate);
-        }
-    }
-    eprintln!("skipping: no Python 3.10+ that imports services/ (set RELAY_STORE_PYTHON)");
-    None
-}
-
-/// Runs one phase of `tests/python_interop.py`; returns its stdout.
-pub fn python_phase(python: &Path, data_root: &Path, phase: &str) -> String {
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/python_interop.py");
-    let output = Command::new(python)
-        .arg(script)
-        .arg(repo_root().join("services"))
-        .arg(data_root)
-        .arg(phase)
-        .env("HOME", data_root.parent().unwrap())
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .output()
-        .expect("run python");
-    assert!(
-        output.status.success(),
-        "python {phase} failed:\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).expect("utf-8 output")
-}
-
 /// Version-4 `runs`: no `execution_mode` column yet.
 pub const RUNS_V4: &str = "
     CREATE TABLE runs (
@@ -198,53 +139,3 @@ pub const OUTCOMES_V1: &str = "CREATE TABLE messenger_outcomes (
             INSERT INTO messenger_outcomes(event_key, repo_path, kind, message, payload_json, created_at)
                 VALUES ('k', '/repo', 'run-merged', 'merged', 'not json', 1.0);
             PRAGMA user_version = 1;";
-
-/// Writes the earlier-version databases into `data_root`.
-pub fn write_earlier_versions(data_root: &Path) {
-    for (name, script) in [
-        ("runs.db", RUNS_V4),
-        ("orchestrator_commands.db", COMMANDS_V2),
-        ("messenger_outcomes.db", OUTCOMES_V1),
-    ] {
-        Connection::open(data_root.join(name))
-            .unwrap()
-            .execute_batch(script)
-            .unwrap();
-    }
-}
-
-/// Every row of every table, as sorted JSON, for comparing two databases.
-pub fn contents(path: &Path) -> Vec<(String, Vec<String>)> {
-    let connection = Connection::open(path).expect("open database");
-    let tables: Vec<String> = connection
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
-        .unwrap()
-        .query_map([], |row| row.get(0))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap();
-    tables
-        .into_iter()
-        .map(|table| {
-            let mut statement = connection
-                .prepare(&format!("SELECT * FROM \"{table}\""))
-                .unwrap();
-            let columns: Vec<String> = statement.column_names().map(str::to_string).collect();
-            let mut rows: Vec<String> = statement
-                .query_map([], |row| {
-                    let mut record = relay_store::Dict::new();
-                    for (index, column) in columns.iter().enumerate() {
-                        record.insert(column, relay_store::sql::sql_to_json(row.get(index)?));
-                    }
-                    Ok(relay_intents::json::dumps_sorted(
-                        &relay_store::Value::Dict(record),
-                    ))
-                })
-                .unwrap()
-                .collect::<Result<_, _>>()
-                .unwrap();
-            rows.sort();
-            (table, rows)
-        })
-        .collect()
-}

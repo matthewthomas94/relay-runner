@@ -15,10 +15,13 @@
 //! `.orchestrator/`.
 //!
 //! The Program capture export and the Graphify rebuild (`program_artifacts`
-//! and `graphify_*`, ported in RR-499) run through the temporary bridge
-//! `services/artifact_migration_program_bridge.py`, which runs Python's own
-//! `_migrate_program_and_rebuild` under the writer lock this process holds.
-//! The bridge is only needed when a Graphify database path is configured.
+//! and `graphify_*`) live in `relay-services`, which depends on this crate,
+//! so the caller injects them as a [`ProgramMigration`]: `relay-rs
+//! artifact-migrate` passes `relay_services::program::artifacts::
+//! migrate_program_and_rebuild`. It runs in this process, on this thread,
+//! under the writer lock the migration already holds (the lock is
+//! re-entrant). It is only needed when a Graphify database path is
+//! configured; without one configured, that stage fails clearly.
 //!
 //! Known differences, each refused or reported the same way as in Python:
 //!
@@ -31,7 +34,6 @@
 //!   can differ.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsString;
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
@@ -70,6 +72,13 @@ const RESUMABLE_STAGES: [&str; 4] = [
 
 /// A test hook called at named stages; an error interrupts the migration.
 pub type MigrationInjector = Box<dyn Fn(&str) -> Result<()> + Send + Sync>;
+
+/// The Program capture export and clean Graphify rebuild of Python's
+/// `_migrate_program_and_rebuild`, given the coordinator and the recorded
+/// journal; it returns the `program_migration` report and the expected
+/// capture manifest, which the coordinator records in the journal.
+pub type ProgramMigration =
+    Box<dyn Fn(&ArtifactMigrationCoordinator, &Dict) -> Result<(Dict, Dict)> + Send + Sync>;
 
 // -- errors ---------------------------------------------------------------------
 
@@ -861,10 +870,8 @@ pub struct MigrationOptions {
     pub failure_injector: Option<MigrationInjector>,
     pub remote_timeout_seconds: f64,
     pub remote_name: Option<String>,
-    /// The command that runs the Program/Graphify step; the default is
-    /// `RELAY_ARTIFACT_PROGRAM_BRIDGE`, or `python3` (`RELAY_PYTHON`) with
-    /// `services/artifact_migration_program_bridge.py`.
-    pub program_bridge: Option<Vec<String>>,
+    /// The Program/Graphify step; required when `graphify_path` is set.
+    pub program_migration: Option<ProgramMigration>,
 }
 
 impl Default for MigrationOptions {
@@ -877,33 +884,9 @@ impl Default for MigrationOptions {
             failure_injector: None,
             remote_timeout_seconds: 15.0,
             remote_name: None,
-            program_bridge: None,
+            program_migration: None,
         }
     }
-}
-
-/// The bridge command when none is configured.
-fn default_program_bridge() -> Vec<String> {
-    if let Ok(configured) = std::env::var("RELAY_ARTIFACT_PROGRAM_BRIDGE")
-        && !configured.trim().is_empty()
-    {
-        return configured.split_whitespace().map(str::to_string).collect();
-    }
-    let python = std::env::var("RELAY_PYTHON")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "python3".to_string());
-    let services = std::env::var("RELAY_SERVICES_DIR")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .map_or_else(
-            || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../services"),
-            PathBuf::from,
-        );
-    vec![
-        python,
-        path_text(&services.join("artifact_migration_program_bridge.py")),
-    ]
 }
 
 /// `ArtifactMigrationCoordinator`: one project's journaled migration.
@@ -919,7 +902,7 @@ pub struct ArtifactMigrationCoordinator {
     failure_injector: Option<MigrationInjector>,
     pub remote_timeout_seconds: f64,
     pub remote_name: Option<String>,
-    program_bridge: Option<Vec<String>>,
+    program_migration: Option<ProgramMigration>,
     pub store: ArtifactStore,
     pub migration_root: PathBuf,
     pub journal_path: PathBuf,
@@ -978,7 +961,7 @@ impl ArtifactMigrationCoordinator {
             failure_injector: options.failure_injector,
             remote_timeout_seconds: options.remote_timeout_seconds.max(1.0),
             remote_name: options.remote_name,
-            program_bridge: options.program_bridge,
+            program_migration: options.program_migration,
             store,
         })
     }
@@ -2173,122 +2156,28 @@ impl ArtifactMigrationCoordinator {
         self.revalidate_unrelated_source(journal, true)
     }
 
+    /// `_migrate_program_and_rebuild`: the Program export and Graphify
+    /// rebuild run through the injected [`ProgramMigration`].
     fn migrate_program_and_rebuild(&self, mut journal: Dict) -> Result<Dict> {
-        if self.graphify_path.is_some() {
-            self.run_program_bridge()?;
-            let journal = self.load_journal();
-            if !journal
-                .get("stage")
-                .is_some_and(|stage| stage.is_str("program_rebuilt"))
-            {
-                return Err(Error::new(
-                    ErrorKind::Runtime,
-                    "Program migration bridge did not record the program_rebuilt stage",
-                ));
-            }
-            return Ok(journal);
-        }
         let mut report = Dict::new();
         report.insert("exported", 0_i64);
         report.insert("rebuild", Value::Null);
+        let mut expected_manifest = Dict::new();
+        if self.graphify_path.is_some() {
+            let Some(program_migration) = &self.program_migration else {
+                return Err(Error::new(
+                    ErrorKind::Runtime,
+                    "Program migration is not configured; run the migration through `relay-rs artifact-migrate`",
+                ));
+            };
+            (report, expected_manifest) = program_migration(self, &journal)?;
+        }
         journal.insert("program_migration", report);
-        journal.insert("program_manifest", Dict::new());
+        journal.insert("program_manifest", expected_manifest);
         journal.insert("artifact_commit", self.store.snapshot()?.commit_id);
         journal.insert("stage", "program_rebuilt");
         self.write_journal(&journal)?;
         Ok(journal)
-    }
-
-    /// Runs Python's `_migrate_program_and_rebuild` on the recorded journal,
-    /// under the writer lock this process already holds.
-    fn run_program_bridge(&self) -> Result<()> {
-        let command_line = self
-            .program_bridge
-            .clone()
-            .unwrap_or_else(default_program_bridge);
-        let Some((program, leading)) = command_line.split_first() else {
-            return Err(Error::new(
-                ErrorKind::Runtime,
-                "Program migration bridge is not configured",
-            ));
-        };
-        let mut command = Command::new(program);
-        command.args(leading);
-        let mut arguments: Vec<OsString> = vec![
-            "--repo".into(),
-            self.repo.clone().into(),
-            "--project-id".into(),
-            self.project_id.clone().into(),
-            "--state-root".into(),
-            self.state_root.clone().into(),
-            "--registry".into(),
-            self.registry_path.clone().into(),
-            "--device-id".into(),
-            self.device_id.clone().into(),
-        ];
-        if let Some(path) = &self.runs_db_path {
-            arguments.extend(["--runs-db".into(), path.clone().into()]);
-        }
-        if let Some(path) = &self.graphify_path {
-            arguments.extend(["--graphify".into(), path.clone().into()]);
-        }
-        if let Some(provider) = &self.provider {
-            arguments.extend(["--provider".into(), provider.clone().into()]);
-        }
-        command.args(arguments);
-        let output = run_process(command, None, None)
-            .map_err(|error| {
-                Error::new(
-                    ErrorKind::Io,
-                    format!("Program migration bridge could not start: {error}"),
-                )
-            })?
-            .unwrap_or(ProcessOutput {
-                status: -1,
-                stdout: Vec::new(),
-                stderr: Vec::new(),
-            });
-        let answer = std::str::from_utf8(&output.stdout)
-            .ok()
-            .and_then(|text| json::parse(pystr::strip(text)))
-            .and_then(|value| value.as_dict().cloned());
-        let Some(answer) = answer else {
-            return Err(Error::new(
-                ErrorKind::Runtime,
-                format!(
-                    "Program migration bridge failed ({}): {}",
-                    output.status,
-                    bounded_public_error(&output.stderr)
-                ),
-            ));
-        };
-        if get_bool(&answer, "ok") {
-            return Ok(());
-        }
-        let kind = match get_str(&answer, "error").as_str() {
-            "ArtifactMigrationBlocked" => ErrorKind::MigrationBlocked,
-            "ArtifactMigrationReconciliationRequired" => ErrorKind::MigrationReconciliationRequired,
-            "ArtifactMigrationInjectedFailure" => ErrorKind::MigrationInjectedFailure,
-            "ArtifactMigrationError" => ErrorKind::Migration,
-            "ArtifactValidationError" => ErrorKind::Validation,
-            "ArtifactConcurrentUpdate" => ErrorKind::ConcurrentUpdate,
-            "ArtifactEventCollision" => ErrorKind::EventCollision,
-            "ArtifactStoreError" => ErrorKind::Store,
-            "OSError" => ErrorKind::Io,
-            _ => ErrorKind::Runtime,
-        };
-        let mut error = Error::new(kind, get_str(&answer, "message"));
-        if kind.is_migration() {
-            error = error
-                .with_recovery(get_str(&answer, "recovery"))
-                .with_report(
-                    answer
-                        .get("report")
-                        .cloned()
-                        .unwrap_or_else(|| Value::Dict(Dict::new())),
-                );
-        }
-        Err(error)
     }
 
     fn retention_preview(&self) -> Result<Dict> {
@@ -3656,8 +3545,18 @@ fn usage_error(message: &str) -> u8 {
     2
 }
 
-/// `artifact_migration_cli.main()`: returns the exit status.
+/// `artifact_migration_cli.main()` without a Program step: returns the exit
+/// status. A migration that reaches the `materialized` stage fails there.
 pub fn cli_main(arguments: &[String]) -> u8 {
+    cli_main_with_program_migration(arguments, None)
+}
+
+/// `artifact_migration_cli.main()` with the Program export and Graphify
+/// rebuild injected: returns the exit status.
+pub fn cli_main_with_program_migration(
+    arguments: &[String],
+    program_migration: Option<ProgramMigration>,
+) -> u8 {
     if arguments
         .iter()
         .any(|argument| argument == "-h" || argument == "--help")
@@ -3762,6 +3661,7 @@ pub fn cli_main(arguments: &[String]) -> u8 {
                 graphify_path: Some(optional("--graphify-db", "orchestrator/graphify.db")),
                 device_id: "migration-cli".to_string(),
                 provider: parsed.value("--provider").map(str::to_string),
+                program_migration,
                 ..MigrationOptions::default()
             },
         )?;

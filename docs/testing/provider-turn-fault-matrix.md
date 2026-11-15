@@ -5,8 +5,15 @@ the repository root:
 
 ```sh
 swift test --filter RelayVoiceCommandDeliveryTests/testRestartFaultMatrixEmitsEvidence
-python3 services/provider_turn_fault_harness.py
+(cd rust && cargo test -p relay-intents --locked && cargo test -p relay-rs --locked bridge)
+python3 -m unittest discover -s tests/contract -p 'test_bridge_contract_restart.py'
 ```
+
+RR-487 removed the Python harness (`services/provider_turn_fault_harness.py`)
+with the Python services it restarted. The broker, intent inbox and speech
+coordinator it drove are now `relay-intents` and `relay-rs bridge`, whose own
+tests and the bridge contract restart cases cover them; the description below
+is the matrix as that harness ran it.
 
 The matrix runs Codex and Claude through the same ownership contract. It injects
 Messenger, foreground-provider, daemon, bridge, and Swift consumer restarts at

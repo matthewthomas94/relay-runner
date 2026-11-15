@@ -92,8 +92,8 @@ final class WatchdogSessionRecoveryTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
         let pidFile = dir.appendingPathComponent("voice_bridge.pid").path
         try "4242\n".write(toFile: pidFile, atomically: true, encoding: .utf8)
-        let bridge = "python3 /app/services/voice_bridge.py --relay"
-        let rustBridge = "/app/Contents/MacOS/relay-rs /app/Contents/MacOS/relay-rs bridge --config /c.toml --relay"
+        let bridge = "/app/Contents/MacOS/relay-rs /app/Contents/MacOS/relay-rs bridge --config /c.toml --relay"
+        let legacyBridge = "python3 /app/services/voice_bridge.py --relay"
 
         func probe(
             signal: Int32,
@@ -109,8 +109,8 @@ final class WatchdogSessionRecoveryTests: XCTestCase {
         }
 
         XCTAssertEqual(probe(signal: 0, kernel: bridge).result, .alive)
-        XCTAssertEqual(probe(signal: 0, kernel: rustBridge).result, .alive)
-        XCTAssertEqual(probe(signal: 0, kernel: nil, ps: .found(rustBridge)).result, .alive)
+        XCTAssertEqual(probe(signal: 0, kernel: legacyBridge).result, .dead, "an older release's bridge is not live")
+        XCTAssertEqual(probe(signal: 0, kernel: nil, ps: .found(legacyBridge)).result, .dead)
         XCTAssertEqual(probe(signal: EPERM, kernel: bridge).result, .alive)
         XCTAssertEqual(probe(signal: ESRCH, kernel: nil), .init(result: .dead, failedProbes: ["pid_signal"]))
         XCTAssertEqual(probe(signal: 0, kernel: "/usr/bin/vim"), .init(result: .dead, failedProbes: ["pid_signal"]))
@@ -123,15 +123,20 @@ final class WatchdogSessionRecoveryTests: XCTestCase {
         XCTAssertEqual(probe(signal: 0, kernel: bridge).result, .dead, "no pid file")
     }
 
-    /// RR-493: the bridge is `relay-rs bridge` by default and `voice_bridge.py`
-    /// under the RELAY_BRIDGE_RUNTIME=python rollback.
-    func testBothBridgeRuntimesAreRecognisedByTheirCommandLine() {
-        XCTAssertTrue(ProcessManager.isVoiceBridgeCommandLine("/usr/bin/python3 /app/services/voice_bridge.py --relay"))
+    /// RR-493: the bridge is `relay-rs bridge`. RR-487: an older release's
+    /// `voice_bridge.py` is recognised only so it can be stopped.
+    func testBridgeIsRecognisedByItsCommandLineAndALegacyBridgeOnlyForStopping() {
+        let legacy = "/usr/bin/python3 /app/services/voice_bridge.py --relay"
+        XCTAssertFalse(ProcessManager.isVoiceBridgeCommandLine(legacy))
+        XCTAssertTrue(ProcessManager.isStoppableVoiceBridgeCommandLine(legacy))
+        XCTAssertTrue(ProcessManager.isStoppableVoiceBridgeCommandLine(
+            "/Applications/Relay Runner.app/Contents/MacOS/relay-rs bridge --config /c.toml --relay"))
         XCTAssertTrue(ProcessManager.isVoiceBridgeCommandLine(
             "/Applications/Relay Runner.app/Contents/MacOS/relay-rs bridge --config /c.toml --relay"))
         for other in ["/app/Contents/MacOS/relay-rs hook", "/app/Contents/MacOS/relay-rs messenger",
                       "/app/Contents/MacOS/relay-speech", "/bin/bash /app/scripts/relay-bridge --relay"] {
             XCTAssertFalse(ProcessManager.isVoiceBridgeCommandLine(other), other)
+            XCTAssertFalse(ProcessManager.isStoppableVoiceBridgeCommandLine(other), other)
         }
     }
 
@@ -176,8 +181,8 @@ final class WatchdogSessionRecoveryTests: XCTestCase {
         let pidFile = dir.appendingPathComponent("voice_bridge.pid").path
         try "4242\n".write(toFile: pidFile, atomically: true, encoding: .utf8)
 
-        XCTAssertTrue(ProcessManager.recordedBridgeProcessAlive(
-            pidFile: pidFile, commandLine: { _ in "python3 /app/services/voice_bridge.py --relay" }))
+        XCTAssertFalse(ProcessManager.recordedBridgeProcessAlive(
+            pidFile: pidFile, commandLine: { _ in "python3 /app/services/voice_bridge.py --relay" }), "an older release's bridge")
         XCTAssertTrue(ProcessManager.recordedBridgeProcessAlive(
             pidFile: pidFile, commandLine: { _ in "/app/Contents/MacOS/relay-rs bridge --relay" }))
         XCTAssertFalse(ProcessManager.recordedBridgeProcessAlive(
@@ -213,7 +218,8 @@ final class WatchdogSessionRecoveryTests: XCTestCase {
             return signalled
         }
 
-        XCTAssertEqual(run(pid: "4242", command: "python3 /app/services/voice_bridge.py --relay"), [4242])
+        XCTAssertEqual(run(pid: "4242", command: "python3 /app/services/voice_bridge.py --relay"), [4242],
+                       "a stale bridge left by an older release is still stopped")
         XCTAssertEqual(run(pid: "4242", command: "/app/Contents/MacOS/relay-rs bridge --relay"), [4242])
         XCTAssertEqual(run(pid: "4242", command: "/app/Contents/MacOS/relay-rs hook"), [], "another relay-rs helper")
         XCTAssertEqual(run(pid: "4242", command: "/usr/bin/vim notes.txt"), [], "recycled pid")

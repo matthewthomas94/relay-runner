@@ -2,7 +2,7 @@
 
 **Status:** Implemented (RR-480); Rust service (RR-481)
 
-In a Relay session, speech runs in its own process. Two services implement this protocol: `relay-speech`, the Rust service in `rust/relay-speech/` that the app bundle ships in `Contents/MacOS` and the bridge starts by default (RR-481), and `services/speech_service.py`, which hosts `SpeechCoordinator`, `TTSWorker` and `SpeechPlayer` in Python. The voice bridge starts the service, supervises it and talks to it through `services/speech_client.py`. This document describes the protocol between the two and the files and sockets the service owns, as checked by the black-box suite in `tests/contract/`. The suite starts the service as an opaque command and imports nothing from `services/`, so a replacement written in another language is accepted against the same cases.
+In a Relay session, speech runs in its own process: `relay-speech`, the Rust service in `rust/relay-speech/` that the app bundle ships in `Contents/MacOS` (RR-481). The Python `services/speech_service.py` it replaced was removed in RR-487. The voice bridge (`relay-rs bridge`) starts the service, supervises it and talks to it through its speech client (`rust/relay-rs/src/bridge/speech_client.rs`). This document describes the protocol between the two and the files and sockets the service owns, as checked by the black-box suite in `tests/contract/`. The suite starts the service as an opaque command and imports nothing from `services/`, so a replacement written in another language is accepted against the same cases.
 
 The process split does not change what is spoken or when. The queueing, replacement, barge-in and replay rules below are the rules `SpeechCoordinator` already applied inside the bridge.
 
@@ -14,7 +14,7 @@ python3 -m unittest discover -s tests/contract -p 'test_speech_contract*.py'
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `RELAY_SPEECH_SERVICE_CMD` | `<python> services/speech_service.py` | The service under test. Split like a shell command line; `--socket <path> --config <path>` are appended. The bridge reads the same variable. |
+| `RELAY_SPEECH_SERVICE_CMD` | `rust/target/debug/relay-speech` (the folder is `RELAY_RUST_BIN_DIR` when set) | The service under test. Split like a shell command line; `--socket <path> --config <path>` are appended. The bridge reads the same variable. |
 | `RELAY_SPEECH_CONTRACT_WAIT_SECONDS` | `10` | How long a case waits for something the service should do promptly. |
 
 To check the Rust service, build it and point the variable at the binary, quoting a path with spaces:
@@ -25,7 +25,7 @@ RELAY_SPEECH_SERVICE_CMD="'$PWD/rust/target/debug/relay-speech'" \
     python3 -m unittest discover -s tests/contract -p 'test_speech_contract*.py'
 ```
 
-Both services pass every case. The Rust service reports `service: "relay-speech-rust"` in its `hello` result, the Python service `relay-speech-python`.
+`relay-speech` passes every case and reports `service: "relay-speech-rust"` in its `hello` result; the removed Python service reported `relay-speech-python`.
 
 The suite needs macOS (`/usr/bin/afconvert` for Relay Remote audio) and Python 3.10 or newer. Each case starts its own service in test mode inside a temporary folder and passes only the variables listed under [Environment](#environment), so it never touches the sockets, files or audio device of a running Relay Runner session.
 
@@ -36,7 +36,7 @@ speech_service --socket <path> [--config <path>]
 ```
 
 - `--socket` is the Unix stream socket the service listens on. It defaults to `RELAY_SPEECH_SERVICE_SOCK`, then `/tmp/relay_speech_service.sock`. The service removes a leftover file at that path, creates the socket readable and writable by its owner only, and listens before it loads the voice, so a client can connect at once and wait for the answer to `hello`.
-- `--config` is the `config.toml` to read. The service uses `[tts]` `voice`, `rate`, `chime` and `auto_play`, with the defaults of `services/config.py`.
+- `--config` is the `config.toml` to read. The service uses `[tts]` `voice`, `rate`, `chime` and `auto_play`, with Relay Runner's `config.toml` defaults.
 - The service accepts **one** connection for its whole life. After accepting it, the service closes the listening socket and removes its path. The client refuses a socket whose other end belongs to another user.
 - The service exits with status 0 after a `shutdown` request, when its client's connection ends, when its parent process exits, and on `SIGTERM` or `SIGINT`. In each case it first stops speech and releases its sockets. It exits with status 1 when it cannot listen on the socket path.
 - stderr carries free-form diagnostics. stdout is unused.
@@ -266,7 +266,7 @@ These existed before the split and are unchanged.
 - **`SPEECH_EVENT_LOG`** gets one JSON object per line for every proposal, decision and playback stage. It never holds reply text.
 - **`voice-audio.lock`** is held with `flock` while audio plays, so a Settings voice preview and a reply never overlap.
 
-`/tmp/tts_in.fifo` and `/tmp/voice_bridge.sock` stay with the bridge, which turns their input into the requests above. The tutorial's standalone mode (`relay-speech tutorial`, or `tts_worker.py` reading stdin) and the Settings voice preview (`relay-speech preview --voice <v> --text <t> --output <wav>`, or `preview_voice.py`) are separate processes and do not use the service.
+`/tmp/tts_in.fifo` and `/tmp/voice_bridge.sock` stay with the bridge, which turns their input into the requests above. The tutorial's standalone mode (`relay-speech tutorial`) and the Settings voice preview (`relay-speech preview --voice <v> --text <t> --output <wav>`) are separate processes and do not use the service.
 
 ## Restarts
 
@@ -282,9 +282,7 @@ When the service ends without being asked to, the client:
 
 ## Rollback
 
-`RELAY_SPEECH_RUNTIME=python` in the app's environment runs `services/speech_service.py` instead of `relay-speech`, and the Python tutorial voice and preview instead of theirs (RR-481). The bridge does the same when the bundle has no `relay-speech`, as a source checkout does unless `RELAY_SPEECH_BINARY` names one. The Python service needs the packages in `services/requirements-python-speech.txt`, which first-run setup installs only when the variable is set; see [Speech runtime](../fresh-install.md#speech-runtime). The switch will be removed one release after the Rust service ships.
-
-`RELAY_SPEECH_SERVICE_MODE=legacy` in the bridge's environment keeps speech inside the bridge process, as before RR-480, and needs the same Python packages. It will be removed one release after the service ships. If the service cannot be started at all, the bridge logs the reason and uses the in-process path for that session.
+There is none. The Python speech service and its `RELAY_SPEECH_RUNTIME=python` and `RELAY_SPEECH_SERVICE_MODE=legacy` switches were removed in RR-487. The bridge runs `RELAY_SPEECH_SERVICE_CMD` when set, otherwise `RELAY_SPEECH_BINARY` or the `relay-speech` beside `relay-rs`; if none can be started, the bridge logs the reason and the session has no speech.
 
 ## Test mode
 

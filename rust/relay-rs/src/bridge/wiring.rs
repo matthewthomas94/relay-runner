@@ -52,25 +52,6 @@ fn parse_args(arguments: &[String]) -> Arguments {
     parsed
 }
 
-/// The speech service `services/speech_service.py` the app bundle ships
-/// beside this binary (`Contents/SharedSupport/services`), or the source
-/// tree's when relay-rs runs from `rust/target`.
-fn default_speech_service_script() -> Option<String> {
-    let executable = std::env::current_exe().ok()?;
-    let mut folder = executable.parent()?.to_path_buf();
-    let bundled = folder.join("../SharedSupport/services/speech_service.py");
-    if bundled.is_file() {
-        return Some(bundled.to_string_lossy().into_owned());
-    }
-    while folder.pop() {
-        let candidate = folder.join("services/speech_service.py");
-        if candidate.is_file() {
-            return Some(candidate.to_string_lossy().into_owned());
-        }
-    }
-    None
-}
-
 /// The Rust speech service (RR-481): `RELAY_SPEECH_BINARY`, else the
 /// relay-speech beside this binary (both ship in the app's `Contents/MacOS`).
 fn speech_service_binary() -> Option<String> {
@@ -91,25 +72,17 @@ fn speech_service_binary() -> Option<String> {
 }
 
 /// `_speech_service_command`: `RELAY_SPEECH_SERVICE_CMD`, else relay-speech,
-/// else (`RELAY_SPEECH_RUNTIME=python`, or no relay-speech) `python3` with the
-/// shipped `speech_service.py`, given the bridge's `--config`.
+/// given the bridge's `--config`. There is no other speech service (RR-487).
 fn speech_service_command(config_path: Option<&str>) -> Option<Vec<String>> {
     let configured = env_text("RELAY_SPEECH_SERVICE_CMD");
-    let python_requested = env_text("RELAY_SPEECH_RUNTIME").to_lowercase() == "python";
-    let binary = (configured.is_empty() && !python_requested)
-        .then(speech_service_binary)
-        .flatten();
     let mut command = if !configured.is_empty() {
         shlex_split(&configured)?
-    } else if let Some(binary) = binary {
-        vec![binary]
     } else {
-        if !python_requested {
-            eprintln!(
-                "[voice_bridge] relay-speech is not installed; using the Python speech service"
-            );
-        }
-        vec!["python3".to_string(), default_speech_service_script()?]
+        let Some(binary) = speech_service_binary() else {
+            eprintln!("[voice_bridge] relay-speech is not installed beside relay-rs");
+            return None;
+        };
+        vec![binary]
     };
     if let Some(path) = config_path {
         command.push("--config".to_string());
@@ -247,9 +220,13 @@ fn messenger_speak(
 
 /// Runs the bridge; the process exit status.
 pub fn run(arguments: &[String]) -> u8 {
+    if let [flag, message] = arguments
+        && flag == "--send-control"
+    {
+        return send_control(message);
+    }
     let cli = parse_args(arguments);
     if !cli.relay {
-        // Legacy direct mode is Claude-only debugging and stays in Python.
         eprintln!("[voice_bridge] relay-rs bridge runs only in --relay mode");
         return 2;
     }
@@ -268,6 +245,14 @@ pub fn run(arguments: &[String]) -> u8 {
     let status = run_relay_mode(&cli, cfg);
     store::remove_bridge_pid_file();
     status
+}
+
+/// `relay-rs bridge --send-control <message>`: one datagram to a running
+/// bridge's control socket, such as `shutdown` from `scripts/relay-bridge`.
+fn send_control(message: &str) -> u8 {
+    let sent = std::os::unix::net::UnixDatagram::unbound()
+        .and_then(|socket| socket.send_to(message.as_bytes(), &settings().control_sock));
+    u8::from(sent.is_err())
 }
 
 fn run_relay_mode(cli: &Arguments, cfg: Dict) -> u8 {

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Named pipe I/O for communicating with voice_bridge.py.
+/// Named pipe I/O for communicating with the voice bridge.
 /// Port of stt-sidecar/Sources/VoiceListen/main.swift:41-61.
 enum FIFOWriter {
 

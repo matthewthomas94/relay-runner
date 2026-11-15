@@ -43,15 +43,28 @@ FAKES = Path(__file__).resolve().parent / "fakes"
 VECTORS = REPO_ROOT / "tests" / "RelayRemoteProtocolTests" / "Vectors"
 
 
+# The Rust binaries under test: a cargo build of rust/ (`cargo build` there),
+# or the folder RELAY_RUST_BIN_DIR names, such as an app's Contents/MacOS.
+RUST_BIN_DIR = Path(os.environ.get("RELAY_RUST_BIN_DIR") or REPO_ROOT / "rust" / "target" / "debug")
+
+
+def require_built(command: list) -> None:
+    """Skip the case when the default Rust binary has not been built."""
+    program = command[0]
+    if not (os.access(program, os.X_OK) or shutil.which(program)):
+        raise unittest.SkipTest("%s is not built; run cargo build in rust/" % program)
+
+
 def _command() -> list:
     configured = os.environ.get("RELAY_VOICE_BRIDGE_CMD", "").strip()
     if configured:
         return shlex.split(configured)
-    return [sys.executable, str(REPO_ROOT / "services" / "voice_bridge.py")]
+    return [str(RUST_BIN_DIR / "relay-rs"), "bridge"]
 
 
 BRIDGE_CMD = _command()
-BRIDGE_IS_REFERENCE = not os.environ.get("RELAY_VOICE_BRIDGE_CMD", "").strip()
+# The Python bridge was the reference until RR-487 removed it.
+BRIDGE_IS_REFERENCE = False
 # How long a case waits for something the bridge should do promptly.
 WAIT_SECONDS = float(os.environ.get("RELAY_BRIDGE_CONTRACT_WAIT_SECONDS", "10"))
 # How long a case watches for something the bridge must not do.
@@ -489,6 +502,7 @@ class Sandbox:
     # -- Process -----------------------------------------------------------
 
     def command(self) -> list:
+        require_built(BRIDGE_CMD)
         command = [*BRIDGE_CMD, "--config", str(self.config_path), "--relay"]
         if not self.greeting:
             command.append("--suppress-startup-greeting")

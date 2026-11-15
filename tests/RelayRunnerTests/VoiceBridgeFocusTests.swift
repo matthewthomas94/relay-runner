@@ -36,60 +36,6 @@ final class VoiceBridgeFocusTests: XCTestCase {
         XCTAssertEqual(payload["live_session_keys"] as? [String], live)
     }
 
-    /// AppState's focus payloads drive the Python bridge's target: with A and B
-    /// live and focus on B, new commands land only in B's spool, while a
-    /// recording stamped on A still reaches A.
-    func testAppStateFocusPayloadsRouteTheBridgeToTheFocusedSpool() throws {
-        let fixture = #"""
-        import json, os, sys, tempfile, types
-        sys.path.insert(0, sys.argv[1])
-        sys.modules.setdefault("numpy", types.SimpleNamespace(asarray=lambda s: s, int16=object()))
-        import voice_bridge as vb
-        sessions = sys.argv[2]
-        vb.RELAY_SESSIONS_ROOT = sessions
-        vb.BRIDGE_CWD_FILE = os.path.join(sessions, "bridge.cwd")
-        vb.BRIDGE_PROVIDER_FILE = os.path.join(sessions, "bridge.provider")
-        vb.BRIDGE_SPOOL_FILE = os.path.join(sessions, "bridge.spool")
-        for message in sys.argv[3:]:
-            assert message.startswith("__FOCUS__:"), message
-            assert vb._apply_voice_focus(json.loads(message[len("__FOCUS__:"):])) is not None
-        print(json.dumps({
-            "current": vb._current_voice_target().session_key,
-            "unstamped": vb._voice_mailbox_for({})[0],
-            "stamped_a": vb._voice_mailbox_for({"voice_target_session_key": "a"})[0],
-            "provider": open(vb.BRIDGE_PROVIDER_FILE).read().strip(),
-            "native": vb._authoritative_provider_session_id(),
-        }))
-        """#
-        for (providerA, providerB) in [("codex", "claude"), ("claude", "codex")] {
-            let sessions = FileManager.default.temporaryDirectory.appendingPathComponent("rr398-\(UUID().uuidString)").path
-            try FileManager.default.createDirectory(atPath: sessions, withIntermediateDirectories: true)
-            defer { try? FileManager.default.removeItem(atPath: sessions) }
-            let live = ["a", "b"]
-            // syncVoiceFocus sends the other live sessions first and the focused one last.
-            let messages = try [
-                XCTUnwrap(focusMessage("a", provider: providerA, sessionsRoot: sessions, focus: false, live: live)),
-                XCTUnwrap(focusMessage("b", provider: providerB, sessionsRoot: sessions, focus: true, live: live)),
-            ]
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-            process.arguments = ["-c", fixture, Self.root.appendingPathComponent("services").path, sessions] + messages
-            let output = Pipe()
-            process.standardOutput = output
-            process.standardError = FileHandle.nullDevice
-            try process.run()
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            XCTAssertEqual(process.terminationStatus, 0, providerB)
-            let result = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: String], providerB)
-            XCTAssertEqual(result["current"], "b", providerB)
-            XCTAssertEqual(result["unstamped"], "\(sessions)/b/voice_cmd_ready", providerB)
-            XCTAssertEqual(result["stamped_a"], "\(sessions)/a/voice_cmd_ready", providerB)
-            XCTAssertEqual(result["provider"], providerB)
-            XCTAssertEqual(result["native"], "\(providerB)-b-native")
-        }
-    }
-
     func testJoiningSessionLaunchDoesNotRestartTheSharedBridge() {
         for target in [ProcessManager.AgentTarget.codex, .claude] {
             var config = AppConfig()

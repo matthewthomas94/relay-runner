@@ -1,10 +1,12 @@
 # Continuity fault recovery verification
 
-Run the deterministic RR-332 through RR-335 integration matrix with the project-compatible Python interpreter:
+Run the deterministic RR-332 through RR-335 integration matrix from `rust/`:
 
 ```sh
-python3 services/continuity_fault_harness.py
+cargo test -p relay-services --locked --test continuity_faults
 ```
+
+That is the daemon half of the matrix, for Codex and Claude continuity agents alike. Its bridge half (the intent inbox, resume and speech) is covered by `relay-rs`'s bridge tests (`cargo test -p relay-rs --locked bridge`) and by `tests/contract/test_bridge_contract_restart.py`. RR-487 removed the Python harness (`services/continuity_fault_harness.py`) that drove both halves in one process, with the Python services it exercised; the description below is the matrix as that harness ran it.
 
 The matrix injects transcription dropout, capture interruption, bridge loss, messenger crash, Codex and Claude provider hang/exit, daemon and IPC loss, stale session ownership, explicit provider fallback, simultaneous faults, and recovery-budget exhaustion. It drives the production incident detector, isolated continuity-agent lane, component-owned broker, durable intent inbox, canonical bridge handoff, and unresolved-report store. The JSON result fails unless every recoverable case records one classification, one agent launch, one broker action, restored health, and a canonical repeat/resume/reattach handoff without a manual session restart.
 
