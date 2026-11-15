@@ -581,15 +581,32 @@ class Sandbox:
         self._reap_watchdog()
 
     def kill(self) -> None:
-        """Stop without giving the daemon a chance to clean up."""
+        """Stop without giving the daemon a chance to clean up.
+
+        Workers lead their own process groups (RR-503), so killing the
+        daemon's group does not reach them; a held fake stops once its
+        daemon is gone. Wait for that, so a restart finds them gone.
+        """
         process, self.process = self.process, None
         if process is not None:
+            workers = self._worker_processes()
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             process.wait(timeout=20)
+            deadline = time.monotonic() + REAP_GRACE_SECONDS
+            while time.monotonic() < deadline and any(_same_process(*worker) for worker in workers):
+                time.sleep(0.05)
         self._reap_watchdog()
+
+    def _worker_processes(self) -> list:
+        """(pid, start time) of every run's recorded provider still running."""
+        if not (self.data_root / "runs.db").exists():
+            return []
+        rows = self.rows("runs.db", "SELECT pid FROM runs WHERE pid IS NOT NULL AND ended_at IS NULL")
+        workers = [(row["pid"], process_start(row["pid"])) for row in rows]
+        return [worker for worker in workers if worker[1]]
 
     def _reap_watchdog(self) -> None:
         watchdog, self._watchdog = self._watchdog, None

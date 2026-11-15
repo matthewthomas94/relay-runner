@@ -24,6 +24,7 @@ pub mod general;
 pub mod http;
 pub mod notes;
 pub mod personal;
+pub(crate) mod process_tree;
 pub mod program;
 pub mod queue;
 pub mod relay_command;
