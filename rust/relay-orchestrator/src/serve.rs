@@ -61,6 +61,16 @@ fn write_port_file(daemon: &Daemon, port: u16) {
     }
 }
 
+/// Remove the port file on a clean exit, unless another daemon has since
+/// written its own port there: a test daemon sharing the path must not erase
+/// the live daemon's file. A crash leaves the file; the next start rewrites it.
+fn remove_port_file(path: &std::path::Path, port: u16) {
+    let ours = std::fs::read_to_string(path).is_ok_and(|text| text.trim() == port.to_string());
+    if ours {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 /// `serve(daemon)`.
 pub fn serve(daemon: Arc<Daemon>) -> std::io::Result<()> {
     let (listener, port) = http::bind(daemon.port())?;
@@ -138,7 +148,7 @@ pub fn serve(daemon: Arc<Daemon>) -> std::io::Result<()> {
         eprintln!("[orchestrator] caught signal {signal}, shutting down");
     }
     daemon.shutdown();
-    let _ = std::fs::remove_file(&daemon.paths.port_file);
+    remove_port_file(&daemon.paths.port_file, port);
     eprintln!("[orchestrator] stopped");
     served
 }
@@ -193,5 +203,27 @@ pub fn main(arguments: &[String]) -> u8 {
             eprintln!("[orchestrator] server failed: {error}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remove_port_file;
+
+    #[test]
+    fn clean_exit_removes_only_its_own_port_file() {
+        let dir = std::env::temp_dir().join(format!("rr510-port-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("relay_orchestrator.port");
+
+        std::fs::write(&path, "7634").unwrap();
+        remove_port_file(&path, 7634);
+        assert!(!path.exists());
+
+        std::fs::write(&path, "7635").unwrap();
+        remove_port_file(&path, 7634);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "7635");
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
