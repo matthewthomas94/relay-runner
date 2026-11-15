@@ -27,6 +27,8 @@ from app_signing import (  # noqa: E402
     check_power_helper,
     check_rust_helper,
     check_speech_helper,
+    check_orchestrator_helper,
+    ORCHESTRATOR_HELPER_REQUIREMENT,
     SPEECH_HELPER_REQUIREMENT,
     resolve_signing_identity,
     verify_update_identity,
@@ -254,6 +256,33 @@ class RustHelperPackagingTests(unittest.TestCase):
                 with self.assertRaisesRegex(AppSigningError, "not signed as relay-speech"):
                     check_speech_helper(app, signed=True)
             self.assertIn("=" + SPEECH_HELPER_REQUIREMENT, run.call_args.args[0])
+
+    def test_build_embeds_and_signs_the_orchestrator_daemon(self):
+        script = (ROOT / "scripts" / "build-dmg.sh").read_text()
+        build = '(cd "$RUST_DIR" && cargo build --release --locked --target "$RUST_TARGET")'
+        copy = ('cp "$RUST_DIR/target/$RUST_TARGET/release/relay-orchestrator" '
+                '"$APP_DIR/Contents/MacOS/relay-orchestrator"')
+        self.assertLess(script.index(build), script.index(copy))
+        signed = re.findall(
+            r'codesign --force --timestamp --options runtime \\\n\s+--sign "\$SIGN_IDENTITY" \\\n'
+            r'\s+"\$APP_DIR/Contents/MacOS/([^"]+)"', script)
+        self.assertIn("relay-orchestrator", signed)
+        self.assertLess(script.index('"$APP_DIR/Contents/MacOS/relay-orchestrator"\n'), script.index('"$APP_DIR"\nelse'))
+
+    def test_orchestrator_daemon_must_be_packaged_and_signed_as_itself(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory) / "Relay Runner.app"
+            with self.assertRaisesRegex(AppSigningError, "orchestrator daemon is missing"):
+                check_orchestrator_helper(app)
+            helper = app / "Contents/MacOS/relay-orchestrator"
+            helper.parent.mkdir(parents=True)
+            helper.write_bytes(b"\xcf\xfa\xed\xfe")
+            os.chmod(helper, 0o755)
+            check_orchestrator_helper(app)
+            with mock.patch("app_signing.subprocess.run", return_value=result(stderr="not signed", code=3)) as run:
+                with self.assertRaisesRegex(AppSigningError, "not signed as relay-orchestrator"):
+                    check_orchestrator_helper(app, signed=True)
+            self.assertIn("=" + ORCHESTRATOR_HELPER_REQUIREMENT, run.call_args.args[0])
 
     def test_build_without_a_rust_toolchain_stops_before_building_and_names_the_install(self):
         if shutil.which("cargo", path="/usr/bin:/bin") or shutil.which("rustc", path="/usr/bin:/bin"):

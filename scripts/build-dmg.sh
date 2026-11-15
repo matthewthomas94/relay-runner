@@ -192,10 +192,9 @@ chmod 755 "$APP_DIR/Contents/MacOS/agent-desktop" "$APP_DIR/Contents/MacOS/agent
 # menu-bar app's owner-only command socket, which performs it.
 cp "$BUILD_DIR/relay-app-mcp" "$APP_DIR/Contents/MacOS/relay-app-mcp"
 
-# Helper binary: Relay Orchestrator MCP server. The orchestrator daemon process
-# itself runs under launchd (via scripts/relay-orchestrator) and is just a
-# Python script, but the MCP proxy is the Swift binary registered with the
-# provider CLIs.
+# Helper binary: Relay Orchestrator MCP server, the Swift proxy registered with
+# the provider CLIs. The daemon itself runs under launchd via
+# scripts/relay-orchestrator.
 cp "$BUILD_DIR/relay-orchestrator-mcp" "$APP_DIR/Contents/MacOS/relay-orchestrator-mcp"
 
 # Helper binary: Relay Remote forced command. OpenSSH runs it (via the per-user
@@ -211,6 +210,10 @@ cp "$RUST_DIR/target/$RUST_TARGET/release/relay-rs" "$APP_DIR/Contents/MacOS/rel
 # Runtime statically, so there is no library beside it to bundle or sign. The
 # bridge, the tutorial voice and the Settings preview run it by default.
 cp "$RUST_DIR/target/$RUST_TARGET/release/relay-speech" "$APP_DIR/Contents/MacOS/relay-speech"
+# Orchestrator daemon: relay-orchestrator, from the same workspace (RR-500).
+# scripts/relay-orchestrator runs it by default; RELAY_ORCHESTRATOR_RUNTIME=python
+# runs services/orchestrator.py for one release.
+cp "$RUST_DIR/target/$RUST_TARGET/release/relay-orchestrator" "$APP_DIR/Contents/MacOS/relay-orchestrator"
 
 # Keep Awake power helper (RR-437). A root launchd daemon registered with
 # SMAppService from Contents/Library/LaunchDaemons; its BundleProgram points at
@@ -448,6 +451,11 @@ if [ -n "$SIGN_IDENTITY" ]; then
     codesign --force --timestamp --options runtime \
         --sign "$SIGN_IDENTITY" \
         "$APP_DIR/Contents/MacOS/relay-remote-shell"
+    # relay-orchestrator, the daemon, is built from rust/ and signed like the
+    # other Rust helpers below.
+    codesign --force --timestamp --options runtime \
+        --sign "$SIGN_IDENTITY" \
+        "$APP_DIR/Contents/MacOS/relay-orchestrator"
     # relay-speech is built here too, and is signed the same way.
     codesign --force --timestamp --options runtime \
         --sign "$SIGN_IDENTITY" \

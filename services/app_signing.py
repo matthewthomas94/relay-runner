@@ -47,6 +47,12 @@ RUST_HELPER_REQUIREMENT = developer_id_requirement(RUST_HELPER_EXECUTABLE)
 SPEECH_HELPER_EXECUTABLE = "relay-speech"
 SPEECH_HELPER_PROGRAM = f"Contents/MacOS/{SPEECH_HELPER_EXECUTABLE}"
 SPEECH_HELPER_REQUIREMENT = developer_id_requirement(SPEECH_HELPER_EXECUTABLE)
+# relay-orchestrator, the orchestrator daemon from the same workspace (RR-500).
+# Without it scripts/relay-orchestrator quietly runs the Python daemon, so a
+# bundle missing it would ship the rollback as the default.
+ORCHESTRATOR_HELPER_EXECUTABLE = "relay-orchestrator"
+ORCHESTRATOR_HELPER_PROGRAM = f"Contents/MacOS/{ORCHESTRATOR_HELPER_EXECUTABLE}"
+ORCHESTRATOR_HELPER_REQUIREMENT = developer_id_requirement(ORCHESTRATOR_HELPER_EXECUTABLE)
 
 
 class AppSigningError(RuntimeError):
@@ -212,6 +218,25 @@ def check_speech_helper(app: Path, *, signed: bool = False) -> None:
         )
 
 
+def check_orchestrator_helper(app: Path, *, signed: bool = False) -> None:
+    """Checks that relay-orchestrator is packaged, and its signature when signed."""
+    helper = app / ORCHESTRATOR_HELPER_PROGRAM
+    if not helper.is_file() or not os.access(helper, os.X_OK):
+        raise AppSigningError(f"The orchestrator daemon is missing from {ORCHESTRATOR_HELPER_PROGRAM}.")
+    if not signed:
+        return
+    result = subprocess.run(
+        ["/usr/bin/codesign", "--verify", "--strict",
+         "--test-requirement", "=" + ORCHESTRATOR_HELPER_REQUIREMENT, str(helper)],
+        capture_output=True, text=True,
+    )
+    if result.returncode:
+        raise AppSigningError(
+            "The orchestrator daemon is not signed as relay-orchestrator by Relay Runner's Developer ID. "
+            + result.stderr.strip()
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -232,11 +257,13 @@ def main() -> int:
             check_power_helper(args.app)
             check_rust_helper(args.app)
             check_speech_helper(args.app)
+            check_orchestrator_helper(args.app)
         else:
             verify_update_identity(args.app, args.installed)
             check_power_helper(args.app, signed=True)
             check_rust_helper(args.app, signed=True)
             check_speech_helper(args.app, signed=True)
+            check_orchestrator_helper(args.app, signed=True)
     except AppSigningError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
