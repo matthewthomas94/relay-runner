@@ -79,7 +79,10 @@ enum BoardDarkSurfaceStyle {
     )
     /// The shell's black, solid under the notch and 75% at its foot.
     static let shellFill = LinearGradient(
-        colors: [GraphicalTheme.neutral1, GraphicalTheme.neutral1.opacity(actionOpacity)],
+        stops: [
+            .init(color: GraphicalTheme.neutral1, location: 0.096),
+            .init(color: GraphicalTheme.neutral1.opacity(actionOpacity), location: 1),
+        ],
         startPoint: .top,
         endPoint: .bottom
     )

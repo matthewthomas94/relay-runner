@@ -453,6 +453,41 @@ final class BoardRevealContainerView: NSView {
     private static let contentBlurAnimationKey = "boardRevealContentBlur"
 }
 
+private final class BoardRevealGlassTintView: NSView {
+    var solidAlpha: CGFloat = 1
+    var footAlpha: CGFloat = 1
+    var glowAlpha: CGFloat = 0
+
+    override var isFlipped: Bool { true }
+
+    /// Figma's shell: black, solid down to 9.6% of the height and fading to
+    /// the foot, with the glow the foot's last 40 points catch.
+    override func draw(_ dirtyRect: NSRect) {
+        NSGradient(
+            starting: NSColor(calibratedWhite: 0, alpha: solidAlpha),
+            ending: NSColor(calibratedWhite: 0, alpha: footAlpha)
+        )?.draw(
+            from: NSPoint(x: 0, y: bounds.height * 0.096),
+            to: NSPoint(x: 0, y: bounds.height),
+            options: [.drawsBeforeStartingLocation, .drawsAfterEndingLocation]
+        )
+        let glowTop = max(0, bounds.height - 40)
+        NSBezierPath(rect: NSRect(x: 0, y: glowTop, width: bounds.width, height: bounds.height - glowTop)).setClip()
+        NSGradient(
+            starting: GraphicalTheme.neutral5NSColor.withAlphaComponent(0),
+            ending: GraphicalTheme.neutral5NSColor.withAlphaComponent(glowAlpha)
+        )?.draw(
+            from: NSPoint(x: 0, y: glowTop),
+            to: NSPoint(x: 0, y: bounds.height),
+            options: []
+        )
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+}
+
 private final class BoardRevealSurfaceView: NSView {
     private let plan: BoardRevealTransitionPlan
     private let surfaceMaskLayer = CAShapeLayer()
@@ -461,8 +496,9 @@ private final class BoardRevealSurfaceView: NSView {
     /// 75% at the foot, where the edge catches a glow. All of it scales
     /// with how far the surface has opened, so the notch pill stays black.
     private let glassBackdropView = NSVisualEffectView()
-    private let glassTintLayer = CAGradientLayer()
-    private let glassGlowLayer = CAGradientLayer()
+    /// Holds the tint and glow in a view of its own, above the blur: bare
+    /// sublayers of this view end up underneath a subview's layer.
+    private let glassTintView = BoardRevealGlassTintView()
     private var loadingView: SkeletonLoaderView?
     private var surfaceFrame: CGRect
     private var loading = false
@@ -500,12 +536,8 @@ private final class BoardRevealSurfaceView: NSView {
             radius: BoardRevealTransitionPlanner.expandedSurfaceCornerRadius
         )
         addSubview(glassBackdropView)
-        glassGlowLayer.colors = [
-            NSColor.clear.cgColor,
-            GraphicalTheme.neutral5NSColor.withAlphaComponent(0.35).cgColor,
-        ]
-        layer?.addSublayer(glassTintLayer)
-        layer?.addSublayer(glassGlowLayer)
+        glassTintView.isHidden = true
+        addSubview(glassTintView)
         updateSurfaceMask()
         updateLoadingIndicator(animated: false)
     }
@@ -712,25 +744,14 @@ private final class BoardRevealSurfaceView: NSView {
             : 0
         let solid = Self.surfaceBlackAlpha
         let foot = solid - (solid - BoardDarkSurfaceStyle.actionOpacity) * opened
-        let glowHeight = min(40, surfaceFrame.height)
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
         glassBackdropView.isHidden = opened == 0
         glassBackdropView.frame = surfaceFrame
-        glassTintLayer.isHidden = opened == 0
-        glassTintLayer.frame = surfaceFrame
-        glassTintLayer.colors = [
-            NSColor(calibratedWhite: 0, alpha: solid).cgColor,
-            NSColor(calibratedWhite: 0, alpha: foot).cgColor,
-        ]
-        glassGlowLayer.frame = CGRect(
-            x: surfaceFrame.minX,
-            y: surfaceFrame.maxY - glowHeight,
-            width: surfaceFrame.width,
-            height: glowHeight
-        )
-        glassGlowLayer.opacity = Float(opened)
-        CATransaction.commit()
+        glassTintView.isHidden = opened == 0
+        glassTintView.frame = surfaceFrame
+        glassTintView.solidAlpha = solid
+        glassTintView.footAlpha = foot
+        glassTintView.glowAlpha = 0.35 * opened
+        glassTintView.needsDisplay = true
     }
 
     private static let surfaceBlackAlpha: CGFloat = 0.985
