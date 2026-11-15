@@ -24,12 +24,15 @@ struct RelayRunnerApp: App {
             ? RelayUpdaterController(installerContext: context)
             : nil
         _updaterController = State(initialValue: updaterController)
-        _appState = State(initialValue: context == nil ? AppState(
+        let appState = context == nil ? AppState(
             checkForUpdates: { [weak updaterController] in
                 updaterController?.checkForUpdates()
             },
             updater: updaterController
-        ) : nil)
+        ) : nil
+        // RR-508: only the real app sweeps the shared session folders.
+        appState?.removeStaleSessionSpools()
+        _appState = State(initialValue: appState)
 
         if let context {
             DispatchQueue.main.async {

@@ -531,6 +531,42 @@ enum OrchestratorClient {
         post(req, label: "program-ready-sweep")
     }
 
+    /// RR-508: run one daemon leftover cleanup pass now. Returns how many
+    /// processes it stopped, or nil when the daemon was unreachable or failed.
+    /// The pass can take a scan plus a 5-second grace period, so callers run
+    /// it in the background.
+    static func cleanLeftovers() async -> Int? {
+        guard let request = cleanLeftoversRequest(port: readPort()) else { return nil }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard status == 200 else {
+                let body = String(data: data, encoding: .utf8) ?? "(no body)"
+                NSLog("[orchestrator-client] leftover cleanup HTTP \(status): \(body.prefix(200))")
+                return nil
+            }
+            return stoppedLeftoverCount(from: data)
+        } catch {
+            NSLog("[orchestrator-client] leftover cleanup failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    static func cleanLeftoversRequest(port: Int) -> URLRequest? {
+        postRequest(path: "/v1/maintenance/leftovers/clean", payload: [:], port: port, timeout: 60)
+    }
+
+    /// The `stopped` entries that were terminated or killed; `gone` and
+    /// `survived` were not stopped by this pass.
+    static func stoppedLeftoverCount(from data: Data) -> Int {
+        struct Response: Decodable {
+            struct Entry: Decodable { let outcome: String }
+            let stopped: [Entry]?
+        }
+        let entries = (try? JSONDecoder().decode(Response.self, from: data))?.stopped ?? []
+        return entries.filter { $0.outcome == "terminated" || $0.outcome == "killed" }.count
+    }
+
     static func dispatchRequest(
         ticketId: String,
         repoPath: String,

@@ -516,13 +516,27 @@ enum NotchStatusSurfaceShape {
 }
 
 /// What the notch says after a session wheel switch. Only a switch that
-/// happened is ever claimed as one.
+/// happened is ever claimed as one. `leftoversStopped` is the one-line
+/// Start Session notice that the daemon stopped leftover processes (RR-508).
 enum SessionSwitchNotice: Equatable {
     case switched(to: String)
     case nextRecording(to: String)
     case pending(to: String)
+    case leftoversStopped(count: Int)
 
     static let displayDuration: TimeInterval = 2
+    static let leftoversDisplayDuration: TimeInterval = 4
+
+    /// Nil unless the cleanup stopped at least one process.
+    init?(leftoversStopped count: Int) {
+        guard count > 0 else { return nil }
+        self = .leftoversStopped(count: count)
+    }
+
+    var duration: TimeInterval {
+        if case .leftoversStopped = self { return Self.leftoversDisplayDuration }
+        return Self.displayDuration
+    }
 
     init?(switchingTo name: String, focused: Bool, pending: Bool, recording: Bool) {
         if focused {
@@ -540,6 +554,8 @@ enum SessionSwitchNotice: Equatable {
         case .switched(let name): return "Switched to · \(name)"
         case .nextRecording(let name): return "Next recording · \(name)"
         case .pending(let name): return "Switch pending · \(name)"
+        case .leftoversStopped(let count):
+            return "Stopped \(count) leftover \(count == 1 ? "process" : "processes")"
         }
     }
 }

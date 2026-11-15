@@ -115,6 +115,34 @@ struct VoiceSessionSpool: Equatable {
         try? fileManager.removeItem(atPath: directory)
     }
 
+    /// RR-508: at app launch, remove the spool directories under
+    /// `rootDirectory` whose key is not in `keeping`. Only this user's real
+    /// directories are removed: a symlink, a file or another user's entry is
+    /// left alone, and so is everything when the root itself is not this
+    /// user's real directory. Returns the removed keys.
+    @discardableResult
+    static func removeStale(
+        keeping keys: Set<String>,
+        rootDirectory: String = rootDirectory,
+        fileManager: FileManager = .default
+    ) -> [String] {
+        func ownDirectory(_ path: String) -> Bool {
+            var info = stat()
+            return lstat(path, &info) == 0
+                && (info.st_mode & S_IFMT) == S_IFDIR
+                && info.st_uid == getuid()
+        }
+        guard ownDirectory(rootDirectory),
+              let names = try? fileManager.contentsOfDirectory(atPath: rootDirectory) else { return [] }
+        var removed: [String] = []
+        for name in names.sorted() where !keys.contains(name) {
+            let path = (rootDirectory as NSString).appendingPathComponent(name)
+            guard ownDirectory(path), (try? fileManager.removeItem(atPath: path)) != nil else { continue }
+            removed.append(name)
+        }
+        return removed
+    }
+
     /// The spool the running bridge publishes into. Only a directory directly
     /// under `rootDirectory` is accepted; anything else resolves to `legacy`.
     static func bridgeTarget(

@@ -272,6 +272,8 @@ final class AppState {
     /// The brief notch outcome of a session wheel switch.
     @ObservationIgnored private var sessionSwitchNotice: SessionSwitchNotice?
     @ObservationIgnored private var sessionSwitchNoticeExpiry: DispatchWorkItem?
+    /// RR-508: a leftover notice that arrived while "Starting up..." held the notch.
+    @ObservationIgnored private var pendingLeftoverNotice: SessionSwitchNotice?
     @ObservationIgnored private var continuationSourceReady = false
     @ObservationIgnored private var locallyCancelledContinuationID: String?
     /// Launch owner identity per context; a continuation is delivered to its
@@ -1509,6 +1511,52 @@ final class AppState {
             pending: pendingContextSelection?.id == contextID,
             recording: recording
         ))
+    }
+
+    /// RR-508: start one daemon leftover cleanup pass and return at once;
+    /// `deliver` gets the number of processes stopped (0 when the daemon was
+    /// unreachable) on the main actor.
+    @discardableResult
+    static func startLeftoverCleanup(
+        clean: @escaping @Sendable () async -> Int? = { await OrchestratorClient.cleanLeftovers() },
+        deliver: @escaping @MainActor (Int) -> Void
+    ) -> Task<Void, Never> {
+        Task.detached(priority: .utility) {
+            let stopped = await clean() ?? 0
+            await MainActor.run { deliver(stopped) }
+        }
+    }
+
+    /// The one-line notice, shown only when something was stopped; held back
+    /// while the notch shows "Starting up..." so it is not hidden behind it.
+    private func showLeftoverNotice(stopped: Int) {
+        guard let notice = SessionSwitchNotice(leftoversStopped: stopped) else { return }
+        if bridgeStartingUp {
+            pendingLeftoverNotice = notice
+        } else {
+            showSessionSwitchNotice(notice)
+        }
+    }
+
+    /// RR-508: at app launch, remove `/tmp/relay-sessions/<key>` folders that
+    /// no live session owns. A live registry session, the spool a running
+    /// bridge publishes into, and the spool of a provider that outlived the
+    /// last app run are kept.
+    func removeStaleSessionSpools() {
+        var keys = sessionRegistry.liveSpoolKeys
+        if let key = VoiceSessionSpool.bridgeTarget().key, processManager.bridgeAlive() {
+            keys.insert(key)
+        }
+        for binding in assistantSessionStore.document.bindings.values {
+            guard let transport = binding.transportSessionID, !transport.isEmpty,
+                  let process = binding.managedProcess,
+                  [.matching, .unknown].contains(process.state()) else { continue }
+            if let key = VoiceSessionSpool(key: transport).key { keys.insert(key) }
+        }
+        let removed = VoiceSessionSpool.removeStale(keeping: keys)
+        if !removed.isEmpty {
+            NSLog("[AppState] removed \(removed.count) stale session folder(s) from \(VoiceSessionSpool.rootDirectory)")
+        }
     }
 
     private func showSessionSwitchNotice(_ notice: SessionSwitchNotice?) {
@@ -2936,6 +2984,8 @@ final class AppState {
         bridgeAliveCache = true
         programBoardWarmUpPending = true
         refreshWorkspaceActivity(invalidateRoute: true)
+        // RR-508: the daemon's leftover cleanup runs beside the launch, never before it.
+        Self.startLeftoverCleanup { [weak self] stopped in self?.showLeftoverNotice(stopped: stopped) }
 
         // Start STT if not already running
         if sttEngine == nil {
@@ -4034,6 +4084,10 @@ final class AppState {
 
         if menuSessionActive && alive {
             sessionBridgeSeen = true
+            if let notice = pendingLeftoverNotice {
+                pendingLeftoverNotice = nil
+                showSessionSwitchNotice(notice)
+            }
         }
 
         if wasAlive && !alive && !menuSessionActive {

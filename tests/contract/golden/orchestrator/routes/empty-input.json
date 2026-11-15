@@ -255,6 +255,14 @@
     "error": "Review requires approve true/false and an evidence-based summary",
     "status": 400
   },
+  "POST /v1/maintenance/leftovers/clean": {
+    "keys": [
+      "leftovers",
+      "mode",
+      "stopped"
+    ],
+    "status": 200
+  },
   "POST /v1/messenger/outcomes/{outcome_id}/attempt": {
     "keys": [
       "ok"

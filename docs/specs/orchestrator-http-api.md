@@ -113,6 +113,7 @@ marked **none** have no non-test caller today.
 | POST | `/v1/program/ready-sweep` | 200 | Board |
 | GET | `/v1/queue-drains` | 200 | MCP |
 | GET | `/v1/maintenance/leftovers` | 200 | none |
+| POST | `/v1/maintenance/leftovers/clean` | 200 | App (Start Session) |
 | POST | `/v1/queue-drains/{drain_id}/cancel` | 200 | none |
 | POST | `/v1/queue-drain/reconcile` | 200 | MCP |
 | GET | `/v1/program/status` | 200 | MCP, Board, Bridge |
@@ -319,6 +320,16 @@ result; the daemon writes the report into the ticket and never merges.
     stops Tier 1 process leftovers at startup and every 15 minutes unless
     `[orchestrator] leftover_cleanup` is `report` or `off`; see
     `docs/orchestrator.md`.
+- `POST /v1/maintenance/leftovers/clean` → `{"mode", "leftovers", "stopped":
+  [{"pid", "command", "run_id", "ticket_id", "evidence", "outcome"}, …]}`
+  (RR-508). Runs one pass of that background cleanup now, in the configured
+  mode: Tier 1 process leftovers get SIGTERM, a 5-second grace period, then
+  SIGKILL. `outcome` is `terminated`, `killed`, `survived` or `gone` (it had
+  exited or its pid was reused, so nothing was sent). `stopped` is empty in
+  `report` mode or when nothing qualified; in `off` mode only `mode` is
+  returned. A failed scan is a 500 with `error`. The app calls it in the
+  background at Start Session and shows a one-line notice only when a
+  process was terminated or killed.
 
 ## Program, sessions, messenger and continuity
 
