@@ -90,15 +90,6 @@ impl Failure {
         ))
     }
 
-    /// Execution that the daemon's part 5 (RR-498) ports: worker, review
-    /// and spike processes. The route answers a `RuntimeError` (500) after
-    /// every check that runs before a process would start.
-    pub fn execution_deferred(what: &str) -> Self {
-        Self::runtime(format!(
-            "{what} is not available in the Rust daemon yet; worker execution is ported in RR-498"
-        ))
-    }
-
     /// The status and JSON body `Handler._route` answers. `None` is a
     /// failure that escapes the handler: the connection closes unanswered.
     pub fn response(&self) -> Option<(u16, Value)> {

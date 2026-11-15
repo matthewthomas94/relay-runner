@@ -1115,8 +1115,8 @@ fn recover_project_leases(daemon: &Daemon, repo_path: &str) -> Outcome<()> {
     let Some(lifecycle) = daemon.artifact_lifecycle(repo_path)? else {
         return Ok(());
     };
-    // A failed or canceled spike's lease is released only by publishing its
-    // canonical result, which spike execution (RR-498) owns; keep it.
+    // Worker exit can precede the completion callback: only canonical
+    // publication may release a failed or canceled spike's lease.
     let mut pending_spikes = Vec::new();
     for lease in lifecycle.leases.active()? {
         let Some(run_id) = pystr::int(&lease.run_id) else {
@@ -1131,6 +1131,7 @@ fn recover_project_leases(daemon: &Daemon, repo_path: &str) -> Outcome<()> {
                 .is_some_and(|state| state.is_str("Failed") || state.is_str("Canceled"))
         {
             pending_spikes.push(run_id);
+            daemon.finish_artifact_spike(&run, &lifecycle, None);
         }
     }
     let run_state = |run_id: i64| -> Option<String> {

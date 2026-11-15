@@ -1,13 +1,8 @@
 //! Queue drains and the ready sweeps: `_record_queue_drain_locked` and its
 //! classification, `reconcile_queue_drain(s)`, list and cancel,
-//! `sweep_ready_tickets` and the program sweep.
-//!
-//! Two drain steps start or merge workers and wait for part 5 (RR-498): a
-//! drain does not dispatch a review worker (an awaiting-review run stays
-//! `awaiting_review`), and reconcile resumes no integration-blocked run
-//! (`resumed_integrations` stays empty). A sweep's dispatch answers the
-//! execution-deferred error, which the sweep records as `dispatch_failed`
-//! exactly as Python records a dispatch exception.
+//! `sweep_ready_tickets` and the program sweep. A drain that drives reviews
+//! starts the review worker of a run awaiting review, and reconcile first
+//! merges the integration-blocked runs of a checkout that is clean again.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::os::unix::fs::MetadataExt;
@@ -499,6 +494,8 @@ struct Progress<'a> {
     health_warning: Option<String>,
     skip: Option<&'a Dict>,
     source_blocker: Option<&'a SourceBlocker>,
+    /// A review worker of this daemon owns the run.
+    review_active: bool,
     now: f64,
 }
 
@@ -536,8 +533,14 @@ fn progress_item(
         return Ok(drain_item(id, "reviewing", p.run_id, reason));
     }
     if state == "AwaitingReview" || state == "Succeeded" {
-        // Python dispatches the review/merge worker here when the drain
-        // drives reviews; that is part 5 (RR-498), so the run waits for it.
+        if p.review_active {
+            return Ok(drain_item(
+                id,
+                "reviewing",
+                p.run_id,
+                "review worker scheduled",
+            ));
+        }
         return Ok(DrainItem {
             next_action_at: Some(p.now),
             ..drain_item(id, "awaiting_review", p.run_id, "awaiting review dispatch")
@@ -724,15 +727,25 @@ struct DrainView<'a> {
     /// `_source_checkout_blocker(ignore_board_metadata=True)`, read once and
     /// only for a ready ticket whose predecessors are done (RR-449).
     dispatch_blocker: Option<Option<SourceBlocker>>,
+    drive_reviews: bool,
 }
 
 impl Daemon {
     /// `_run_abandoned(run)`: a claimed, running or reviewing run whose
-    /// process is gone. The Rust daemon owns no worker process until part 5,
-    /// so only the recorded pid is consulted.
+    /// process is gone. A worker of this daemon that is starting or still
+    /// running is never abandoned.
     fn run_abandoned(&self, run: &Dict) -> bool {
         let state = run_state(run);
-        if !["Claimed", "Running", "Reviewing"].contains(&state.as_str()) || run_id(run).is_none() {
+        let Some(id) = run_id(run) else {
+            return false;
+        };
+        if !["Claimed", "Running", "Reviewing"].contains(&state.as_str()) {
+            return false;
+        }
+        if self
+            .local_run_owner(id, &state)
+            .is_some_and(|owner| owner.running())
+        {
             return false;
         }
         // A claim without a pid is still in the dispatch handoff window.
@@ -742,7 +755,7 @@ impl Daemon {
         !process_is_alive(run.get("pid").and_then(Value::py_int))
     }
 
-    fn forget_run_health(&self, run_id: i64) {
+    pub(crate) fn forget_run_health(&self, run_id: i64) {
         guard(&RUN_HEALTH).remove(&(self.paths.data_root.clone(), run_id));
     }
 
@@ -866,6 +879,7 @@ impl Daemon {
                         ..RunUpdate::default()
                     },
                 )?;
+                guard(&self.review_workers).remove(&id);
                 state = "AwaitingReview".to_string();
             } else {
                 self.runs.update(
@@ -890,6 +904,31 @@ impl Daemon {
             }
             _ => None,
         };
+        let mut review_active = false;
+        if (state == "AwaitingReview" || state == "Succeeded")
+            && let Some(id) = id
+        {
+            review_active = self.review_active(id);
+            if view.drive_reviews && !review_active {
+                match self.dispatch_review_worker(id, "queue-drain", None) {
+                    Ok(result) => {
+                        review_active = result.truthy("review_dispatched").is_some()
+                            || result.truthy("review_already_active").is_some();
+                    }
+                    Err(error) => {
+                        return Ok(blocked_item(
+                            ticket_id,
+                            &format!("review dispatch failed: {error}"),
+                            "human",
+                            Some(
+                                "Fix review worker launch or run review manually, then reconcile the drain.",
+                            ),
+                            Some(id),
+                        ));
+                    }
+                }
+            }
+        }
         let progress = Progress {
             ticket_id,
             ticket,
@@ -899,6 +938,7 @@ impl Daemon {
             health_warning,
             skip,
             source_blocker: view.source_blocker.as_ref(),
+            review_active,
             now,
         };
         let repo = view.repo;
@@ -919,14 +959,14 @@ impl Daemon {
     /// `_record_queue_drain_locked(repo=, trigger=, sweep_result=,
     /// drive_reviews=)`: classify every observed ticket and move the drain
     /// to blocked, active, waiting or (after the quiescence window)
-    /// completed. `drive_reviews` is where part 5 (RR-498) starts review
-    /// workers; until then no review is dispatched.
+    /// completed. With `drive_reviews`, a run awaiting review gets its
+    /// review worker.
     pub(crate) fn record_queue_drain_locked(
         &self,
         repo: &Path,
         trigger: Option<&str>,
         sweep_result: Option<&Dict>,
-        _drive_reviews: bool,
+        drive_reviews: bool,
     ) -> Outcome<Option<Dict>> {
         let repo_text = repo.to_string_lossy().into_owned();
         let tickets: Vec<Ticket> = tickets::scan_repo(repo)?
@@ -1036,6 +1076,7 @@ impl Daemon {
                 .collect(),
             source_blocker,
             dispatch_blocker: None,
+            drive_reviews,
         };
         let mut items = Vec::with_capacity(observed.len());
         for ticket_id in &observed {
@@ -1130,9 +1171,7 @@ impl Daemon {
                 "repo_path {repo_text} is not a git repository"
             )));
         }
-        // `_resume_clean_integration_blocks` merges integration-blocked runs
-        // once the checkout is clean: the merge path of part 5 (RR-498).
-        let resumed_integrations: Vec<Value> = Vec::new();
+        let resumed_integrations = self.resume_clean_integration_blocks(&repo)?;
         let drain_trigger = trigger
             .filter(|trigger| !trigger.is_empty())
             .unwrap_or("queue-drain");
@@ -1655,6 +1694,7 @@ mod tests {
             health_warning: None,
             skip: None,
             source_blocker: None,
+            review_active: false,
             now: 1000.0,
         }
     }
