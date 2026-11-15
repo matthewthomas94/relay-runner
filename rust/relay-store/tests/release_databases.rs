@@ -140,9 +140,16 @@ fn release_runs_are_served_unchanged_and_match_the_contract_golden() {
         ]
     );
     raw.truncate(4);
+    // The release rows gain the provider identity columns empty (RR-504).
     let served_text: Vec<String> = released
         .iter()
-        .map(|run| json::dumps_sorted(&Value::Dict((*run).clone())))
+        .map(|run| {
+            let mut run = (*run).clone();
+            for column in ["pgid", "pid_start_us"] {
+                assert!(matches!(run.remove(column), Some(Value::Null)), "{column}");
+            }
+            json::dumps_sorted(&Value::Dict(run))
+        })
         .collect();
     assert_eq!(
         served_text, raw,
@@ -362,10 +369,10 @@ fn earlier_runs_schema_gains_execution_mode_and_keeps_its_rows() {
         "merged runs lose stale errors"
     );
     let after = schema(&path);
-    assert_eq!(after.user_version, 5);
+    assert_eq!(after.user_version, 6);
     assert_eq!(
-        after.tables[0].1.last().map(String::as_str),
-        Some("execution_mode")
+        after.tables[0].1[after.tables[0].1.len() - 3..],
+        ["execution_mode", "pgid", "pid_start_us"]
     );
 }
 
@@ -411,14 +418,14 @@ fn a_newer_schema_is_refused_and_left_alone() {
         .execute_batch(
             "CREATE TABLE runs (id INTEGER PRIMARY KEY, future TEXT);
              INSERT INTO runs VALUES (1, 'kept');
-             PRAGMA user_version = 6;",
+             PRAGMA user_version = 7;",
         )
         .unwrap();
     let before = common::master(&path);
     match RunsStore::open(&path, None) {
         Err(Error::NewerSchema {
-            found: 6,
-            supported: 5,
+            found: 7,
+            supported: 6,
             ..
         }) => {}
         Err(other) => panic!("unexpected error {other}"),

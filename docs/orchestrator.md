@@ -301,6 +301,8 @@ Then read `<workspace>/.relay/run.log`. Implementation and review workers have n
 
 **Old worktrees of failed runs.** Failed, Stalled and Canceled runs keep their worktree and `relay/<id>` branch so their saved work can be inspected or retried. At startup and then hourly the daemon logs a `stale worktrees:` line listing those that ended more than `[orchestrator].stale_worktree_retention_days` (default 7) ago. It only reports them unless `[orchestrator].delete_stale_worktrees = true`, which removes them. It never touches a live run, a run awaiting review or kept for verification or integration, a preserved-run recovery row, a run newer than the retention window, or a run whose workspace a later run of the same ticket now uses.
 
+**Workers left running by a previous daemon.** Each run records its provider's pid, process group and start time. When the daemon starts, it stops any worker, spike or reviewer provider that a previous daemon left running, together with its process group and the descendants found under it: SIGTERM first, then SIGKILL after 3 s. The worker's run is marked `Stalled` ("Worker process of the previous daemon was stopped when daemon restarted"), and a reviewer's run goes back to `AwaitingReview`. A process is signalled only while its pid still has the recorded start time, so a pid that macOS has given to another process is never signalled. Runs recorded before this change have no start time, so their processes are never signalled.
+
 ## Limits (MVP)
 
 - No cross-machine orchestration.

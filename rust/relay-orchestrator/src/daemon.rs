@@ -24,7 +24,7 @@ use relay_store::continuity::ContinuityReportStore;
 use relay_store::followups::FollowupProposalStore;
 use relay_store::messenger::MessengerOutcomeStore;
 use relay_store::queue_drains::QueueDrainStore;
-use relay_store::runs::RunsStore;
+use relay_store::runs::{RunsStore, StartupProcess};
 use relay_store::sessions::SessionStore;
 
 use crate::failure::{Class, Failure, Outcome};
@@ -32,6 +32,9 @@ use crate::worker::RunProcess;
 
 pub const DEFAULT_PORT: u16 = 7634;
 pub const DEFAULT_WORKER_HEALTH_CHECK_SECONDS: f64 = 600.0;
+/// How long a previous daemon's provider gets after SIGTERM, and again after
+/// SIGKILL, when a restart stops it.
+const STARTUP_STOP_GRACE: Duration = Duration::from_secs(3);
 
 /// Locks a mutex, taking it over from a panicked holder as Python would
 /// carry on.
@@ -822,7 +825,10 @@ impl Daemon {
 
     /// The startup half of `Daemon.__init__` after the stores open.
     fn reconcile_on_startup(&self) {
-        let stalled = match self.runs.reconcile_on_startup() {
+        // A provider the previous daemon left running is stopped only when
+        // the ledger proves it is that provider (RR-504).
+        let settle = |run: &Dict| crate::process_tree::stop_recorded(run, STARTUP_STOP_GRACE);
+        let stalled = match self.runs.reconcile_on_startup(settle) {
             Ok(stalled) => {
                 if stalled > 0 {
                     eprintln!("[orchestrator] reconciled {stalled} stalled run(s) on startup");
@@ -834,6 +840,21 @@ impl Daemon {
                 0
             }
         };
+        // A reviewer of the previous daemon too: once it is gone, the queue
+        // returns its run to review.
+        match self.runs.list(Some("Reviewing"), i64::MAX) {
+            Ok(reviewing) => {
+                for run in &reviewing {
+                    if settle(run) == StartupProcess::Stopped {
+                        eprintln!(
+                            "[orchestrator] stopped the previous daemon's reviewer for run {}",
+                            run.get("id").map(Value::py_str).unwrap_or_default()
+                        );
+                    }
+                }
+            }
+            Err(error) => eprintln!("[orchestrator] reviewer reconciliation failed: {error}"),
+        }
         self.recover_stalled_spikes(stalled == 0);
         // Seed the runs index so the board has something to read before the
         // first transition (the reconciliation bypasses the write hooks).
