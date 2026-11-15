@@ -112,6 +112,7 @@ marked **none** have no non-test caller today.
 | POST | `/v1/ready-sweep` | 200 | Board |
 | POST | `/v1/program/ready-sweep` | 200 | Board |
 | GET | `/v1/queue-drains` | 200 | MCP |
+| GET | `/v1/maintenance/leftovers` | 200 | none |
 | POST | `/v1/queue-drains/{drain_id}/cancel` | 200 | none |
 | POST | `/v1/queue-drain/reconcile` | 200 | MCP |
 | GET | `/v1/program/status` | 200 | MCP, Board, Bridge |
@@ -283,6 +284,37 @@ result; the daemon writes the report into the ticket and never merges.
 - `POST /v1/queue-drains/{drain_id}/cancel` body `reason` → `{"queue_drain":
   drain}` with `state: canceled`; 400 `unknown queue drain <id>`. A drain
   completes (`state: completed`) once every observed ticket is done.
+
+## Maintenance
+
+- `GET /v1/maintenance/leftovers` → `{"mode": "report", "leftovers": […],
+  "processes_scanned", "unreadable_processes", "grace_seconds"}` (RR-506).
+  Report-only: it signals no process and removes nothing. Each leftover has
+  `kind` (`process` or `worktree`), `tier` and `reason`, sorted by tier and
+  pid. A process entry adds `pid`, `ppid`, `pgid`, `started_at`, `tty`,
+  `command` (the executable's name only), `evidence` (`environment` or
+  `path`), and the owning run's `run_id`, `ticket_id`, `run_state`,
+  `repo_path`, `workspace_path` and `run_ended_at`. A worktree entry is a row
+  of the stale-worktree sweep in report mode.
+  - **Tier 1**, a verified Relay leftover: a process with no controlling
+    terminal that carries the `RELAY_RUN_ID` and `RELAY_WORKSPACE` of a
+    finished run (`Merged`, `Failed`, `Stalled`, `Canceled`,
+    `SpikeCompleted`), or whose executable or command line points into a
+    finished run's workspace and that started while that run was running;
+    and the worktree of an old failed run.
+  - **Tier 2**, a path-only match: it points into a finished run's workspace
+    but started outside every run of it, or it has a controlling terminal.
+  - Never listed: another user's process, the daemon with its ancestors and
+    descendants, a live run's provider with its group and descendants, the
+    bridge of each orchestrator session that is not stopped and of each
+    `voice_bridge.pid`, the processes of the app bundle the daemon runs
+    from with their descendants, anything pointing into a workspace or
+    ticket with an open run, a run that ended less than `grace_seconds`
+    (120) ago, and a process whose command line cannot be read (counted in
+    `unreadable_processes`). Workspace paths match on a path boundary only,
+    so `…-rr-48` never claims `…-rr-485/…`. macOS hides the environment of
+    Apple platform binaries such as `/bin/sh`, so their tags cannot be read
+    and only a path can attribute them.
 
 ## Program, sessions, messenger and continuity
 

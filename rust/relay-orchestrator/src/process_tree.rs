@@ -20,9 +20,15 @@ use std::time::{Duration, Instant};
 use relay_intents::json::{Dict, Value};
 use relay_store::runs::StartupProcess;
 
-/// `PROC_PGRP_ONLY` and `PROC_PPID_ONLY` from `<sys/proc_info.h>`.
+/// `PROC_ALL_PIDS`, `PROC_PGRP_ONLY` and `PROC_PPID_ONLY` from
+/// `<sys/proc_info.h>`.
+pub(crate) const PROC_ALL_PIDS: u32 = 1;
 const PROC_PGRP_ONLY: u32 = 2;
 const PROC_PPID_ONLY: u32 = 6;
+/// `PROC_FLAG_CONTROLT`: the process has a controlling terminal.
+const PROC_FLAG_CONTROLT: u32 = 0x80;
+/// `NODEV`: `e_tdev` of a process without a terminal.
+const NODEV: u32 = u32::MAX;
 
 /// Who a pid named when it was recorded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,6 +45,8 @@ pub(crate) struct Info {
     pub identity: Identity,
     pub ppid: libc::pid_t,
     pub pgid: libc::pid_t,
+    /// It has a controlling terminal (RR-506).
+    pub tty: bool,
 }
 
 /// The process `pid` names now; `None` once it has exited (zombies
@@ -65,6 +73,7 @@ pub(crate) fn info(pid: libc::pid_t) -> Option<Info> {
         },
         ppid: bsd.pbi_ppid as libc::pid_t,
         pgid: bsd.pbi_pgid as libc::pid_t,
+        tty: bsd.pbi_flags & PROC_FLAG_CONTROLT != 0 || bsd.e_tdev != NODEV,
     })
 }
 
@@ -174,7 +183,7 @@ pub(crate) fn stop_recorded(run: &Dict, grace: Duration) -> StartupProcess {
 }
 
 /// `proc_listpids(kind, value)`: the pids it reports (zombies included).
-fn list(kind: u32, value: libc::pid_t) -> Vec<libc::pid_t> {
+pub(crate) fn list(kind: u32, value: libc::pid_t) -> Vec<libc::pid_t> {
     let width = std::mem::size_of::<libc::pid_t>();
     // SAFETY: a null buffer only asks for the size.
     let needed = unsafe { libc::proc_listpids(kind, value as u32, std::ptr::null_mut(), 0) };

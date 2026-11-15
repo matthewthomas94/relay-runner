@@ -106,6 +106,9 @@ fn dispatch(daemon: &Daemon, request: &Request) -> Outcome<Reply> {
     if get && is(&["v1", "runs"]) {
         return daemon.list_runs_route(request);
     }
+    if get && is(&["v1", "maintenance", "leftovers"]) {
+        return daemon.leftovers_route(request);
+    }
     if get && is(&["v1", "queue-drains"]) {
         return daemon.list_queue_drains_route(request);
     }

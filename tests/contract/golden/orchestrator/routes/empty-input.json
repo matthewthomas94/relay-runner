@@ -76,6 +76,16 @@
     ],
     "status": 200
   },
+  "GET /v1/maintenance/leftovers": {
+    "keys": [
+      "grace_seconds",
+      "leftovers",
+      "mode",
+      "processes_scanned",
+      "unreadable_processes"
+    ],
+    "status": 200
+  },
   "GET /v1/messenger/outcomes": {
     "keys": [
       "outcomes"
