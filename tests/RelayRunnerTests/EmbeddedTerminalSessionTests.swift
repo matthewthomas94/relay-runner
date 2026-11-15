@@ -4217,6 +4217,31 @@ final class EmbeddedSessionRegistryTests: XCTestCase {
         XCTAssertTrue(registry.hasLiveSessions)
     }
 
+    /// RR-508: launch cleanup keeps the folder of every live session.
+    func testLaunchCleanupNeverRemovesALiveSessionsSpool() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("rr-registry-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let registry = makeRegistry()
+        _ = try launch(registry, "a")
+        _ = try launch(registry, "b", provider: "Claude")
+        let spoolA = VoiceSessionSpool(key: "a", rootDirectory: root.path)
+        let spoolB = VoiceSessionSpool(key: "b", rootDirectory: root.path)
+        let stale = VoiceSessionSpool(key: "crashed", rootDirectory: root.path)
+        try spoolA.prepare(); try spoolB.prepare(); try stale.prepare()
+        registry.setSpool(spoolA, for: "a")
+        registry.setSpool(spoolB, for: "b")
+        XCTAssertEqual(registry.liveSpoolKeys, ["a", "b"])
+
+        XCTAssertEqual(VoiceSessionSpool.removeStale(keeping: registry.liveSpoolKeys, rootDirectory: root.path), ["crashed"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: spoolA.directory))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: spoolB.directory))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.directory))
+
+        // An ended session's spool is no longer kept.
+        registry.end(contextID: "a", retainingSpool: true)
+        XCTAssertEqual(registry.liveSpoolKeys, ["b"])
+    }
+
     func testEndingTheVoiceTargetedContextCanRetainItsSpoolForTheBridge() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("rr-registry-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
