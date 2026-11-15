@@ -550,6 +550,15 @@ in it: the suite splits both like a shell. Timeouts:
 `RELAY_ORCHESTRATOR_START_TIMEOUT` (30 s) and `RELAY_ORCHESTRATOR_WAIT_TIMEOUT`
 (60 s).
 
+The suite cleans up after a test process that was killed or timed out
+(RR-509). Each sandbox records its root, test process and daemon (pid plus
+`ps` start time) in `$TMPDIR/relay-orch-contract-registry/`, and a watchdog
+stops the daemon's process group as soon as the test process goes away. The
+first sandbox of the next run stops any registered daemon whose test process
+is gone, after checking that its pid still has the recorded start time, and
+removes its root. It also removes unregistered `relay-orch-contract-*` roots
+older than a day, including the read-only snapshot folders the daemon leaves.
+
 ## The Rust daemon
 
 `rust/relay-orchestrator` (RR-497) is the Rust port of this daemon:
