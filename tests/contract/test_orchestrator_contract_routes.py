@@ -25,7 +25,7 @@ PROBE_BODIES = {
 
 class RouteInventoryTests(unittest.TestCase):
     def test_the_document_lists_every_route_once(self):
-        self.assertEqual(len(documented_routes()), 76, "route count changed; update the API document")
+        self.assertEqual(len(documented_routes()), 77, "route count changed; update the API document")
 
     def test_parameters_are_normalised(self):
         self.assertEqual(normalise("/v1/runs/{run_id}/review"), "/v1/runs/%s/review" % PARAMETER)

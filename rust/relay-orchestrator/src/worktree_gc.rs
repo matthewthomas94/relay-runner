@@ -199,7 +199,7 @@ pub fn sweep(runs: &[Dict], policy: &Policy, live: &HashSet<i64>) -> Vec<Value> 
 }
 
 impl Daemon {
-    fn live_run_ids(&self) -> HashSet<i64> {
+    pub(crate) fn live_run_ids(&self) -> HashSet<i64> {
         let mut live: HashSet<i64> = guard(&self.workers).keys().copied().collect();
         live.extend(guard(&self.review_workers).keys().copied());
         live
