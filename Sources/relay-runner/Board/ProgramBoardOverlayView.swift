@@ -4630,9 +4630,9 @@ struct ProgramSessionPrimaryButton: View {
         }
     }
 
-    /// Each segment darkens a little under the pointer.
+    /// Each segment lightens a little under the pointer.
     private func hoverFill(_ segment: Segment) -> Color {
-        GraphicalTheme.onPrimaryAction.opacity(hovered == segment ? 0.08 : 0)
+        Color.white.opacity(hovered == segment ? 0.2 : 0)
     }
 
     private func hover(_ segment: Segment, _ isHovering: Bool) {
