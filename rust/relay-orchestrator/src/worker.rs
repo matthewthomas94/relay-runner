@@ -35,7 +35,7 @@ use crate::activity::{
 use crate::daemon::{Daemon, guard};
 use crate::dispatch::{resolve_worker_model, validate_worker_effort};
 use crate::failure::{Failure, Outcome};
-use crate::process_tree::{Identity, ProcessTree};
+use crate::process_tree::{self, Identity, ProcessTree};
 use crate::queue::{VERIFICATION_BLOCKED_STATUS, now};
 use crate::trace::LifecycleEvent;
 
@@ -650,6 +650,23 @@ fn run_tags(run_id: i64, workspace: &str) -> [(String, String); 2] {
 struct Started {
     output: std::io::PipeReader,
     pid: i64,
+    /// Its group and start time, for the ledger (RR-504); `None` when it
+    /// exited before they could be read.
+    pgid: Option<i64>,
+    start_us: Option<i64>,
+}
+
+impl Started {
+    /// The ledger update that records this provider for its run.
+    fn recorded(&self, state: &str) -> RunUpdate {
+        RunUpdate {
+            state: Some(state.to_string()),
+            pid: Some(self.pid),
+            pgid: self.pgid,
+            pid_start_us: self.start_us,
+            ..RunUpdate::default()
+        }
+    }
 }
 
 /// `subprocess.Popen(cmd, cwd=, stdin=PIPE, stdout=PIPE,
@@ -680,6 +697,8 @@ fn start_process(
     // the provider exits.
     drop(builder);
     let pid = i64::from(child.id());
+    // The child is unreaped, so its pid still names it.
+    let live = process_tree::info(child.id() as libc::pid_t);
     if let Some(mut stdin) = child.stdin.take() {
         let prompt = prompt.to_string();
         // A separate writer, so a large prompt never blocks against output.
@@ -688,7 +707,12 @@ fn start_process(
         });
     }
     process.attach(child);
-    Ok(Started { output, pid })
+    Ok(Started {
+        output,
+        pid,
+        pgid: live.map(|live| i64::from(live.pgid)),
+        start_us: live.map(|live| process_tree::start_us(&live.identity)),
+    })
 }
 
 /// `for line in proc.stdout` while a supervisor follows the provider and,
@@ -1169,11 +1193,7 @@ fn run_worker(daemon: &Arc<Daemon>, process: &RunProcess, launch: &WorkerLaunch)
             return None;
         }
     };
-    update(RunUpdate {
-        state: Some("Running".to_string()),
-        pid: Some(started.pid),
-        ..RunUpdate::default()
-    });
+    update(started.recorded("Running"));
     emit("run-running", None, false);
 
     let mut events = Events {
@@ -1550,14 +1570,7 @@ fn run_review_worker(daemon: &Arc<Daemon>, process: &RunProcess, launch: &Review
             return;
         }
     };
-    let _ = daemon.runs.update(
-        run_id,
-        &RunUpdate {
-            state: Some("Reviewing".to_string()),
-            pid: Some(started.pid),
-            ..RunUpdate::default()
-        },
-    );
+    let _ = daemon.runs.update(run_id, &started.recorded("Reviewing"));
     let _ = daemon.runs.set_activity(run_id, "Reviewing worker branch");
     emit("run-reviewing", None, false);
     let stop = heartbeat(daemon, run_id, || true);

@@ -8,8 +8,17 @@
 //! process whose identity still matches what it recorded: pid, uid and
 //! start time (seconds and microseconds). A mismatch means the pid now
 //! names another process, which is never signalled.
+//!
+//! The run ledger keeps the provider's group and start time with its pid
+//! (RR-504), so liveness checks and a later daemon can tell the provider
+//! from whatever reuses its pid.
 
 use std::collections::HashMap;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use relay_intents::json::{Dict, Value};
+use relay_store::runs::StartupProcess;
 
 /// `PROC_PGRP_ONLY` and `PROC_PPID_ONLY` from `<sys/proc_info.h>`.
 const PROC_PGRP_ONLY: u32 = 2;
@@ -62,6 +71,106 @@ pub(crate) fn info(pid: libc::pid_t) -> Option<Info> {
 /// `identity` still names a live process.
 pub(crate) fn matches(identity: &Identity) -> bool {
     info(identity.pid).is_some_and(|live| live.identity == *identity)
+}
+
+/// The start time as the ledger's `pid_start_us` stores it.
+pub(crate) fn start_us(identity: &Identity) -> i64 {
+    let seconds = i64::try_from(identity.start_sec).unwrap_or(i64::MAX);
+    let micros = i64::try_from(identity.start_usec).unwrap_or(0);
+    seconds.saturating_mul(1_000_000).saturating_add(micros)
+}
+
+/// A run row's recorded provider pid.
+fn run_pid(run: &Dict) -> Option<libc::pid_t> {
+    let pid = run.get("pid").and_then(Value::py_int)?;
+    libc::pid_t::try_from(pid).ok().filter(|pid| *pid > 1)
+}
+
+/// The process `pid` names now, when it is this user's and started at
+/// `start` (`pid_start_us`).
+fn recorded_live(pid: libc::pid_t, start: i64) -> Option<Info> {
+    // SAFETY: geteuid cannot fail.
+    let uid = unsafe { libc::geteuid() };
+    info(pid).filter(|live| live.identity.uid == uid && start_us(&live.identity) == start)
+}
+
+/// `kill(pid, 0)` succeeds or is refused: all a row without a start time
+/// can show.
+fn pid_in_use(pid: libc::pid_t) -> bool {
+    // SAFETY: kill with signal 0 only checks that the process exists.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// `_process_is_alive(run)`: the run's recorded provider still runs. A row
+/// with a start time counts only while its pid names a process of this user
+/// with that same start time, so a reused pid never keeps a run alive. An
+/// older row without one falls back to `kill(pid, 0)`.
+pub(crate) fn process_is_alive(run: &Dict) -> bool {
+    let Some(pid) = run_pid(run) else {
+        return false;
+    };
+    match run.get("pid_start_us").and_then(Value::py_int) {
+        Some(start) => recorded_live(pid, start).is_some(),
+        None => pid_in_use(pid),
+    }
+}
+
+/// Stops the provider a previous daemon recorded for `run`, with whatever
+/// it started (RR-504). Only a provider whose pid still names the process
+/// recorded at spawn (same user and start time) is signalled: its group
+/// when it still leads the recorded one, and every descendant found under
+/// it, by identity. SIGTERM, then SIGKILL to what is left after `grace`. A
+/// row without a start time is never signalled.
+pub(crate) fn stop_recorded(run: &Dict, grace: Duration) -> StartupProcess {
+    let Some(pid) = run_pid(run) else {
+        return StartupProcess::Gone;
+    };
+    let Some(start) = run.get("pid_start_us").and_then(Value::py_int) else {
+        return if pid_in_use(pid) {
+            StartupProcess::Unverified
+        } else {
+            StartupProcess::Gone
+        };
+    };
+    let Some(live) = recorded_live(pid, start) else {
+        return StartupProcess::Gone;
+    };
+    // SAFETY: getpgrp and getpid cannot fail.
+    let (own_group, own_pid) = unsafe { (libc::getpgrp(), libc::getpid()) };
+    if pid == own_pid {
+        return StartupProcess::Unverified;
+    }
+    let recorded_group = run.get("pgid").and_then(Value::py_int);
+    let leads_group =
+        recorded_group == Some(i64::from(pid)) && live.pgid == pid && pid != own_group;
+    let mut tree = ProcessTree::new(pid);
+    tree.refresh(true);
+    for signal in [libc::SIGTERM, libc::SIGKILL] {
+        // SAFETY: the identity check just before makes sure the pid, and
+        // the group it leads, still name the recorded provider.
+        if matches(&live.identity) {
+            unsafe {
+                if leads_group {
+                    libc::killpg(pid, signal);
+                } else {
+                    libc::kill(pid, signal);
+                }
+            }
+        }
+        tree.signal(signal);
+        let deadline = Instant::now() + grace;
+        let stopped = || !matches(&live.identity) && tree.survivors().is_empty();
+        while !stopped() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        if stopped() {
+            break;
+        }
+    }
+    StartupProcess::Stopped
 }
 
 /// `proc_listpids(kind, value)`: the pids it reports (zombies included).
@@ -238,5 +347,150 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert!(tree.survivors().is_empty());
+    }
+
+    /// A run row as the ledger stores a provider: pid, group, start time.
+    fn row(pid: libc::pid_t, start: Option<i64>) -> Dict {
+        let mut run = Dict::new();
+        run.insert("pid", Value::Int(i64::from(pid)));
+        run.insert("pgid", Value::Int(i64::from(pid)));
+        run.insert("pid_start_us", start.map_or(Value::Null, Value::Int));
+        run
+    }
+
+    fn still_running(child: &mut std::process::Child) -> bool {
+        child.try_wait().unwrap().is_none()
+    }
+
+    #[test]
+    fn a_reused_pid_is_never_signalled_or_counted_alive() {
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = child.id() as libc::pid_t;
+        let live = info(pid).expect("running child");
+        let start = start_us(&live.identity);
+
+        // The pid now names a process that started at another time.
+        let reused = row(pid, Some(start + 1));
+        assert!(!process_is_alive(&reused));
+        assert_eq!(
+            stop_recorded(&reused, Duration::from_millis(200)),
+            StartupProcess::Gone
+        );
+        // A row from before RR-504 cannot prove whose the pid is.
+        let legacy = row(pid, None);
+        assert!(process_is_alive(&legacy), "falls back to kill(pid, 0)");
+        assert_eq!(
+            stop_recorded(&legacy, Duration::from_millis(200)),
+            StartupProcess::Unverified
+        );
+        thread::sleep(Duration::from_millis(100));
+        let survived = still_running(&mut child);
+        assert!(process_is_alive(&row(pid, Some(start))));
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(survived, "neither row signalled the process");
+        assert!(!process_is_alive(&row(pid, Some(start))));
+        assert!(!process_is_alive(&row(0, None)));
+    }
+
+    #[test]
+    fn startup_stops_a_previous_daemons_provider_and_what_it_started() {
+        use relay_store::runs::{NewRun, RunUpdate, RunsStore};
+
+        let data = std::env::temp_dir().join(format!("relay-rr504-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let store = RunsStore::open(&data.join("runs.db"), None).unwrap();
+        let record = |ticket: &str, child: &std::process::Child, shift: i64| {
+            let pid = child.id() as libc::pid_t;
+            let live = info(pid).expect("running child");
+            let run = store
+                .insert(&NewRun {
+                    ticket_id: ticket.to_string(),
+                    repo_path: "/tmp/repo".to_string(),
+                    workspace_path: "/tmp/workspace".to_string(),
+                    branch: "relay/x".to_string(),
+                    state: "Claimed".to_string(),
+                    ..NewRun::default()
+                })
+                .unwrap();
+            store
+                .update(
+                    run,
+                    &RunUpdate {
+                        state: Some("Running".to_string()),
+                        pid: Some(i64::from(pid)),
+                        pgid: Some(i64::from(live.pgid)),
+                        pid_start_us: Some(start_us(&live.identity) + shift),
+                        ..RunUpdate::default()
+                    },
+                )
+                .unwrap();
+            run
+        };
+
+        // A provider with a tool child in its group and one that left it.
+        let mut provider = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("/bin/sleep 30 & /usr/bin/perl -e 'use POSIX; POSIX::setsid(); sleep 30' & wait")
+            .stdin(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let mut tree = ProcessTree::new(provider.id() as libc::pid_t);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while tree.survivors().len() < 2 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(50));
+            tree.refresh(true);
+        }
+        let children = tree.survivors();
+        // An unrelated process whose pid the ledger recorded for another
+        // process (a different start time).
+        let mut unrelated = Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let stopped_run = record("RR-1", &provider, 0);
+        let reused_run = record("RR-2", &unrelated, -1);
+
+        let reconciled = store
+            .reconcile_on_startup(|run| stop_recorded(run, Duration::from_secs(2)))
+            .unwrap();
+        let provider_stopped = provider.try_wait().unwrap().is_some();
+        let unrelated_survived = still_running(&mut unrelated);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while children.iter().any(matches) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        let children_left = children.iter().filter(|child| matches(child)).count();
+        // Clean up before asserting.
+        tree.signal(libc::SIGKILL);
+        unsafe { libc::killpg(provider.id() as libc::pid_t, libc::SIGKILL) };
+        let _ = provider.wait();
+        let _ = unrelated.kill();
+        let _ = unrelated.wait();
+        let state = |run| store.get(run).unwrap().unwrap().string("last_error");
+        let (stopped_error, reused_error) = (state(stopped_run), state(reused_run));
+        drop(store);
+        let _ = std::fs::remove_dir_all(&data);
+
+        assert_eq!(children.len(), 2, "both tool children started");
+        assert_eq!(reconciled, 2);
+        assert!(provider_stopped, "the provider was stopped");
+        assert_eq!(children_left, 0, "its children were stopped with it");
+        assert!(unrelated_survived, "a reused pid is never signalled");
+        assert_eq!(
+            stopped_error,
+            "Worker process of the previous daemon was stopped when daemon restarted"
+        );
+        assert_eq!(
+            reused_error,
+            "Worker process was no longer running when daemon restarted"
+        );
     }
 }

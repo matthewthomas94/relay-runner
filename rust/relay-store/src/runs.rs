@@ -8,12 +8,12 @@ use rusqlite::Connection;
 use rusqlite::types::Value as Sql;
 
 use crate::sql::{
-    self, DEFAULT_TIMEOUT, Db, field_int, field_str, int, opt_text, placeholders, real,
+    self, DEFAULT_TIMEOUT, Db, field_int, field_str, int, opt_int, opt_text, placeholders, real,
     resolve_path, text,
 };
 use crate::{Dict, Error, Result, Value};
 
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 pub const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS runs (
@@ -38,7 +38,9 @@ pub const SCHEMA: &str = "
         worker_model TEXT,
         worker_effort TEXT,
         worker_sizing_rationale TEXT,
-        worker_provider_notes TEXT
+        worker_provider_notes TEXT,
+        pgid INTEGER,
+        pid_start_us INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_runs_state ON runs(state);
     CREATE INDEX IF NOT EXISTS idx_runs_ticket ON runs(ticket_id);
@@ -101,16 +103,17 @@ pub fn sanitize_identifier(identifier: &str) -> Result<String> {
     Ok(slug)
 }
 
-/// `_process_is_alive`: `os.kill(pid, 0)` succeeds or is refused.
-pub fn process_is_alive(pid: Option<i64>) -> bool {
-    let Some(pid) = pid.filter(|pid| *pid > 0 && *pid <= i64::from(i32::MAX)) else {
-        return false;
-    };
-    // SAFETY: kill with signal 0 only checks that the process exists.
-    if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
-        return true;
-    }
-    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+/// What `reconcile_on_startup` found of an active run's recorded process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartupProcess {
+    /// Nothing is running under the recorded identity.
+    Gone,
+    /// It was a provider of the previous daemon, and was stopped.
+    Stopped,
+    /// Its pid is in use but nothing proves it is the recorded provider,
+    /// as for a row from before RR-504 with no start time, so it was left
+    /// alone.
+    Unverified,
 }
 
 /// The fields of a new run (`RunsStore.insert`).
@@ -138,7 +141,13 @@ pub struct NewRun {
 #[derive(Clone, Debug, Default)]
 pub struct RunUpdate {
     pub state: Option<String>,
+    /// Writes `pgid` and `pid_start_us` with it, so a pid is never stored
+    /// beside another process's identity.
     pub pid: Option<i64>,
+    /// The provider's process group.
+    pub pgid: Option<i64>,
+    /// The provider's start time in microseconds since the epoch.
+    pub pid_start_us: Option<i64>,
     pub exit_code: Option<i64>,
     /// `Some(None)` clears `last_error`.
     pub last_error: Option<Option<String>>,
@@ -321,6 +330,10 @@ impl RunsStore {
         if let Some(pid) = update.pid {
             fields.push("pid = ?");
             values.push(int(pid));
+            fields.push("pgid = ?");
+            values.push(opt_int(update.pgid));
+            fields.push("pid_start_us = ?");
+            values.push(opt_int(update.pid_start_us));
         }
         if let Some(exit_code) = update.exit_code {
             fields.push("exit_code = ?");
@@ -451,48 +464,63 @@ impl RunsStore {
         self.db.with(|c| sql::row(c, &statement, &params))
     }
 
-    /// Marks abandoned runs `Stalled`, keeping implementation workers whose
-    /// process is still alive. A spike never survives a restart: its process
-    /// is sent `SIGTERM`. Returns how many runs were reconciled.
-    pub fn reconcile_on_startup(&self) -> Result<usize> {
+    /// Marks abandoned runs `Stalled`. `settle` decides each active run's
+    /// recorded process, and is called outside the store lock: a provider of
+    /// the previous daemon whose identity still matches is stopped, and one
+    /// that cannot be verified is never signalled. An implementation run left
+    /// `Unverified` keeps its state; a spike never survives a restart. Returns
+    /// how many runs were reconciled.
+    pub fn reconcile_on_startup(
+        &self,
+        mut settle: impl FnMut(&Dict) -> StartupProcess,
+    ) -> Result<usize> {
         let statement = format!(
-            "SELECT id, pid, execution_mode FROM runs WHERE state IN ({})",
+            "SELECT id, pid, pgid, pid_start_us, execution_mode FROM runs WHERE state IN ({})",
             placeholders(ACTIVE_STATES.len())
         );
         let states: Vec<Sql> = ACTIVE_STATES.iter().map(|state| text(*state)).collect();
+        let rows = self.db.with(|c| sql::rows(c, &statement, &states))?;
+        let mut abandoned = Vec::new();
+        let mut stopped = Vec::new();
+        for row in &rows {
+            let spike = field_str(row, "execution_mode") == SPIKE_EXECUTION_MODE;
+            let id = field_int(row, "id").unwrap_or_default();
+            match settle(row) {
+                StartupProcess::Stopped if !spike => stopped.push(id),
+                StartupProcess::Unverified if !spike => {}
+                _ => abandoned.push(id),
+            }
+        }
+        if abandoned.is_empty() && stopped.is_empty() {
+            return Ok(0);
+        }
         self.db.with(|c| {
-            let rows = sql::rows(c, &statement, &states)?;
-            let mut abandoned = Vec::new();
-            for row in &rows {
-                let spike = field_str(row, "execution_mode") == SPIKE_EXECUTION_MODE;
-                let pid = field_int(row, "pid");
-                if spike || !process_is_alive(pid) {
-                    abandoned.push(field_int(row, "id").unwrap_or_default());
+            for (ids, error) in [
+                (
+                    &abandoned,
+                    "CASE WHEN execution_mode = 'spike' AND state = 'SpikeResultReady' \
+                     THEN 'Spike terminal result ready before daemon restart' \
+                     WHEN execution_mode = 'spike' THEN 'Spike stopped during daemon restart; retry is available' \
+                     ELSE 'Worker process was no longer running when daemon restarted' END",
+                ),
+                (
+                    &stopped,
+                    "'Worker process of the previous daemon was stopped when daemon restarted'",
+                ),
+            ] {
+                if ids.is_empty() {
+                    continue;
                 }
-                if spike
-                    && let Some(pid) = pid.filter(|pid| *pid > 0 && *pid <= i64::from(i32::MAX)) {
-                        // SAFETY: signals the spike worker this run recorded.
-                        unsafe {
-                            libc::kill(pid as libc::pid_t, libc::SIGTERM);
-                        }
-                    }
+                let mut params = vec![real(sql::now())];
+                params.extend(ids.iter().map(|id| int(*id)));
+                let update = format!(
+                    "UPDATE runs SET state = 'Stalled', ended_at = ?, last_error = {error} \
+                     WHERE id IN ({})",
+                    placeholders(ids.len())
+                );
+                sql::execute(c, &update, &params)?;
             }
-            if abandoned.is_empty() {
-                return Ok(0);
-            }
-            let mut params = vec![real(sql::now())];
-            params.extend(abandoned.iter().map(|id| int(*id)));
-            let update = format!(
-                "UPDATE runs SET state = 'Stalled', ended_at = ?, \
-                 last_error = CASE WHEN execution_mode = 'spike' AND state = 'SpikeResultReady' \
-                 THEN 'Spike terminal result ready before daemon restart' \
-                 WHEN execution_mode = 'spike' THEN 'Spike stopped during daemon restart; retry is available' \
-                 ELSE 'Worker process was no longer running when daemon restarted' END \
-                 WHERE id IN ({})",
-                placeholders(abandoned.len())
-            );
-            sql::execute(c, &update, &params)?;
-            Ok(abandoned.len())
+            Ok(abandoned.len() + stopped.len())
         })
     }
 
@@ -587,12 +615,19 @@ fn get_row(c: &Connection, run_id: i64) -> Result<Option<Dict>> {
 }
 
 fn init(c: &Connection) -> Result<()> {
-    // `user_version` gates migrations. 4 gains `execution_mode`; an older
-    // version is dropped, as the Python store drops it; a newer one is refused.
+    // `user_version` gates migrations. 4 gains `execution_mode`, 5 the
+    // provider's `pgid` and `pid_start_us` (RR-504); an older version is
+    // dropped, as the Python store drops it; a newer one is refused.
     let current = sql::user_version(c)?;
-    if current == 4 {
+    if current == 4 || current == 5 {
+        if current == 4 {
+            c.execute_batch(
+                "ALTER TABLE runs ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'implementation'",
+            )?;
+        }
         c.execute_batch(
-            "ALTER TABLE runs ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'implementation'",
+            "ALTER TABLE runs ADD COLUMN pgid INTEGER; \
+             ALTER TABLE runs ADD COLUMN pid_start_us INTEGER;",
         )?;
         sql::set_user_version(c, SCHEMA_VERSION)?;
         c.execute_batch(SCHEMA)?;

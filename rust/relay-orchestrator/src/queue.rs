@@ -18,7 +18,6 @@ use relay_intents::json::{self, Dict, Value};
 use relay_store::queue_drains::{DrainItem, DrainState};
 use relay_store::runs::{
     ACTIVE_STATES, INTEGRATION_BLOCKED_RUN_STATE, MERGEABLE_REVIEW_STATES, RunUpdate,
-    process_is_alive,
 };
 
 use crate::daemon::{Daemon, guard, registered_project_repo_paths, resolve_path};
@@ -27,6 +26,7 @@ use crate::dispatch::{
     string_values,
 };
 use crate::failure::{Class, Failure, Outcome};
+use crate::process_tree::process_is_alive;
 use crate::request::Request;
 use crate::router::{Reply, reply, single};
 use crate::trace::LifecycleEvent;
@@ -752,7 +752,7 @@ impl Daemon {
         if state == "Claimed" && !run.get("pid").is_some_and(Value::truthy) {
             return false;
         }
-        !process_is_alive(run.get("pid").and_then(Value::py_int))
+        !process_is_alive(run)
     }
 
     pub(crate) fn forget_run_health(&self, run_id: i64) {
@@ -762,7 +762,7 @@ impl Daemon {
     /// `_observe_run_health(run, now=)`: the warning of a live run that made
     /// no observable progress over the health-check window.
     fn observe_run_health(&self, run: &Dict, now: f64) -> Option<String> {
-        if !process_is_alive(run.get("pid").and_then(Value::py_int)) {
+        if !process_is_alive(run) {
             return None;
         }
         let run_id = run_id(run)?;

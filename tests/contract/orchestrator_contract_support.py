@@ -140,7 +140,7 @@ _SESSION_KEY_RE = re.compile(r"\bproject:[0-9a-f]{16}\b")
 # Numeric fields that hold wall-clock times, durations or process ids.
 VOLATILE_NUMBER_KEYS = {
     "pid", "port", "exit_code_time", "duration_seconds", "elapsed_seconds", "age_seconds",
-    "idle_seconds", "uptime_seconds", "worker_pid", "review_pid",
+    "idle_seconds", "uptime_seconds", "worker_pid", "review_pid", "pgid", "pid_start_us",
 }
 
 

@@ -100,9 +100,7 @@ pub fn keep_reason(
     if !CLEANUP_STATES.contains(&state) {
         return Some("state");
     }
-    if live.contains(&id)
-        || relay_store::runs::process_is_alive(run.get("pid").and_then(Value::py_int))
-    {
+    if live.contains(&id) || crate::process_tree::process_is_alive(run) {
         return Some("live");
     }
     let Some(ended_at) = run.get("ended_at").and_then(Value::py_float) else {
