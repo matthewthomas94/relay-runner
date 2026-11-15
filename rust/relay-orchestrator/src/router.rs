@@ -223,6 +223,9 @@ fn dispatch(daemon: &Daemon, request: &Request) -> Outcome<Reply> {
     if post && is(&["v1", "ready-sweep"]) {
         return daemon.sweep_ready_tickets_route(request);
     }
+    if post && is(&["v1", "maintenance", "leftovers", "clean"]) {
+        return daemon.clean_leftovers_route(request);
+    }
     if post && is(&["v1", "program", "ready-sweep"]) {
         return daemon.sweep_program_ready_tickets_route(request);
     }

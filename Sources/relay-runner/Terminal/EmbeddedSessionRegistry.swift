@@ -91,6 +91,11 @@ final class EmbeddedSessionRegistry {
 
     func spool(for contextID: String) -> VoiceSessionSpool? { spools[contextID] }
 
+    /// RR-508: the spool keys of live sessions, which launch cleanup keeps.
+    var liveSpoolKeys: Set<String> {
+        Set(spools.filter { isLive($0.key) }.compactMap(\.value.key))
+    }
+
     /// Stop only this context's PTY and remove only its spool. A caller whose
     /// bridge still publishes into the spool retains it and removes the
     /// returned spool once the bridge is retargeted.

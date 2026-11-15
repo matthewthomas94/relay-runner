@@ -272,6 +272,23 @@ impl Daemon {
         result
     }
 
+    /// `POST /v1/maintenance/leftovers/clean` (RR-508): one cleanup pass on
+    /// demand, as the app asks for at Start Session. `stopped` is always
+    /// present when the mode is not `off`, empty when nothing was signalled.
+    pub fn clean_leftovers_route(
+        &self,
+        _request: &crate::request::Request,
+    ) -> crate::failure::Outcome<crate::router::Reply> {
+        let mut result = self.clean_leftovers(relay_store::sql::now());
+        if result.get("error").is_some() {
+            return crate::router::reply(500, result);
+        }
+        if result.string("mode") != Mode::Off.as_str() && result.get("stopped").is_none() {
+            result.insert("stopped", Value::List(Vec::new()));
+        }
+        crate::router::reply(200, result)
+    }
+
     /// Logs one target's outcome, and traces it when it was stopped.
     fn record_stop(&self, target: &Target, outcome: Stop) {
         let ticket = target.ticket_id.to_uppercase();
