@@ -144,7 +144,7 @@ Foreground sessions can inspect the drain through `queue_drain_status` or HTTP `
 list_runs                          → all recent runs, newest first
 list_runs --state=Running          → only active ones
 get_run --run_id=17                → details for one run
-cancel_run --run_id=17             → SIGTERM the worker, prune the worktree
+cancel_run --run_id=17             → SIGTERM the worker's group and descendants, prune the worktree
 queue_drain_status reconcile=true  → inspect/reconcile rolling drain state
 ```
 

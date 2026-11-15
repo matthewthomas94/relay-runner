@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,11 +35,16 @@ use crate::activity::{
 use crate::daemon::{Daemon, guard};
 use crate::dispatch::{resolve_worker_model, validate_worker_effort};
 use crate::failure::{Failure, Outcome};
+use crate::process_tree::{Identity, ProcessTree};
 use crate::queue::{VERIFICATION_BLOCKED_STATUS, now};
 use crate::trace::LifecycleEvent;
 
 /// How long a canceled provider has to exit before it is killed.
 const TERMINATE_GRACE: Duration = Duration::from_secs(5);
+/// How often a running provider's descendants are recorded.
+const SUPERVISE_INTERVAL: Duration = Duration::from_millis(100);
+/// How long what a provider left behind has to exit after SIGTERM.
+const SURVIVOR_GRACE: Duration = Duration::from_secs(2);
 /// The tools a Claude spike may call; `StructuredOutput` is how
 /// `--json-schema` returns the terminal result and has no side effect.
 const SPIKE_TOOLS: [&str; 6] = [
@@ -412,18 +417,83 @@ fn claude_subscription_error(
 struct Slot {
     child: Option<Child>,
     status: Option<ExitStatus>,
+    /// The provider's descendants, followed while it runs (RR-503).
+    tree: Option<ProcessTree>,
 }
 
 impl Slot {
-    /// `proc.poll()`: the exit status once the child has exited.
+    /// The exit status once the child has been reaped. Only the
+    /// supervisor reaps, after it has stopped what the provider left
+    /// behind, so until then the pid and the group id still name it.
     fn poll(&mut self) -> Option<ExitStatus> {
+        self.status
+    }
+
+    /// The unreaped child's pid.
+    fn held_pid(&self) -> Option<libc::pid_t> {
+        match (&self.child, self.status) {
+            (Some(child), None) => Some(child.id() as libc::pid_t),
+            _ => None,
+        }
+    }
+
+    /// The child has exited, reaped or not (`waitid(WNOWAIT)`).
+    fn exited(&self) -> bool {
+        let Some(pid) = self.held_pid() else {
+            return true;
+        };
+        // SAFETY: siginfo_t is plain data; WNOWAIT leaves the child
+        // unreaped.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        result != 0 || info.si_pid == pid
+    }
+
+    /// `killpg` on the provider's group, then every tracked descendant
+    /// whose identity still matches; false once the child is reaped.
+    fn signal(&mut self, signal: libc::c_int) -> bool {
+        let Some(pid) = self.held_pid() else {
+            return false;
+        };
+        let tree = self.tree.get_or_insert_with(|| ProcessTree::new(pid));
+        tree.refresh(true);
+        // SAFETY: the child is unreaped, so its pid, and the group it
+        // leads, still name it.
+        unsafe {
+            if libc::killpg(pid, signal) != 0 {
+                libc::kill(pid, signal);
+            }
+        }
+        tree.signal(signal);
+        true
+    }
+
+    /// The tracked descendants still running.
+    fn survivors(&mut self) -> Vec<Identity> {
+        let held = self.held_pid().is_some();
+        match self.tree.as_mut() {
+            Some(tree) => {
+                tree.refresh(held);
+                tree.survivors()
+            }
+            None => Vec::new(),
+        }
+    }
+
+    fn reap(&mut self) {
         if self.status.is_none()
             && let Some(child) = self.child.as_mut()
-            && let Ok(Some(status)) = child.try_wait()
+            && let Ok(status) = child.wait()
         {
             self.status = Some(status);
         }
-        self.status
     }
 }
 
@@ -440,7 +510,9 @@ pub struct RunProcess {
 
 impl RunProcess {
     fn attach(&self, child: Child) {
-        guard(&self.slot).child = Some(child);
+        let mut slot = guard(&self.slot);
+        slot.tree = Some(ProcessTree::new(child.id() as libc::pid_t));
+        slot.child = Some(child);
     }
 
     /// The process is still starting or has not exited:
@@ -451,19 +523,7 @@ impl RunProcess {
     }
 
     fn signal(&self, signal: libc::c_int) -> bool {
-        let mut slot = guard(&self.slot);
-        if slot.poll().is_some() {
-            return false;
-        }
-        let Some(child) = slot.child.as_ref() else {
-            return false;
-        };
-        // SAFETY: the child is unreaped (poll saw it running under this
-        // lock), so its pid still names it.
-        unsafe {
-            libc::kill(child.id() as libc::pid_t, signal);
-        }
-        true
+        guard(&self.slot).signal(signal)
     }
 
     fn wait_exit(&self, timeout: Duration) -> Option<ExitStatus> {
@@ -485,7 +545,8 @@ impl RunProcess {
         self.terminate();
     }
 
-    /// `_terminate()`: SIGTERM, then SIGKILL after the grace period.
+    /// `_terminate()`: SIGTERM to the provider's group and descendants,
+    /// then SIGKILL after the grace period.
     fn terminate(&self) {
         if !self.signal(libc::SIGTERM) {
             return;
@@ -494,6 +555,39 @@ impl RunProcess {
             self.signal(libc::SIGKILL);
             self.wait_exit(Duration::from_secs(5));
         }
+    }
+
+    /// Follows the provider's descendants until it exits, then stops what
+    /// it left behind straight away (SIGTERM, SIGKILL after a short grace)
+    /// and reaps it. Survivors holding the output pipe would otherwise keep
+    /// the run open until they exit on their own.
+    fn supervise(&self) {
+        loop {
+            {
+                let mut slot = guard(&self.slot);
+                if slot.exited() {
+                    break;
+                }
+                let held = slot.held_pid().is_some();
+                if let Some(tree) = slot.tree.as_mut() {
+                    tree.refresh(held);
+                }
+            }
+            thread::sleep(SUPERVISE_INTERVAL);
+        }
+        if !guard(&self.slot).survivors().is_empty() {
+            for signal in [libc::SIGTERM, libc::SIGKILL] {
+                self.signal(signal);
+                let deadline = Instant::now() + SURVIVOR_GRACE;
+                while !guard(&self.slot).survivors().is_empty() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(20));
+                }
+                if guard(&self.slot).survivors().is_empty() {
+                    break;
+                }
+            }
+        }
+        guard(&self.slot).reap();
     }
 
     fn canceled(&self) -> bool {
@@ -559,7 +653,8 @@ struct Started {
 }
 
 /// `subprocess.Popen(cmd, cwd=, stdin=PIPE, stdout=PIPE,
-/// stderr=STDOUT, env=)`, then the prompt on stdin.
+/// stderr=STDOUT, env=)`, then the prompt on stdin. The provider leads a
+/// process group of its own, so its tool children can be signalled with it.
 fn start_process(
     process: &RunProcess,
     command: &[String],
@@ -575,7 +670,8 @@ fn start_process(
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(writer)
-        .stderr(errors);
+        .stderr(errors)
+        .process_group(0);
     for (key, value) in overrides {
         builder.env(key, value);
     }
@@ -595,8 +691,22 @@ fn start_process(
     Ok(Started { output, pid })
 }
 
-/// The exit status once the output has ended.
+/// `for line in proc.stdout` while a supervisor follows the provider and,
+/// once it exits, stops what it left behind so the output ends.
+fn watch_output(process: &RunProcess, output: impl Read, handle: impl FnMut(&str)) {
+    thread::scope(|scope| {
+        scope.spawn(|| process.supervise());
+        for_each_line(output, handle);
+    });
+}
+
+/// The exit status once the output has ended. A caller that read the
+/// output without `watch_output` has no supervisor, so supervise here: the
+/// child is still reaped only after what it left behind has been stopped.
 fn reap(process: &RunProcess) -> i64 {
+    if guard(&process.slot).poll().is_none() {
+        process.supervise();
+    }
     loop {
         if let Some(status) = guard(&process.slot).poll() {
             return return_code(status);
@@ -1078,7 +1188,7 @@ fn run_worker(daemon: &Arc<Daemon>, process: &RunProcess, launch: &WorkerLaunch)
     let inflight = events.inflight.clone();
     let stop = heartbeat(daemon, run_id, move || !guard(&inflight).is_empty());
     let mut tail: VecDeque<String> = VecDeque::with_capacity(5);
-    for_each_line(started.output, |line| {
+    watch_output(process, started.output, |line| {
         log.write(line);
         // The daemon's advisory health check observes log growth.
         log.flush();
@@ -1452,7 +1562,7 @@ fn run_review_worker(daemon: &Arc<Daemon>, process: &RunProcess, launch: &Review
     emit("run-reviewing", None, false);
     let stop = heartbeat(daemon, run_id, || true);
     let mut tail: VecDeque<String> = VecDeque::with_capacity(5);
-    for_each_line(started.output, |line| {
+    watch_output(process, started.output, |line| {
         log.write(line);
         // The daemon's advisory health check observes log growth.
         log.flush();
@@ -1622,6 +1732,160 @@ mod tests {
             failure_tail("codex", 3, &["x".to_string()]),
             "exit=3; tail=x"
         );
+    }
+
+    /// A throwaway directory with fake `claude` and `codex` providers. Each
+    /// prints one event and leaves two background children holding its
+    /// output: one in its process group and one in a session of its own
+    /// that ignores SIGTERM, the way Codex shell-tool children start. Then
+    /// it exits (`exit`), waits (`wait`) or, ignoring SIGTERM along with
+    /// its children from the start, runs until killed (`hang`).
+    struct FakeProviders {
+        dir: PathBuf,
+    }
+
+    impl FakeProviders {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "rr503-{name}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let script = r#"#!/bin/sh
+dir=$(dirname "$0")
+[ "$FAKE_PROVIDER_MODE" = hang ] && trap '' TERM
+cat > /dev/null
+echo '{"type":"system","subtype":"init"}'
+/bin/sleep 30 &
+echo $! >> "$dir/pids"
+/usr/bin/perl -e 'use POSIX; POSIX::setsid(); $SIG{TERM} = "IGNORE"; open(my $f, ">>", $ARGV[0]); print $f "$$\n"; close $f; sleep 30' "$dir/pids" &
+while [ "$(wc -l < "$dir/pids")" -lt 2 ]; do sleep 0.05; done
+case "$FAKE_PROVIDER_MODE" in
+  hang) while :; do sleep 1; done ;;
+  wait) sleep 30 ;;
+  *) sleep 0.5 ;;
+esac
+exit 0
+"#;
+            for kind in ["claude", "codex"] {
+                let path = dir.join(kind);
+                std::fs::write(&path, script).unwrap();
+                std::fs::set_permissions(
+                    &path,
+                    std::os::unix::fs::PermissionsExt::from_mode(0o755),
+                )
+                .unwrap();
+            }
+            Self { dir }
+        }
+
+        fn pids(&self) -> Vec<libc::pid_t> {
+            std::fs::read_to_string(self.dir.join("pids"))
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| line.trim().parse().ok())
+                .collect()
+        }
+    }
+
+    impl Drop for FakeProviders {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Runs a fake provider through the worker's and reviewer's shared
+    /// start, output and reap path; cancels it once its children exist
+    /// when `cancel`. The exit code, how long the run took and the
+    /// children's pids.
+    fn run_fake(kind: &str, mode: &str, cancel: bool) -> (i64, Duration, Vec<libc::pid_t>) {
+        let fakes = FakeProviders::new(&format!("{kind}-{mode}"));
+        let binary = fakes.dir.join(kind).to_string_lossy().to_string();
+        let line = launch_line(kind, &binary, "", "", None, no_catalog).unwrap();
+        let process = RunProcess::default();
+        let begun = Instant::now();
+        let started = start_process(
+            &process,
+            &line.command,
+            &fakes.dir.to_string_lossy(),
+            &[("FAKE_PROVIDER_MODE".to_string(), mode.to_string())],
+            "the prompt",
+        )
+        .unwrap();
+        let pid = started.pid as libc::pid_t;
+        assert_eq!(
+            unsafe { libc::getpgid(pid) },
+            pid,
+            "{kind} leads its own process group"
+        );
+        let mut lines = Vec::new();
+        thread::scope(|scope| {
+            if cancel {
+                scope.spawn(|| {
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    while fakes.pids().len() < 2 && Instant::now() < deadline {
+                        thread::sleep(Duration::from_millis(20));
+                    }
+                    process.cancel();
+                });
+            }
+            watch_output(&process, started.output, |line| {
+                lines.push(line.to_string())
+            });
+        });
+        let rc = reap(&process);
+        assert_eq!(lines, ["{\"type\":\"system\",\"subtype\":\"init\"}\n"]);
+        (rc, begun.elapsed(), fakes.pids())
+    }
+
+    fn assert_children_gone(kind: &str, children: &[libc::pid_t]) {
+        assert_eq!(children.len(), 2, "{kind} left two children");
+        for child in children {
+            assert!(
+                crate::process_tree::info(*child).is_none(),
+                "{kind}'s child {child} is still running"
+            );
+        }
+    }
+
+    #[test]
+    fn a_provider_that_exits_takes_its_children_with_it() {
+        for kind in ["claude", "codex"] {
+            let (rc, took, children) = run_fake(kind, "exit", false);
+            assert_eq!(rc, 0);
+            // The children sleep 30s holding the output; the run ends
+            // without waiting for them.
+            assert!(took < Duration::from_secs(10), "{kind} took {took:?}");
+            assert_children_gone(kind, &children);
+        }
+    }
+
+    #[test]
+    fn a_canceled_provider_takes_its_children_with_it() {
+        for kind in ["claude", "codex"] {
+            let (rc, took, children) = run_fake(kind, "wait", true);
+            assert_eq!(rc, -libc::SIGTERM as i64);
+            assert!(took < Duration::from_secs(10), "{kind} took {took:?}");
+            assert_children_gone(kind, &children);
+        }
+    }
+
+    #[test]
+    fn a_provider_that_outlives_the_grace_is_killed_with_its_children() {
+        for kind in ["claude", "codex"] {
+            let (rc, took, children) = run_fake(kind, "hang", true);
+            assert_eq!(rc, -libc::SIGKILL as i64);
+            assert!(took >= TERMINATE_GRACE, "{kind} took {took:?}");
+            assert!(
+                took < TERMINATE_GRACE + Duration::from_secs(8),
+                "{kind} took {took:?}"
+            );
+            assert_children_gone(kind, &children);
+        }
     }
 
     #[test]

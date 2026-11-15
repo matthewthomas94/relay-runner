@@ -406,6 +406,11 @@ ROLES = {
 def wait_for_hold(plan: dict) -> None:
     hold = plan.get("hold")
     while hold and not Path(hold).exists():
+        # Workers lead their own process groups (RR-503), so a killed
+        # daemon's group no longer takes a held fake with it; stop once the
+        # daemon that started this one is gone and launchd adopted it.
+        if os.getppid() == 1:
+            sys.exit(1)
         time.sleep(0.05)
 
 

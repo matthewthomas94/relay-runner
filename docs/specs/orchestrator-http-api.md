@@ -446,6 +446,14 @@ review-blocking or durable states, newest first.
 
 - On `SIGTERM` the daemon cancels its in-flight runs (`state: Canceled`),
   stops, and removes the port file.
+- Worker and reviewer providers, Claude and Codex alike, lead their own
+  process groups (RR-503). Cancel and shutdown send `SIGTERM`, then `SIGKILL`
+  after 5 s, to the group and to every descendant the daemon recorded while
+  the provider ran. When a provider exits, whatever it left behind gets the
+  same at once (2 s grace), before the run waits for its output to end. A
+  descendant is signalled only while its pid, uid and start time still match.
+  Because workers no longer share the daemon's group, a daemon killed without
+  cleanup does not take them along.
 - A daemon that died without cleanup leaves active rows behind. On the next
   start it marks each one `Stalled` with `last_error: "Worker process was no
   longer running when daemon restarted"` and an `ended_at`, logs `reconciled
@@ -553,7 +561,8 @@ in it: the suite splits both like a shell. Timeouts:
 The suite cleans up after a test process that was killed or timed out
 (RR-509). Each sandbox records its root, test process and daemon (pid plus
 `ps` start time) in `$TMPDIR/relay-orch-contract-registry/`, and a watchdog
-stops the daemon's process group as soon as the test process goes away. The
+stops the daemon's process group as soon as the test process goes away; a
+held fake provider, in a group of its own, stops once its daemon is gone. The
 first sandbox of the next run stops any registered daemon whose test process
 is gone, after checking that its pid still has the recorded start time, and
 removes its root. It also removes unregistered `relay-orch-contract-*` roots
