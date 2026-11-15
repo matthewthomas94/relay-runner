@@ -591,9 +591,17 @@ fn worktree_entry(run: &Value) -> Option<Dict> {
     Some(entry)
 }
 
+/// One scan of the process table against the ledger.
+pub(crate) struct ProcessScan {
+    pub runs: Vec<Dict>,
+    pub live_runs: HashSet<i64>,
+    pub table: Vec<Process>,
+    pub report: Report,
+}
+
 impl Daemon {
-    /// One report-only scan. It signals nothing and removes nothing.
-    pub fn scan_leftovers(&self, now: f64) -> Outcome<Dict> {
+    /// The process half of a scan. It signals nothing.
+    pub(crate) fn scan_processes(&self, now: f64) -> Outcome<ProcessScan> {
         let runs = self.runs.list(None, LEDGER_LIMIT)?;
         let live_runs = self.live_run_ids();
         let mut protected = bridge_pids();
@@ -622,6 +630,22 @@ impl Daemon {
         };
         let table = snapshot();
         let report = classify(&table, &runs, &scope);
+        Ok(ProcessScan {
+            runs,
+            live_runs,
+            table,
+            report,
+        })
+    }
+
+    /// One report-only scan. It signals nothing and removes nothing.
+    pub fn scan_leftovers(&self, now: f64) -> Outcome<Dict> {
+        let ProcessScan {
+            runs,
+            live_runs,
+            table,
+            report,
+        } = self.scan_processes(now)?;
 
         // The worktrees the stale-worktree sweep would name, in report mode.
         let mut policy =

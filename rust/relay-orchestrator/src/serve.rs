@@ -123,6 +123,10 @@ pub fn serve(daemon: Arc<Daemon>) -> std::io::Result<()> {
         crate::worktree_gc::sweep_loop(&owner, &wait);
     });
     let owner = daemon.clone();
+    spawn_loop("leftover-cleanup", move || {
+        crate::leftover_stop::cleanup_loop(&owner, &wait);
+    });
+    let owner = daemon.clone();
     spawn_loop("personal-file-storage", move || {
         while wait(60.0) {
             let connected = owner
