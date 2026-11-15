@@ -299,6 +299,8 @@ Then read `<workspace>/.relay/run.log`. Implementation and review workers have n
 
 **Worktree branch already exists.** `cancel_run` with `prune_worktree=true` (the default) deletes the local `relay/<id>` ref after pruning, and `dispatch_ticket` recovers from a stale ref by deleting and recreating off the repo's current default branch. If you hit a leftover ref from before this fix, run `git -C <repo> worktree prune` and `git -C <repo> branch -D relay/<id>` once.
 
+**Old worktrees of failed runs.** Failed, Stalled and Canceled runs keep their worktree and `relay/<id>` branch so their saved work can be inspected or retried. At startup and then hourly the daemon logs a `stale worktrees:` line listing those that ended more than `[orchestrator].stale_worktree_retention_days` (default 7) ago. It only reports them unless `[orchestrator].delete_stale_worktrees = true`, which removes them. It never touches a live run, a run awaiting review or kept for verification or integration, a preserved-run recovery row, a run newer than the retention window, or a run whose workspace a later run of the same ticket now uses.
+
 ## Limits (MVP)
 
 - No cross-machine orchestration.

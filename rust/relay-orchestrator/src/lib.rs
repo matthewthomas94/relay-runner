@@ -35,3 +35,4 @@ pub mod sessions;
 pub mod spike;
 pub mod trace;
 pub mod worker;
+pub mod worktree_gc;
