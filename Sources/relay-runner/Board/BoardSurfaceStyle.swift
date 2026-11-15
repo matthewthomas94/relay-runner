@@ -63,16 +63,16 @@ enum BoardDarkSurfaceStyle {
     /// The light a glass edge catches: strongest at the top left, fading
     /// across the face and returning at the bottom right.
     static let glassRimStops: [Gradient.Stop] = [
-        .init(color: Color.white.opacity(0.18), location: 0),
-        .init(color: Color.white.opacity(0.04), location: 0.5),
-        .init(color: Color.white.opacity(0.1), location: 1),
+        .init(color: Color.white.opacity(0.09), location: 0),
+        .init(color: Color.white.opacity(0.02), location: 0.5),
+        .init(color: Color.white.opacity(0.05), location: 1),
     ]
     static let glassRim = LinearGradient(stops: glassRimStops, startPoint: .topLeading, endPoint: .bottomTrailing)
     /// The same edge on a white glass fill, where it has to be brighter to show.
     static let glassRimOnLightStops: [Gradient.Stop] = [
-        .init(color: Color.white.opacity(0.7), location: 0),
-        .init(color: Color.white.opacity(0.2), location: 0.5),
-        .init(color: Color.white.opacity(0.45), location: 1),
+        .init(color: Color.white.opacity(0.35), location: 0),
+        .init(color: Color.white.opacity(0.1), location: 0.5),
+        .init(color: Color.white.opacity(0.225), location: 1),
     ]
     static let glassRimOnLight = LinearGradient(
         stops: glassRimOnLightStops, startPoint: .topLeading, endPoint: .bottomTrailing

@@ -169,7 +169,7 @@ private struct WorkspaceSessionTab: View {
                     .fill(isHovered ? BoardDarkSurfaceStyle.cardActiveFill : BoardDarkSurfaceStyle.cardFill)
                     .overlay {
                         RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.tabCornerRadius, style: .circular)
-                            .strokeBorder(BoardDarkSurfaceStyle.border, lineWidth: 1)
+                            .strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: 1)
                     }
                     .transition(.opacity)
             }
