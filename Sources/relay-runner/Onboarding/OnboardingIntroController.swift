@@ -78,6 +78,9 @@ protocol OnboardingIntroPresenting: AnyObject {
                                  fullyRendered: @escaping () -> Void,
                                  signInAction: @escaping () -> Void,
                                  continueWithoutSignInAction: (() -> Void)?)
+    /// Shows the provider's login command running in the embedded terminal.
+    func presentAgentLoginTerminal(_ login: any ProviderLoginRunning,
+                                   cancelAction: @escaping () -> Void)
     func presentWorkspacePrompt(currentPath: String,
                                 continueAction: @escaping () -> Void,
                                 browseAction: @escaping () -> Void)
@@ -119,6 +122,8 @@ struct OnboardingAgentLoginPromptPresentation: Equatable {
     let provider: GeneralConfig.AgentProvider
     let signedIn: Bool
     let message: String?
+    /// A sign-in attempt did not finish; the button offers Try again.
+    var retry = false
 }
 
 enum OnboardingPromptTransitionPolicy: Equatable {
@@ -807,6 +812,30 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
         }
     }
 
+    func presentAgentLoginTerminal(_ login: any ProviderLoginRunning,
+                                   cancelAction: @escaping () -> Void) {
+        timelineTimer?.invalidate()
+        timelineTimer = nil
+        removeSkipMonitors()
+
+        let surface = ensureSurface()
+        let prompt = OnboardingIntroPromptCopy.agentLogin(
+            OnboardingAgentLoginPromptPresentation(provider: login.provider, signedIn: false, message: nil)
+        )
+        surface.rootView.showAgentLoginTerminal(
+            login,
+            title: prompt,
+            transitionFrom: lastPromptText,
+            cancelAction: cancelAction
+        )
+        lastPromptText = prompt
+
+        guard surface.didCreate else { return }
+        DispatchQueue.main.async { [weak container = surface.container] in
+            container?.animateReveal {}
+        }
+    }
+
     func presentWorkspacePrompt(currentPath: String,
                                 continueAction: @escaping () -> Void,
                                 browseAction: @escaping () -> Void) {
@@ -1123,6 +1152,21 @@ final class OnboardingIntroRootView: NSView {
                 )
             ),
             completion: fullyRendered
+        )
+    }
+
+    func showAgentLoginTerminal(_ login: any ProviderLoginRunning,
+                                title: String,
+                                transitionFrom: String,
+                                cancelAction: @escaping () -> Void) {
+        runtimeModel = nil
+        showPrompt(
+            phase: .agentLogin,
+            title: title,
+            transitionFrom: transitionFrom,
+            content: AnyView(
+                OnboardingIntroAgentLoginTerminalView(login: login, cancelAction: cancelAction)
+            )
         )
     }
 
@@ -1880,8 +1924,10 @@ struct OnboardingIntroAgentLoginPromptView: View {
                     } else {
                         VStack(spacing: 24) {
                             OnboardingIntroWhiteActionButton(
-                                title: "Sign in",
-                                accessibilityLabel: "Sign in to \(presentation.provider.displayName)",
+                                title: presentation.retry ? "Try again" : "Sign in",
+                                accessibilityLabel: presentation.retry
+                                    ? "Try signing in to \(presentation.provider.displayName) again"
+                                    : "Sign in to \(presentation.provider.displayName)",
                                 action: signInAction
                             )
                             if let continueWithoutSignInAction {
@@ -1912,6 +1958,78 @@ struct OnboardingIntroAgentLoginPromptView: View {
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: presentation)
         }
         .accessibilityElement(children: .contain)
+    }
+}
+
+/// RR-513: the provider's login command running in Relay Runner's own
+/// terminal, with its sign-in link one click away and a way out.
+struct OnboardingIntroAgentLoginTerminalView: View {
+    static let terminalSize = CGSize(width: 640, height: 260)
+    let login: any ProviderLoginRunning
+    let cancelAction: () -> Void
+    @State private var copied = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        OnboardingIntroPromptContentLayout {
+            VStack(spacing: 20) {
+                ProviderLoginTerminalRepresentable(terminalView: login.terminalView)
+                    .frame(width: Self.terminalSize.width, height: Self.terminalSize.height)
+                    .background(
+                        RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.columnCornerRadius, style: .continuous)
+                            .fill(Color.black.opacity(0.42))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.columnCornerRadius, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.12))
+                    )
+                    .accessibilityLabel("\(login.provider.displayName) sign-in terminal")
+
+                HStack(spacing: 20) {
+                    if login.signInURL != nil {
+                        OnboardingIntroWhiteActionButton(
+                            title: "Open sign-in page",
+                            accessibilityLabel: "Open the \(login.provider.displayName) sign-in page",
+                            action: login.openSignInURL
+                        )
+                        Button(copied ? "Link copied" : "Copy link") {
+                            login.copySignInURL()
+                            copied = true
+                        }
+                        .buttonStyle(.graphicalPress)
+                        .font(AppTypography.font(.body))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .transition(.relayReplacing(.element))
+                    }
+                    Button(login.isCancelling ? "Canceling\u{2026}" : "Cancel", action: cancelAction)
+                        .buttonStyle(.graphicalPress)
+                        .font(AppTypography.font(.body))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .disabled(login.isCancelling)
+                        .accessibilityHint("Stops \(login.provider.displayName) sign-in")
+                }
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: login.signInURL)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
+private struct ProviderLoginTerminalRepresentable: NSViewRepresentable {
+    let terminalView: NSView
+
+    func makeNSView(context: Context) -> EmbeddedTerminalHostNSView {
+        let host = EmbeddedTerminalHostNSView()
+        host.install(terminalView)
+        return host
+    }
+
+    func updateNSView(_ nsView: EmbeddedTerminalHostNSView, context: Context) {
+        nsView.install(terminalView)
+    }
+
+    static func dismantleNSView(_ nsView: EmbeddedTerminalHostNSView, coordinator: ()) {
+        nsView.detach()
     }
 }
 
