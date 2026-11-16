@@ -55,6 +55,10 @@ final class CapsLockGesture {
     private var loggedGlobalMonitorFailure = false
     private var stoppingMonitors = false
     private var monitorGeneration = 0
+    /// Caps Lock `flagsChanged` events seen by the monitors. Counted, never
+    /// logged per event, so a silent Caps Lock can be told from a missing one.
+    private(set) var capsLockKeyEventCount = 0
+    static let capsLockKeyCode: UInt16 = 57
 
     // Menu-driven activation override (nil = use hardware state)
     private var manualKeyDown: Bool?
@@ -122,6 +126,10 @@ final class CapsLockGesture {
         if !useCapsLock {
             startKeyMonitor()
         }
+        diagnosticLogger(
+            "[CapsLockGesture] armed key=\(useCapsLock ? "caps-lock" : "custom") " +
+            "monitors=\(keyMonitors.count) global=\(modifierGlobalMonitor != nil)"
+        )
     }
 
     static func isCapsLockOn() -> Bool {
@@ -263,6 +271,12 @@ final class CapsLockGesture {
         guard !stoppingMonitors else { return }
         switch event.type {
         case .flagsChanged:
+            if event.keyCode == Self.capsLockKeyCode {
+                capsLockKeyEventCount += 1
+                if capsLockKeyEventCount == 1 {
+                    diagnosticLogger("[CapsLockGesture] first Caps Lock key event seen")
+                }
+            }
             handleModifierEvent(event)
         case .keyDown:
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)

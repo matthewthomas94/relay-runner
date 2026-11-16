@@ -18,6 +18,8 @@ struct OnboardingTutorialPresentation: Equatable {
     let screen: OnboardingTutorialScreen
     let reduceMotion: Bool
     let message: String?
+    /// Why Caps Lock hasn't started recording, shown on the recording step.
+    var recordingHelp: OnboardingTutorialRecordingHelp? = nil
 }
 
 enum OnboardingSessionControlsTutorial {
@@ -137,6 +139,7 @@ enum OnboardingSessionControlsTutorial {
 struct OnboardingTutorialView: View {
     let presentation: OnboardingTutorialPresentation
     let retryAction: () -> Void
+    var recordingActions: OnboardingTutorialRecordingActions? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -165,24 +168,34 @@ struct OnboardingTutorialView: View {
                         .offset(y: 72)
                         .accessibilityLabel("Preparing voice session")
                 }
+                if let message = presentation.message {
+                    supportingText(message)
+                        .offset(y: 124)
+                }
             }
         case .recording:
-            HStack(alignment: .center, spacing: 30) {
-                tutorialText("Turn")
-                OnboardingTutorialKeycap(
-                    animation: .capsLock,
-                    reduceMotion: presentation.reduceMotion
-                )
-                tutorialText("on & say hi /")
+            VStack(spacing: 28) {
+                HStack(alignment: .center, spacing: 30) {
+                    tutorialText("Turn")
+                    OnboardingTutorialKeycap(
+                        animation: .capsLock,
+                        reduceMotion: presentation.reduceMotion
+                    )
+                    tutorialText("on & say hi /")
+                }
+                recordingControls(toggleTitle: OnboardingTutorialRecordingHelp.startRecordingTitle)
             }
         case .recordingActive:
-            HStack(alignment: .center, spacing: 30) {
-                tutorialText("Now turn")
-                OnboardingTutorialKeycap(
-                    animation: .capsLock,
-                    reduceMotion: presentation.reduceMotion
-                )
-                tutorialText("off to send the message /")
+            VStack(spacing: 28) {
+                HStack(alignment: .center, spacing: 30) {
+                    tutorialText("Now turn")
+                    OnboardingTutorialKeycap(
+                        animation: .capsLock,
+                        reduceMotion: presentation.reduceMotion
+                    )
+                    tutorialText("off to send the message /")
+                }
+                recordingControls(toggleTitle: OnboardingTutorialRecordingHelp.stopRecordingTitle)
             }
         case .playback:
             HStack(alignment: .center, spacing: 26) {
@@ -230,6 +243,39 @@ struct OnboardingTutorialView: View {
                 )
             }
         }
+    }
+
+    /// The click fallback, plus the reason and fix when Caps Lock isn't working.
+    @ViewBuilder
+    private func recordingControls(toggleTitle: String) -> some View {
+        if let recordingActions {
+            VStack(spacing: 18) {
+                if let help = presentation.recordingHelp {
+                    supportingText(help.message)
+                    if let fix = help.fix, let fixAction = recordingActions.fix {
+                        OnboardingIntroWhiteActionButton(
+                            title: fix.title,
+                            accessibilityLabel: fix.title,
+                            action: fixAction
+                        )
+                    }
+                }
+                Button(toggleTitle, action: recordingActions.toggleRecording)
+                    .buttonStyle(.graphicalPress)
+                    .font(AppTypography.font(.body))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .accessibilityHint("Records without Caps Lock")
+            }
+        }
+    }
+
+    private func supportingText(_ text: String) -> some View {
+        Text(text)
+            .font(AppTypography.font(.body))
+            .foregroundStyle(.white.opacity(0.72))
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
     }
 
     private func tutorialText(_ text: String) -> some View {

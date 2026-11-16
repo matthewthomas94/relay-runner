@@ -183,6 +183,12 @@ final class STTEngine: @unchecked Sendable {
     /// True when Caps Lock captures from the camera rather than the microphone.
     var usesTrueWhisper: Bool { trueWhisper != nil }
 
+    /// Caps Lock key events the gesture's monitors have seen (no key contents).
+    var capsLockKeyEventCount: Int { gesture.capsLockKeyEventCount }
+
+    /// The microphone stream is open and a press can start recording.
+    var isMicrophoneCaptureReady: Bool { isCaptureReady() }
+
     /// Inject the modal-confirmation hooks for Relay Actions `propose_action`
     /// prompts. When `stateMachine.pendingConfirmation != nil`, double-tap
     /// Option/Control are routed to `resolver(true|false)` instead of the
@@ -685,6 +691,7 @@ final class STTEngine: @unchecked Sendable {
         // Don't accumulate audio while idle — saves memory over long sessions.
         // A wheel request made before this loop started keeps its target.
         resetAudioBuffer()
+        NSLog("[STTEngine] Activation key loop started")
 
         while !Task.isCancelled {
             try await Task.sleep(for: .milliseconds(pollMs))
@@ -732,6 +739,7 @@ final class STTEngine: @unchecked Sendable {
                     // No session owns the mic: keep it closed, skip __TTS_STOP__,
                     // and let AppState show the session affordance instead.
                     guard isCaptureAllowed else {
+                        NSLog("[STTEngine] Activation ignored: no session owns capture")
                         gesture.reset()
                         resetRecordingBuffer()
                         isRecording = false
@@ -740,6 +748,7 @@ final class STTEngine: @unchecked Sendable {
                         continue
                     }
                     guard isCaptureReady() else {
+                        NSLog("[STTEngine] Activation ignored: microphone capture not ready")
                         gesture.reset()
                         resetRecordingBuffer()
                         isRecording = false

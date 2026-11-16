@@ -83,10 +83,20 @@ protocol OnboardingIntroPresenting: AnyObject {
                                 browseAction: @escaping () -> Void)
     func presentTutorial(_ presentation: OnboardingTutorialPresentation,
                          retryAction: @escaping () -> Void)
+    func presentTutorial(_ presentation: OnboardingTutorialPresentation,
+                         retryAction: @escaping () -> Void,
+                         recordingActions: OnboardingTutorialRecordingActions?)
     func dismiss(completion: @escaping () -> Void)
 }
 
 extension OnboardingIntroPresenting {
+    /// Presenters without recording-step buttons ignore them.
+    func presentTutorial(_ presentation: OnboardingTutorialPresentation,
+                         retryAction: @escaping () -> Void,
+                         recordingActions: OnboardingTutorialRecordingActions?) {
+        presentTutorial(presentation, retryAction: retryAction)
+    }
+
     /// Presenters without a "Continue without sign-in" affordance ignore it.
     func presentAgentLoginPrompt(_ presentation: OnboardingAgentLoginPromptPresentation,
                                  fullyRendered: @escaping () -> Void,
@@ -821,12 +831,22 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
 
     func presentTutorial(_ presentation: OnboardingTutorialPresentation,
                          retryAction: @escaping () -> Void) {
+        presentTutorial(presentation, retryAction: retryAction, recordingActions: nil)
+    }
+
+    func presentTutorial(_ presentation: OnboardingTutorialPresentation,
+                         retryAction: @escaping () -> Void,
+                         recordingActions: OnboardingTutorialRecordingActions?) {
         timelineTimer?.invalidate()
         timelineTimer = nil
         removeSkipMonitors()
 
         let surface = ensureSurface()
-        surface.rootView.showTutorial(presentation, retryAction: retryAction)
+        surface.rootView.showTutorial(
+            presentation,
+            retryAction: retryAction,
+            recordingActions: recordingActions
+        )
 
         guard surface.didCreate else { return }
         DispatchQueue.main.async { [weak container = surface.container] in
@@ -1126,14 +1146,16 @@ final class OnboardingIntroRootView: NSView {
     }
 
     func showTutorial(_ presentation: OnboardingTutorialPresentation,
-                      retryAction: @escaping () -> Void) {
+                      retryAction: @escaping () -> Void,
+                      recordingActions: OnboardingTutorialRecordingActions? = nil) {
         runtimeModel = nil
         let view = OnboardingIntroHostedSurfaceView(
             frame: bounds,
             rootView: AnyView(
                 OnboardingTutorialView(
                     presentation: presentation,
-                    retryAction: retryAction
+                    retryAction: retryAction,
+                    recordingActions: recordingActions
                 )
             )
         )
