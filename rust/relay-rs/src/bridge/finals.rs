@@ -4,10 +4,12 @@
 //! `_handle_provider_turn_event_control`, with `_handle_sidecar_*` and
 //! `_log_provider_session_transition`).
 
+use std::sync::LazyLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use relay_intents::model::TurnState;
+use relay_intents::pattern::{self, Regex};
 
 use super::context::Bridge;
 use super::controls::log_quarantined_relay_control;
@@ -17,6 +19,7 @@ use super::settings::settings;
 use super::speech::{self, TtsOptions, tagged_payload};
 use super::store::{read_json_file, relay_command_key};
 use super::targets::{self, ProviderSessionOwnership};
+use super::traces;
 use super::turns::{self, ArbitrationPaths};
 use crate::json::{self, Dict, Value};
 use crate::support::env_or;
@@ -437,10 +440,14 @@ pub fn handle_provider_completion_control(
         &LocalDaemon,
     );
     replies::note_outcome_signal(Some(&command), "hook_received");
+    replies::note_provider_completion(Some(&command));
     if replies::foreground_reply_delivered(Some(&command)) {
         replies::close_outcome_watch(Some(&command), bridge.speech(), "reply_delivered");
         return true;
     }
+    // RR-518: the turn's end decides the final, so a held reply leaves the
+    // hold here whether it is spoken or dropped.
+    let held = replies::take_held_foreground_reply(Some(&command));
     let origin = targets::reply_origin_target(&data);
     let origin_key = origin
         .as_ref()
@@ -460,6 +467,28 @@ pub fn handle_provider_completion_control(
         Some(value) => json::py_strip(&value.py_str()).to_string(),
         None => String::new(),
     };
+    // The PM's last reply is the final, unless it only acknowledged the turn
+    // and the provider's final message says something else.
+    let completion_wins = |held: &Dict| {
+        let held_text = held.text("text");
+        !reply.is_empty()
+            && !replies::same_reply_text(&held_text, &reply)
+            && is_acknowledgement_reply(&held_text)
+    };
+    if let Some(held) = held.filter(|held| !completion_wins(held)) {
+        let delivered = deliver_reply(bridge, &held, &paths.state_path);
+        replies::close_outcome_watch(
+            Some(&command),
+            bridge.speech(),
+            "completion_reply_not_delivered",
+        );
+        return delivered;
+    }
+    if !reply.is_empty() && replies::repeats_interim_reply(Some(&command), &reply) {
+        replies::mark_foreground_reply_delivered(Some(&command));
+        replies::close_outcome_watch(Some(&command), bridge.speech(), "interim_reply_repeated");
+        return true;
+    }
     if !reply.is_empty() {
         let mut payload = Dict::new();
         payload.insert("text", reply.as_str());
@@ -482,11 +511,7 @@ pub fn handle_provider_completion_control(
         if let Some(origin) = &origin {
             payload.insert("session_key", origin.session_key.as_str());
         }
-        let delivered = handle_orchestrator_reply_control(
-            bridge,
-            &json::dumps(&Value::Dict(payload)),
-            &paths.state_path,
-        );
+        let delivered = deliver_reply(bridge, &payload, &paths.state_path);
         replies::close_outcome_watch(
             Some(&command),
             bridge.speech(),
@@ -504,9 +529,151 @@ pub fn handle_provider_completion_control(
     )
 }
 
-/// `_handle_orchestrator_reply_control`: route the foreground agent's
-/// authoritative reply through the messenger, else straight to speech.
-pub fn handle_orchestrator_reply_control(bridge: &Bridge, raw: &str, state_path: &str) -> bool {
+/// The command a reply or completion names: a nested `relay_command`, else
+/// the payload itself.
+fn reply_command(data: &Dict) -> Dict {
+    match data.get("relay_command").and_then(Value::as_dict) {
+        Some(nested) => nested.clone(),
+        None => data.clone(),
+    }
+}
+
+fn provider_turn_state(command: &Dict, provider_session_id: Option<&str>) -> Option<String> {
+    let turns_path = &settings().provider_turns_file;
+    turns::provider_turn_state(Some(command), turns_path, provider_session_id, None)
+}
+
+/// Whether the provider turn a reply belongs to is still running: its own
+/// ledger record is `active`, or a newer prompt steered into the same
+/// physical turn (`orphaned`) while that turn is still active.
+fn provider_turn_running(command: &Dict, provider_session_id: Option<&str>) -> bool {
+    match provider_turn_state(command, provider_session_id).as_deref() {
+        Some("active") => true,
+        Some("orphaned") => {
+            turns::any_provider_turn_active(&settings().provider_turns_file, provider_session_id)
+        }
+        _ => false,
+    }
+}
+
+/// RR-518: a reply waits for the turn's end when its command is bound to a
+/// provider turn whose completion the bridge has not handled yet. The hook
+/// may close the ledger before the bridge reads a reply written earlier, so
+/// an ended turn still holds until its completion arrives or the watcher's
+/// grace runs out. A command with no provider turn (a manual bridge loop)
+/// is spoken at once.
+fn reply_waits_for_turn_end(command: &Dict, provider_session_id: Option<&str>) -> bool {
+    provider_turn_state(command, provider_session_id).is_some()
+        && !replies::provider_completion_received(Some(command))
+}
+
+/// RR-518: a short acknowledgement ("On it.", "Got it, reading the report
+/// now.") rather than an answer. Only decides whether a held reply yields to
+/// a different completion message at the turn's end.
+static ACKNOWLEDGEMENT_REPLY: LazyLock<Regex> = LazyLock::new(|| {
+    pattern::compile(
+        concat!(
+            r"^\W*(?:",
+            r"on\s+it|got\s+it|okay|ok|sure|alright|all\s+right|will\s+do|understood|roger",
+            r"|(?:one|just\s+a)\s+(?:moment|sec|second)|give\s+me\s+a|hang\s+on|hold\s+on|let\s+me",
+            r"|(?:i\s+am|i(?:'|’)?m)\s+(?:on\s+it|checking|looking|reading|working|pulling|opening|digging|grabbing|taking)",
+            r"|checking|looking|reading|working\s+on|pulling|opening|digging|taking\s+a\s+look",
+            r"|(?:i\s+will|i(?:'|’)ll)\s+(?:check|look|read|take|dig|pull|open|get|find|grab)",
+            r")\b",
+        ),
+        true,
+    )
+});
+
+/// Words beyond which a reply is treated as an answer, never an
+/// acknowledgement.
+const ACKNOWLEDGEMENT_MAX_WORDS: usize = 12;
+
+fn is_acknowledgement_reply(text: &str) -> bool {
+    text.split_whitespace().count() <= ACKNOWLEDGEMENT_MAX_WORDS
+        && pattern::search(&ACKNOWLEDGEMENT_REPLY, text)
+}
+
+/// RR-518: after a held reply's turn is seen ended, how long its completion
+/// has to arrive before the watcher releases the reply itself.
+const HELD_REPLY_GRACE_SECONDS: f64 = 2.0;
+const HELD_REPLY_POLL_SECONDS: f64 = 0.25;
+
+/// RR-518: release `command`'s held reply when its provider turn ends without
+/// a completion reaching the bridge, or at the hard ceiling. The completion
+/// normally takes the reply first.
+fn watch_held_reply(
+    bridge: &'static Bridge,
+    command: Dict,
+    state_path: String,
+    provider_session_id: Option<String>,
+) -> bool {
+    let ceiling = settings().hard_ceiling_seconds;
+    thread::Builder::new()
+        .name("held-foreground-reply".to_string())
+        .spawn(move || {
+            let held_at = Instant::now();
+            let mut ended_at: Option<Instant> = None;
+            loop {
+                thread::sleep(Duration::from_secs_f64(HELD_REPLY_POLL_SECONDS));
+                if !replies::foreground_reply_held(Some(&command)) {
+                    return;
+                }
+                if provider_turn_running(&command, provider_session_id.as_deref()) {
+                    ended_at = None;
+                } else if ended_at.is_none() {
+                    ended_at = Some(Instant::now());
+                }
+                let ended = ended_at
+                    .is_some_and(|at| at.elapsed().as_secs_f64() >= HELD_REPLY_GRACE_SECONDS);
+                if !ended && held_at.elapsed().as_secs_f64() < ceiling {
+                    continue;
+                }
+                if let Some(reply) = replies::take_held_foreground_reply(Some(&command)) {
+                    eprintln!(
+                        "[voice_bridge] Releasing a held foreground reply without its completion."
+                    );
+                    deliver_reply(bridge, &reply, &state_path);
+                }
+                return;
+            }
+        })
+        .is_ok()
+}
+
+/// RR-518: `reply --interim` is a non-authoritative progress update: the
+/// notch and the messenger see it as a `reasoning-summary` trace, and it
+/// never takes the command's final slot.
+fn deliver_interim_reply(bridge: &Bridge, data: &Dict, command: &Dict, state_path: &str) -> bool {
+    let text = data.text("text");
+    let mut trace_command = Dict::new();
+    for field in ["relay_command_seq", "relay_command_id", "intent_id"] {
+        if let Some(value) = command.present(field) {
+            trace_command.insert(field, value.clone());
+        }
+    }
+    replies::note_interim_reply(Some(command), &text);
+    replies::note_pm_trace(Some(command));
+    traces::emit_orchestration_trace(
+        bridge,
+        "reasoning-summary",
+        Some(&trace_command),
+        "orchestrator",
+        Some(&text),
+        None,
+        None,
+        state_path,
+    )
+}
+
+/// `_handle_orchestrator_reply_control`: a reply from the reply helper.
+/// RR-518: while its provider turn runs, the newest reply is held and
+/// becomes the final when the turn ends; an interim reply never does.
+pub fn handle_orchestrator_reply_control(
+    bridge: &'static Bridge,
+    raw: &str,
+    state_path: &str,
+) -> bool {
     let text = json::py_strip(raw);
     if text.is_empty() {
         return false;
@@ -534,15 +701,11 @@ pub fn handle_orchestrator_reply_control(bridge: &Bridge, raw: &str, state_path:
             return false;
         }
     };
-    let reply = data.text("text");
-    if reply.is_empty() {
+    if data.text("text").is_empty() {
         return false;
     }
-    let command = match data.get("relay_command").and_then(Value::as_dict) {
-        Some(nested) => nested.clone(),
-        None => data.clone(),
-    };
-    let Some(command_key) = relay_command_key(&command) else {
+    let command = reply_command(&data);
+    if relay_command_key(&command).is_none() {
         log_quarantined_relay_control(
             "prefixed",
             "__ORCHESTRATOR_REPLY__",
@@ -551,20 +714,64 @@ pub fn handle_orchestrator_reply_control(bridge: &Bridge, raw: &str, state_path:
             "missing_command_key",
         );
         return false;
+    }
+    if replies::foreground_reply_delivered(Some(&command)) {
+        return true;
+    }
+    if !reply_current(&data, &command, state_path) {
+        return false;
+    }
+    if matches!(data.get("interim"), Some(Value::Bool(true))) {
+        return deliver_interim_reply(bridge, &data, &command, state_path);
+    }
+    let provider_session_id = Some(data.text("provider_session_id")).filter(|id| !id.is_empty());
+    if reply_waits_for_turn_end(&command, provider_session_id.as_deref()) {
+        if replies::hold_foreground_reply(Some(&command), data.clone())
+            && !watch_held_reply(
+                bridge,
+                command.clone(),
+                state_path.to_string(),
+                provider_session_id,
+            )
+            && let Some(reply) = replies::take_held_foreground_reply(Some(&command))
+        {
+            return deliver_reply(bridge, &reply, state_path);
+        }
+        return true;
+    }
+    deliver_reply(bridge, &data, state_path)
+}
+
+/// Whether a reply's command is still current or preserved for its origin
+/// session; a stale reply is noted and dropped.
+fn reply_current(data: &Dict, command: &Dict, state_path: &str) -> bool {
+    let origin_key = targets::reply_origin_target(data)
+        .map(|target| target.session_key)
+        .unwrap_or_default();
+    if turns::relay_command_current_or_preserved(command, state_path, &origin_key) {
+        return true;
+    }
+    eprintln!("[voice_bridge] Dropping foreground reply because its Relay command was superseded.");
+    replies::note_outcome_signal(Some(command), "reply_helper_rejected");
+    false
+}
+
+/// Speak a command's one authoritative final through the messenger, else
+/// straight to speech.
+fn deliver_reply(bridge: &Bridge, data: &Dict, state_path: &str) -> bool {
+    let reply = data.text("text");
+    if reply.is_empty() {
+        return false;
+    }
+    let command = reply_command(data);
+    let Some(command_key) = relay_command_key(&command) else {
+        return false;
     };
     if replies::foreground_reply_delivered(Some(&command)) {
         return true;
     }
-    let origin = targets::reply_origin_target(&data);
-    let origin_key = origin
-        .as_ref()
-        .map(|target| target.session_key.clone())
-        .unwrap_or_default();
-    if !turns::relay_command_current_or_preserved(&command, state_path, &origin_key) {
-        eprintln!(
-            "[voice_bridge] Dropping foreground reply because its Relay command was superseded."
-        );
-        replies::note_outcome_signal(Some(&command), "reply_helper_rejected");
+    let origin = targets::reply_origin_target(data);
+    if !reply_current(data, &command, state_path) {
         return false;
     }
     let effect_id = match reserve(bridge, &command, "authoritative_reply") {
@@ -912,4 +1119,32 @@ pub fn handle_sidecar_final(bridge: &Bridge, text: &str, command: &Dict) -> bool
         replies::mark_foreground_reply_delivered(Some(command));
     }
     delivered
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_acknowledgements_are_told_from_answers() {
+        for text in [
+            "On it.",
+            "Got it, reading the report now.",
+            "Okay, checking the logs.",
+            "I'm looking into it now.",
+            "Let me pull that up.",
+            "One moment.",
+        ] {
+            assert!(is_acknowledgement_reply(text), "{text}");
+        }
+        for text in [
+            "The release checklist has two items left.",
+            "The deploy finished without errors.",
+            "Got it. The report says the bridge dropped two replies because the first \
+             acknowledgement took the final slot, and the fix is to hold replies.",
+            "Dispatched RR-12 to a worker.",
+        ] {
+            assert!(!is_acknowledgement_reply(text), "{text}");
+        }
+    }
 }

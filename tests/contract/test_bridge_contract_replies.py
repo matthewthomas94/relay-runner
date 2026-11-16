@@ -17,12 +17,27 @@ from bridge_contract_support import (
 
 REPLY = "The release checklist has two items left."
 COMPLETION = "The deploy finished without errors."
+ACK = "Got it, reading the report now."
 
 
 LONG_DETAIL = (
     "I found three verification-blocked tickets. I am separating their real-world "
     "evidence requirements from the checks that can run in this worktree now."
 )
+
+
+def end_turn(case, command: dict, text: str | None = None) -> None:
+    """The completion hook at Stop: it closes the ledger record, then sends
+    the completion line."""
+    case.box.write_turns(case.box.turn_record(command, "completed_final" if text else "empty"))
+    case.box.say(case.completion_line(command, text))
+
+
+def start_turn(case, text: str) -> dict:
+    """A claimed command whose provider turn is running."""
+    command = case.claimed_turn(text)
+    case.box.write_turns(case.box.turn_record(command, "active"))
+    return command
 
 
 class ReplyContract:
@@ -134,6 +149,97 @@ class ReplyContract:
         self.assertNotIn("no command here", self.box.spoken_texts())
         self.box.say(self.completion_line(command, COMPLETION))
         self.assertSpokenOnce(command, COMPLETION)
+
+    # -- RR-518: the turn's end decides the final ---------------------------
+
+    def test_an_early_reply_does_not_take_the_final_from_the_last_reply(self):
+        """RR-518: while the provider turn is running a helper reply is held
+        and a newer one replaces it; at Stop the last reply is the one final,
+        and the early acknowledgement is never spoken as a final."""
+        command = start_turn(self, "summarise the report in downloads")
+        self.box.say(self.reply_line(command, ACK))
+        self.box.say(self.reply_line(command, REPLY))
+        self.assertStays(lambda: not self.finals(command), message="a reply was spoken before the turn ended")
+        end_turn(self, command, COMPLETION)
+        self.assertSpokenOnce(command, REPLY)
+        self.assertNotIn(ACK, self.box.spoken_texts())
+
+    def test_an_acknowledgement_reply_yields_to_a_different_completion(self):
+        """RR-518: an acknowledgement that is the turn's only reply gives way
+        to the completion's final message when that says something else."""
+        command = start_turn(self, "summarise the report in downloads")
+        self.box.say(self.reply_line(command, ACK))
+        end_turn(self, command, COMPLETION)
+        spoken = self.assertSpokenOnce(command, COMPLETION)
+        self.assertEqual(spoken["source"], "completion")
+        self.assertNotIn(ACK, self.box.spoken_texts())
+
+    def test_an_acknowledgement_reply_repeated_by_the_completion_is_spoken_once(self):
+        """RR-518: when the completion repeats the held reply it is spoken once."""
+        command = start_turn(self, "summarise the report in downloads")
+        self.box.say(self.reply_line(command, ACK))
+        end_turn(self, command, ACK)
+        self.assertSpokenOnce(command, ACK)
+        self.assertStays(lambda: self.box.spoken_texts().count(ACK) == 1, message="spoken twice")
+
+    def test_a_single_reply_is_the_final_as_soon_as_the_turn_ends(self):
+        """RR-518: a reply that is the turn's answer is held only until Stop:
+        it is spoken once, promptly after the completion, and not replaced by
+        a different completion message."""
+        command = start_turn(self, "what is left on the release checklist")
+        self.box.say(self.reply_line(command, REPLY))
+        self.assertStays(lambda: not self.finals(command), message="a reply was spoken before the turn ended")
+        ended_at = time.monotonic()
+        end_turn(self, command, COMPLETION)
+        wait_until(lambda: self.finals(command), message="the final")
+        # It goes out with the completion, not after the held-reply watcher's
+        # two-second grace.
+        self.assertLess(time.monotonic() - ended_at, 1.5)
+        spoken = self.assertSpokenOnce(command, REPLY)
+        self.assertEqual(spoken["source"], "orchestrator")
+        self.assertNotIn(COMPLETION, self.box.spoken_texts())
+
+    def test_a_held_reply_is_dropped_when_a_newer_command_replaces_it(self):
+        """RR-518 keeps RR-512: a newer command that replaces the work while a
+        reply is held means neither the held reply nor the completion is
+        spoken for the older command."""
+        command = start_turn(self, "summarise the incident")
+        self.box.say(self.reply_line(command, ACK))
+        self.box.say(self.reply_line(command, REPLY))
+        self.turn("stop everything")
+        end_turn(self, command, COMPLETION)
+        self.assertStays(lambda: not self.finals(command))
+        for text in (ACK, REPLY, COMPLETION):
+            self.assertNotIn(text, self.box.spoken_texts())
+
+    def test_a_held_reply_is_released_when_the_turn_ends_without_a_completion(self):
+        """RR-518: if the turn ledger shows the turn ended but no completion
+        reaches the bridge, the held reply is still spoken once."""
+        command = start_turn(self, "what is left on the release checklist")
+        self.box.say(self.reply_line(command, REPLY))
+        self.box.write_turns(self.box.turn_record(command, "completed_final"))
+        self.assertSpokenOnce(command, REPLY)
+
+    def test_an_interim_reply_is_progress_and_never_the_final(self):
+        """RR-518: `reply --interim` is spoken as lifecycle `progress`, not as
+        a final; the completion's message is then the final."""
+        command = start_turn(self, "summarise the report in downloads")
+        self.box.say(self.reply_line(command, ACK, interim=True))
+        progress = self.box.wait_spoken(text=ACK)
+        self.assertEqual((progress["source"], progress["kind"]), ("lifecycle", "progress"))
+        self.assertFalse(progress.get("authoritative"))
+        end_turn(self, command, COMPLETION)
+        self.assertSpokenOnce(command, COMPLETION)
+
+    def test_an_interim_reply_repeated_by_the_completion_is_not_spoken_twice(self):
+        """RR-518: a completion that only repeats the interim reply is not
+        spoken again, and no missing-reply fallback follows."""
+        command = start_turn(self, "summarise the report in downloads")
+        self.box.say(self.reply_line(command, ACK, interim=True))
+        self.box.wait_spoken(text=ACK)
+        end_turn(self, command, ACK)
+        self.assertStays(lambda: self.box.spoken_texts().count(ACK) == 1, message="spoken twice")
+        self.assertFalse(self.finals(command))
 
     # -- Traces and provider turn events ------------------------------------
 
@@ -346,6 +452,18 @@ class FallbackContract:
         self.box.write_turns(self.box.turn_record(command, "empty"))
         wait_until(lambda: self.fallbacks(command), message="the fallback")
 
+    def test_a_held_reply_with_an_empty_completion_is_the_final(self):
+        """RR-518: a held reply is the final when the turn ends without a
+        final message; no missing-reply fallback follows."""
+        command = self.claimed_turn("summarise the incident")
+        self.box.write_turns(self.box.turn_record(command, "active"))
+        self.box.say(self.reply_line(command, REPLY))
+        self.assertStays(lambda: REPLY not in self.box.spoken_texts(), 0.5)
+        self.box.write_turns(self.box.turn_record(command, "empty"))
+        self.box.say(self.completion_line(command))
+        self.box.wait_spoken(text=REPLY)
+        self.assertStays(lambda: not self.fallbacks(command), 1.5)
+
     def test_no_fallback_once_the_command_is_superseded(self):
         """Missing reply: a command replaced before the fallback fires gets none."""
         command = self.claimed_turn("summarise the incident")
@@ -374,6 +492,21 @@ class WithoutMessengerContract:
             if "--input-format" in record["argv"] or "features.hooks=false" in record["argv"]
         ])
         self.assertFalse(self.box.messenger_prompts())
+
+    def test_without_the_messenger_the_last_reply_is_the_final(self):
+        """RR-518: without the messenger an early reply is still held and the
+        last reply goes straight to speech as the final at Stop."""
+        command = self.claimed_turn("summarise the report in downloads")
+        self.box.write_turns(self.box.turn_record(command, "active"))
+        self.box.say(self.reply_line(command, ACK))
+        self.box.say(self.reply_line(command, REPLY))
+        self.assertStays(lambda: REPLY not in self.box.spoken_texts())
+        self.box.write_turns(self.box.turn_record(command, "completed_final"))
+        self.box.say(self.completion_line(command, COMPLETION))
+        spoken = self.box.wait_spoken(text=REPLY)
+        self.assertEqual((spoken["source"], spoken["kind"]), ("orchestrator", "final"))
+        self.assertNotIn(ACK, self.box.spoken_texts())
+        self.assertNotIn(COMPLETION, self.box.spoken_texts())
 
     def test_without_the_messenger_outcomes_are_not_polled(self):
         """Outcomes: without a messenger the bridge does not poll outcomes."""

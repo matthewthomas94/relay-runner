@@ -248,6 +248,8 @@ The bridge also publishes `session_playback` and `speech_queue` datagrams to `VO
 
 A reply is `__ORCHESTRATOR_REPLY__:{"relay_command_seq", "relay_command_id", "text", …}`; a completion is `__RELAY_COMPLETION__:{…}` from the hook. A reply is spoken when its command is current, or is preserved by a newer `continue_current` turn, and its intent is not cancelled.
 
+Since RR-518 the turn's end settles the final. While a reply's command is bound to a provider turn whose completion the bridge has not handled, the reply is held and a newer reply replaces it. At the completion the held reply is the final, unless it is a short acknowledgement and the completion's message says something else; then the completion is. With no held reply the completion's message is the final, unless it only repeats an interim reply. A held reply whose turn ended without a completion is released after two seconds. A reply with `"interim": true` is a `reasoning-summary` trace, never the final. A command with no provider turn, such as one from a manual bridge loop, is spoken at once.
+
 | Rule | Case |
 | --- | --- |
 | Spoken once as the authoritative final. | replies/test_reply_for_the_current_command_is_spoken_once_as_its_final |
@@ -260,6 +262,11 @@ A reply is `__ORCHESTRATOR_REPLY__:{"relay_command_seq", "relay_command_id", "te
 | An empty completion speaks the missing-reply fallback; project work's says worker updates still come. | replies/test_empty_completion_speaks_the_missing_reply_fallback, replies/test_project_work_fallback_says_worker_updates_still_come |
 | Claiming a command without a finished turn starts no fallback. | replies/test_a_claimed_command_without_a_finished_turn_gets_no_fallback |
 | A reply cancels the fallback; it waits while the turn is active; none once superseded. | replies/test_a_reply_before_the_fallback_fires_cancels_it, replies/test_the_fallback_waits_while_the_provider_turn_is_active, replies/test_no_fallback_once_the_command_is_superseded |
+| The last reply of a running turn is the final at Stop; an earlier one never is. | replies/test_an_early_reply_does_not_take_the_final_from_the_last_reply, replies/test_without_the_messenger_the_last_reply_is_the_final |
+| A lone acknowledgement yields to a different completion, and is spoken once when the completion repeats it. | replies/test_an_acknowledgement_reply_yields_to_a_different_completion, replies/test_an_acknowledgement_reply_repeated_by_the_completion_is_spoken_once |
+| A single held reply is spoken once, with the completion; with an empty completion no fallback follows. | replies/test_a_single_reply_is_the_final_as_soon_as_the_turn_ends, replies/test_a_held_reply_with_an_empty_completion_is_the_final |
+| A held reply is dropped once superseded, and released if the turn ends without a completion. | replies/test_a_held_reply_is_dropped_when_a_newer_command_replaces_it, replies/test_a_held_reply_is_released_when_the_turn_ends_without_a_completion |
+| An interim reply is progress, never the final, and a completion repeating it is not spoken again. | replies/test_an_interim_reply_is_progress_and_never_the_final, replies/test_an_interim_reply_repeated_by_the_completion_is_not_spoken_twice |
 | Without the messenger a reply goes straight to speech. | replies/test_without_the_messenger_a_reply_goes_straight_to_speech |
 | Replies survive a restart. | restart/test_a_reply_after_a_restart_is_still_spoken |
 

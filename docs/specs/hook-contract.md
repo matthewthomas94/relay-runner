@@ -42,7 +42,7 @@ The suite needs macOS (`/bin/ps`, `/usr/sbin/lsof`, an 8192-byte FIFO buffer) an
 | `--record-process` | Ignored | Empty | 0 when the binding was written, otherwise 1 |
 | `--record-codex-startup` | Ignored | Empty | 0 when the binding names a native session, otherwise 1 |
 | `--context-continuation` | One request, a JSON object | One JSON object and a newline | Always 0 |
-| reply helper, none | The reply text | Empty | Always 0 |
+| reply helper, none or `--interim` | The reply text | Empty | Always 0 |
 
 stderr carries free-form diagnostics. It never contains prompt text, reply text, summaries or compaction instructions.
 
@@ -130,7 +130,7 @@ Each line is a prefix, a JSON object and a newline. The JSON has sorted keys, `"
 | --- | --- |
 | `__PROVIDER_TURN_EVENT__:` | `event`, `provider`, `relay_command_id`, `recovery_generation`, `observed_at` |
 | `__RELAY_COMPLETION__:` | `event`, `relay_command_seq`, `relay_command_id`, `session_id`, the four ownership fields, and when present `session_key`, `intent_id`, `within_turn_order`, `target`, `disposition`, `cancellation_scope`, `turn_id`, `provider`, `action`; then `text` or `completion_status` |
-| `__ORCHESTRATOR_REPLY__:` | `relay_command_id`, `relay_command_seq`, `text`, the four ownership fields, and when present `intent_id`, `session_key`, `provider_session_id` |
+| `__ORCHESTRATOR_REPLY__:` | `relay_command_id`, `relay_command_seq`, `text`, the four ownership fields, and when present `intent_id`, `session_key`, `provider_session_id`; `interim: true` from `reply --interim` |
 
 ### Tables
 
@@ -200,7 +200,7 @@ The answer is `blocked` when the request is malformed, the inbox cannot be read,
 
 ## Reply helper
 
-The helper trims the reply and writes one `__ORCHESTRATOR_REPLY__:` line for the claimed command. It publishes only when the session has foreground ownership, the reply is not empty, the claim names a command, its intent is not listed in the state file's `cancelled_intent_ids`, and the claim is the newest command or the newest command preserves current work. When the state file has `session_commands[<session key>]`, the claim is judged against that entry instead of the shared newest command. Otherwise it writes nothing. It reads and writes no other file.
+The helper trims the reply and writes one `__ORCHESTRATOR_REPLY__:` line for the claimed command. It publishes only when the session has foreground ownership, the reply is not empty, the claim names a command, its intent is not listed in the state file's `cancelled_intent_ids`, and the claim is the newest command or the newest command preserves current work. When the state file has `session_commands[<session key>]`, the claim is judged against that entry instead of the shared newest command. Otherwise it writes nothing. It reads and writes no other file. `reply --interim` (RR-518) writes the same line with `"interim": true`, marking an acknowledgement or progress update the bridge never takes as the final; any other argument writes nothing.
 
 ## Cases
 
