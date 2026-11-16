@@ -99,6 +99,21 @@ final class OnboardingController {
     private let stopTutorialSpeech: () -> Void
     private let openWorkspaceAfterCompletion: () -> Void
     private let scheduleWorkspaceOpenAfterTutorialDismissal: (@escaping () -> Void) -> Void
+    /// Speech-to-text model readiness. The Caps Lock loop runs only once the
+    /// model has loaded, so the tutorial's intro waits for it.
+    private let tutorialSpeechReadiness: () -> SetupRuntimeReadiness
+    /// Nil turns the recording step's Caps Lock diagnostics off.
+    private let tutorialRecordingProbe: (() -> OnboardingTutorialRecordingProbe)?
+    private let toggleTutorialRecording: () -> Void
+    private let retryTutorialSpeechSetup: () -> Void
+    private let openTutorialSettings: (URL) -> Void
+    private let tutorialRecordingCheckInterval: TimeInterval
+    private let now: () -> Date
+    private let diagnosticLog: (String) -> Void
+    private var tutorialRecordingWatch: OnboardingTutorialRecordingWatch?
+    private var tutorialRecordingHelp: OnboardingTutorialRecordingHelp?
+    private var tutorialRecordingTimer: Timer?
+    private var tutorialIntroSpeechWaitLogged = false
     private var freshPermissionState: FreshPermissionState?
     private var freshWorkspaceSelectionInFlight = false
     private var permissionGrantObserver: NSObjectProtocol?
@@ -181,7 +196,15 @@ final class OnboardingController {
          scheduleWorkspaceOpenAfterTutorialDismissal: @escaping (@escaping () -> Void) -> Void = { action in
             DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: action)
          },
-         openWorkspaceAfterCompletion: @escaping () -> Void = {}) {
+         openWorkspaceAfterCompletion: @escaping () -> Void = {},
+         tutorialSpeechReadiness: @escaping () -> SetupRuntimeReadiness = { .ready },
+         tutorialRecordingProbe: (() -> OnboardingTutorialRecordingProbe)? = nil,
+         toggleTutorialRecording: @escaping () -> Void = {},
+         retryTutorialSpeechSetup: @escaping () -> Void = {},
+         openTutorialSettings: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) },
+         tutorialRecordingCheckInterval: TimeInterval = 0.5,
+         now: @escaping () -> Date = Date.init,
+         diagnosticLog: @escaping (String) -> Void = { NSLog("%@", $0) }) {
         self.presentation = presentation
         self.flagURLs = flagURLs
         self.permissions = permissions
@@ -215,6 +238,14 @@ final class OnboardingController {
         self.stopTutorialSpeech = stopTutorialSpeech
         self.scheduleWorkspaceOpenAfterTutorialDismissal = scheduleWorkspaceOpenAfterTutorialDismissal
         self.openWorkspaceAfterCompletion = openWorkspaceAfterCompletion
+        self.tutorialSpeechReadiness = tutorialSpeechReadiness
+        self.tutorialRecordingProbe = tutorialRecordingProbe
+        self.toggleTutorialRecording = toggleTutorialRecording
+        self.retryTutorialSpeechSetup = retryTutorialSpeechSetup
+        self.openTutorialSettings = openTutorialSettings
+        self.tutorialRecordingCheckInterval = tutorialRecordingCheckInterval
+        self.now = now
+        self.diagnosticLog = diagnosticLog
     }
 
     deinit {
@@ -222,6 +253,7 @@ final class OnboardingController {
         stopRuntimePolling()
         stopAuthPolling()
         cancelTutorialIntroAdvance()
+        stopTutorialRecordingWatch()
         stopTutorialSpeech()
     }
 
@@ -970,21 +1002,105 @@ final class OnboardingController {
         guard let state = tutorialState,
               let intro = introController else { return }
         cancelTutorialIntroAdvance()
+        if screen != .recording {
+            stopTutorialRecordingWatch()
+        }
         OnboardingResumeState.save(
             step: OnboardingSessionControlsTutorial.resumeID(for: screen),
             provider: state.provider,
             parentPermissionsReviewed: true
         )
+        diagnosticLog("[OnboardingTutorial] screen=\(screen.rawValue)")
+        let help = screen == .recording ? tutorialRecordingHelp : nil
         intro.presentTutorial(
             OnboardingTutorialPresentation(
                 screen: screen,
                 reduceMotion: reduceMotion(),
-                message: message
+                message: message,
+                recordingHelp: help
             ),
             retryAction: { [weak self] in
-                self?.beginSessionControlsTutorial(screen: .intro)
-            }
+                guard let self else { return }
+                if case .failed = self.tutorialSpeechReadiness() {
+                    self.diagnosticLog("[OnboardingTutorial] retrying speech setup")
+                    self.retryTutorialSpeechSetup()
+                }
+                self.beginSessionControlsTutorial(screen: .intro)
+            },
+            recordingActions: recordingActions(for: screen, help: help)
         )
+        if screen == .recording {
+            startTutorialRecordingWatchIfNeeded()
+        }
+    }
+
+    private func recordingActions(
+        for screen: OnboardingTutorialScreen,
+        help: OnboardingTutorialRecordingHelp?
+    ) -> OnboardingTutorialRecordingActions? {
+        guard screen == .recording || screen == .recordingActive else { return nil }
+        let fixAction: (() -> Void)? = help?.fix.map { fix in
+            { [weak self] in self?.performTutorialRecordingFix(fix) }
+        }
+        return OnboardingTutorialRecordingActions(
+            toggleRecording: { [weak self] in
+                self?.diagnosticLog("[OnboardingTutorial] click fallback toggled recording screen=\(screen.rawValue)")
+                self?.toggleTutorialRecording()
+            },
+            fix: fixAction
+        )
+    }
+
+    private func performTutorialRecordingFix(_ fix: OnboardingTutorialRecordingHelp.Fix) {
+        diagnosticLog("[OnboardingTutorial] recording fix=\(fix.title)")
+        switch fix {
+        case .retrySpeechSetup:
+            retryTutorialSpeechSetup()
+        case .openSettings(let pane):
+            onOpenExternalWindow()
+            openTutorialSettings(pane.url)
+        }
+    }
+
+    private func startTutorialRecordingWatchIfNeeded() {
+        guard tutorialRecordingWatch == nil,
+              let probe = tutorialRecordingProbe?() else { return }
+        tutorialRecordingWatch = OnboardingTutorialRecordingWatch(startedAt: now(), baseline: probe)
+        diagnosticLog("[OnboardingTutorial] recording watch started \(probe.logSummary)")
+        let timer = Timer(timeInterval: tutorialRecordingCheckInterval, repeats: true) { [weak self] _ in
+            self?.checkTutorialRecording()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        tutorialRecordingTimer = timer
+    }
+
+    private func stopTutorialRecordingWatch() {
+        tutorialRecordingTimer?.invalidate()
+        tutorialRecordingTimer = nil
+        tutorialRecordingWatch = nil
+        tutorialRecordingHelp = nil
+    }
+
+    /// One diagnostic tick on the recording step; the timer drives it.
+    func checkTutorialRecording() {
+        guard var watch = tutorialRecordingWatch,
+              OnboardingResumeState.load()?.step == .tutorialRecording,
+              let probe = tutorialRecordingProbe?() else { return }
+        let hadPress = watch.firstPressAt != nil
+        let symptom = watch.observe(probe, now: now())
+        tutorialRecordingWatch = watch
+        if !hadPress, watch.firstPressAt != nil {
+            diagnosticLog("[OnboardingTutorial] Caps Lock activity seen; waiting for recording to start")
+        }
+        guard let symptom else { return }
+        let help = OnboardingTutorialRecordingHelp.diagnose(symptom, probe: probe)
+        guard help != tutorialRecordingHelp else { return }
+        tutorialRecordingHelp = help
+        diagnosticLog(
+            "[OnboardingTutorial] recording help symptom=\(symptom.rawValue) " +
+            "reason=\(help.reason.rawValue) \(probe.logSummary)"
+        )
+        presentTutorial(screen: .recording)
     }
 
     private func scheduleTutorialIntroAdvance(provider: GeneralConfig.AgentProvider) {
@@ -1000,11 +1116,38 @@ final class OnboardingController {
             guard let self,
                   self.tutorialState?.provider == provider,
                   OnboardingResumeState.load()?.step == .tutorialIntro else { return }
-            self.presentTutorial(screen: .recording)
+            self.advanceTutorialIntroWhenSpeechReady(provider: provider)
         }
         tutorialIntroAdvance = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
+
+    /// Caps Lock does nothing until the speech model has loaded, which on a
+    /// fresh install includes downloading it, so hold the intro until then.
+    private func advanceTutorialIntroWhenSpeechReady(provider: GeneralConfig.AgentProvider) {
+        switch tutorialSpeechReadiness() {
+        case .ready:
+            tutorialIntroSpeechWaitLogged = false
+            presentTutorial(screen: .recording)
+        case .failed:
+            tutorialIntroSpeechWaitLogged = false
+            diagnosticLog("[OnboardingTutorial] speech setup failed before the recording step")
+            presentTutorial(
+                screen: .sessionRetry,
+                message: "Speech recognition couldn't start, so Caps Lock can't record yet. Retry to set it up again."
+            )
+        case .preparing, .notStarted:
+            if !tutorialIntroSpeechWaitLogged {
+                tutorialIntroSpeechWaitLogged = true
+                diagnosticLog("[OnboardingTutorial] waiting for speech model before the recording step")
+                presentTutorial(screen: .intro, message: Self.tutorialSpeechPreparingMessage)
+            }
+            scheduleTutorialIntroAdvance(provider: provider, after: tutorialRecordingCheckInterval)
+        }
+    }
+
+    static let tutorialSpeechPreparingMessage =
+        "Getting speech recognition ready. The first time can take a few minutes."
 
     private func cancelTutorialIntroAdvance() {
         tutorialIntroAdvance?.cancel()
@@ -1162,6 +1305,11 @@ final class OnboardingController {
             event: event
         )
         tutorialState = state
+        if previousGate != state.recordingGate {
+            diagnosticLog(
+                "[OnboardingTutorial] recording gate \(previousGate) -> \(state.recordingGate) event=\(event)"
+            )
+        }
         if previousGate == .waitingForStart,
            state.recordingGate == .waitingForSpeech {
             presentTutorial(screen: .recordingActive)
@@ -1177,6 +1325,7 @@ final class OnboardingController {
         stopRuntimePolling()
         stopAuthPolling()
         cancelTutorialIntroAdvance()
+        stopTutorialRecordingWatch()
         stopTutorialSpeech()
         cancelPermissionSetup(.onboarding)
         try? Data().write(to: flagURLs.onboarded)
@@ -1212,6 +1361,7 @@ final class OnboardingController {
         guard presentation.isPresented else { return }
         cancelPermissionSetup(.onboarding)
         cancelTutorialIntroAdvance()
+        stopTutorialRecordingWatch()
         stopTutorialSpeech()
         presentation.clear()
         setOnboardingNotchOverrideActive(false)

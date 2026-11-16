@@ -362,6 +362,18 @@ final class AppState {
             },
             openWorkspaceAfterCompletion: { [weak self] in
                 self?.showWorkspaceWork()
+            },
+            tutorialSpeechReadiness: { [weak self] in
+                self?.setupRuntimeReadiness ?? .notStarted
+            },
+            tutorialRecordingProbe: { [weak self] in
+                self?.onboardingTutorialRecordingProbe() ?? OnboardingTutorialRecordingProbe()
+            },
+            toggleTutorialRecording: { [weak self] in
+                _ = self?.sttEngine?.toggleRecording()
+            },
+            retryTutorialSpeechSetup: { [weak self] in
+                self?.retrySTTSetup()
             }
         )
     }()
@@ -3248,6 +3260,11 @@ final class AppState {
             return false
         }
         onboardingTutorialSpeechActive = true
+        // The tutorial waits for speech readiness, so make sure loading began.
+        if sttEngine == nil && permissions.microphone == .granted {
+            NSLog("[AppState] Tutorial started speech recognition")
+            startAwareness()
+        }
         sttEngine?.tutorialActive = true
         syncCommandCaptureOwnership()
         stateMachine.dismissSessionPrompt()
@@ -3263,6 +3280,23 @@ final class AppState {
         )
         syncNotchActivitySurface()
         showWorkspaceWork()
+    }
+
+    /// What the tutorial's recording step needs to explain a silent Caps Lock.
+    private func onboardingTutorialRecordingProbe() -> OnboardingTutorialRecordingProbe {
+        let keyboardAccess: PermissionStatus =
+            permissions.accessibility == .granted || permissions.inputMonitoring == .granted
+                ? .granted
+                : permissions.accessibility
+        return OnboardingTutorialRecordingProbe(
+            speech: setupRuntimeReadiness,
+            microphone: permissions.microphone,
+            keyboardAccess: keyboardAccess,
+            microphoneCaptureReady: sttEngine?.isMicrophoneCaptureReady ?? false,
+            capsLockOn: CapsLockGesture.isCapsLockOn(),
+            capsLockKeyEvents: sttEngine?.capsLockKeyEventCount ?? 0,
+            capsLock: CapsLockKeyboardConfiguration.current()
+        )
     }
 
     private func stopOnboardingTutorialSpeech() {
