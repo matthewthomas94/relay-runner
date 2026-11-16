@@ -29,8 +29,8 @@ PRESERVE = {
 
 
 class ReplyCase(ContractCase):
-    def publish(self, text=REPLY, *, env=None):
-        result = self.box.reply(text, env=env)
+    def publish(self, text=REPLY, *args, env=None):
+        result = self.box.reply(text, *args, env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, b"")
         if isinstance(text, str) and text.strip():
@@ -79,6 +79,18 @@ class ReplyContract:
             '"session_key": "session-key-1", "text": "The release notes are ready."}\n',
         )
         self.assertEqual(box.tree(), before)
+
+    def test_interim_reply_is_published_marked_interim(self):
+        """RR-518: `reply --interim` publishes the same envelope with
+        `"interim": true`, so the bridge never takes it as the final."""
+        command = self.box.claim()
+        self.publish("On it.", "--interim")
+        self.assertPublished(self.expected(command, "On it.", interim=True))
+
+    def test_reply_with_an_unknown_argument_is_dropped(self):
+        self.box.claim()
+        self.publish(REPLY, "--final")
+        self.assertDropped()
 
     def test_reply_text_is_trimmed_and_escaped_onto_one_line(self):
         command = self.box.claim()

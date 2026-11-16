@@ -38,7 +38,7 @@ const VERSION: &str = concat!(
 
 const USAGE: &str = "usage: relay-rs --version\n       \
      relay-rs hook [--record-process | --record-codex-startup | --context-continuation]\n       \
-     relay-rs reply\n       \
+     relay-rs reply [--interim]\n       \
      relay-rs bridge --config <path> --relay [--suppress-startup-greeting]\n       \
      relay-rs fresh-install [...]\n       \
      relay-rs work-style [show|set] [STYLE] [--repo REPO]\n       \
@@ -62,7 +62,7 @@ fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     match arguments.split_first() {
         Some((command, mode)) if command == "hook" => return ExitCode::from(hook::run(mode)),
-        Some((command, _)) if command == "reply" => return ExitCode::from(reply::run()),
+        Some((command, rest)) if command == "reply" => return ExitCode::from(reply::run(rest)),
         Some((command, rest)) if command == "bridge" => return ExitCode::from(bridge::run(rest)),
         Some((command, rest)) if command == "fresh-install" => {
             return ExitCode::from(fresh_install::run(rest));

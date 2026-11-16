@@ -308,10 +308,10 @@ class Sandbox:
             cwd=str(cwd or self.workdir), timeout=timeout,
         )
 
-    def reply(self, text, *, env=None) -> Result:
+    def reply(self, text, *args, env=None) -> Result:
         data = text if isinstance(text, bytes) else text.encode("utf-8")
         require_built(REPLY_CMD)
-        return run_command(REPLY_CMD, data, self.env() if env is None else env, cwd=str(self.workdir))
+        return run_command([*REPLY_CMD, *args], data, self.env() if env is None else env, cwd=str(self.workdir))
 
     def start_hook(self, *args, env=None) -> subprocess.Popen:
         """Start a hook mode that waits, without feeding it stdin."""

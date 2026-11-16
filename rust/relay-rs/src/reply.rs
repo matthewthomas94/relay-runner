@@ -3,7 +3,9 @@
 //! docs/specs/hook-contract.md.
 //!
 //! The helper owns FIFO framing and command correlation so providers never
-//! build Relay control envelopes themselves. Diagnostics omit reply text,
+//! build Relay control envelopes themselves. `reply --interim` marks an
+//! acknowledgement or progress update that must never become the command's
+//! final (RR-518). Diagnostics omit reply text,
 //! prompt text, command ids and raw payloads.
 
 use std::time::{Duration, Instant};
@@ -55,8 +57,12 @@ fn encode_orchestrator_reply(
     claim: &Dict,
     key: &(i64, String),
     ownership: &Dict,
+    interim: bool,
 ) -> String {
     let mut payload = Dict::new();
+    if interim {
+        payload.insert("interim", true);
+    }
     payload.insert("relay_command_id", key.1.clone());
     payload.insert("relay_command_seq", key.0);
     payload.insert("text", reply);
@@ -90,7 +96,7 @@ fn stdin_text(data: &[u8]) -> String {
 
 /// Writes one reply line when the claimed command is still current, and says
 /// why not otherwise.
-fn publish_current_reply(text: &str) -> Result<(), &'static str> {
+fn publish_current_reply(text: &str, interim: bool) -> Result<(), &'static str> {
     let ownership = support::ownership_from_environment();
     if !is_foreground_owner(&ownership) {
         return Err("foreground ownership unavailable");
@@ -113,7 +119,7 @@ fn publish_current_reply(text: &str) -> Result<(), &'static str> {
     if reply.is_empty() {
         return Err("final text unavailable");
     }
-    let line = encode_orchestrator_reply(reply, &claim, &key, &ownership);
+    let line = encode_orchestrator_reply(reply, &claim, &key, &ownership, interim);
     let fifo = env_or("VOICE_FIFO", "/tmp/voice_in.fifo");
     match write_fifo_line(&fifo, &line, Instant::now() + FIFO_WAIT) {
         Ok(true) => Ok(()),
@@ -123,8 +129,16 @@ fn publish_current_reply(text: &str) -> Result<(), &'static str> {
 }
 
 /// Always exits 0: a reply that may not be published is dropped.
-pub fn run() -> u8 {
-    if let Err(reason) = publish_current_reply(&stdin_text(&support::read_stdin())) {
+pub fn run(arguments: &[String]) -> u8 {
+    let interim = match arguments {
+        [] => false,
+        [flag] if flag == "--interim" => true,
+        _ => {
+            eprintln!("[relay_reply] reply not emitted: unknown argument");
+            return 0;
+        }
+    };
+    if let Err(reason) = publish_current_reply(&stdin_text(&support::read_stdin()), interim) {
         eprintln!("[relay_reply] reply not emitted: {reason}");
     }
     0

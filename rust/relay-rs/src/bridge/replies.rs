@@ -1,7 +1,8 @@
 //! Which foreground finals were delivered, which are in flight, when the PM
 //! last traced a command, and the RR-460 missing-outcome watches
 //! (`voice_bridge.py` from `_foreground_reply_delivered` to
-//! `_mark_foreground_reply_delivered`).
+//! `_mark_foreground_reply_delivered`). Since RR-518 it also holds a helper
+//! reply until its provider turn ends, and remembers interim replies.
 
 use std::collections::BTreeSet;
 use std::sync::{LazyLock, Mutex, MutexGuard};
@@ -41,6 +42,12 @@ struct ReplyState {
     in_flight: BTreeSet<Key>,
     fallback: OrderedSet,
     pm_trace_at: Vec<(Key, Instant)>,
+    /// RR-518: the newest helper reply per command, waiting for its turn's end.
+    held: Vec<(Key, Dict)>,
+    /// RR-518: the interim replies already offered per command.
+    interim: Vec<(Key, String)>,
+    /// RR-518: the commands whose provider completion the bridge handled.
+    completed: OrderedSet,
 }
 
 struct Watch {
@@ -122,6 +129,90 @@ pub fn mark_foreground_reply_delivered(command: Option<&Dict>) {
     if let Some(key) = key(command) {
         replies().replied.add(key);
     }
+}
+
+/// RR-518: hold `reply` as `command`'s pending final, replacing an earlier
+/// one. True when nothing was held before, so the caller starts a watcher.
+pub fn hold_foreground_reply(command: Option<&Dict>, reply: Dict) -> bool {
+    let Some(key) = key(command) else {
+        return false;
+    };
+    let mut state = replies();
+    if let Some((_, held)) = state.held.iter_mut().find(|(existing, _)| *existing == key) {
+        *held = reply;
+        return false;
+    }
+    state.held.push((key, reply));
+    if state.held.len() > 64 {
+        state.held.remove(0);
+    }
+    true
+}
+
+/// RR-518: the provider completion for `command` reached the bridge.
+pub fn note_provider_completion(command: Option<&Dict>) {
+    if let Some(key) = key(command) {
+        replies().completed.add(key);
+    }
+}
+
+/// RR-518: whether `command`'s provider completion reached the bridge.
+pub fn provider_completion_received(command: Option<&Dict>) -> bool {
+    key(command).is_some_and(|key| replies().completed.contains(&key))
+}
+
+/// RR-518: whether `command` has a held reply.
+pub fn foreground_reply_held(command: Option<&Dict>) -> bool {
+    key(command).is_some_and(|key| replies().held.iter().any(|(existing, _)| *existing == key))
+}
+
+/// RR-518: take `command`'s held reply; only one caller gets it.
+pub fn take_held_foreground_reply(command: Option<&Dict>) -> Option<Dict> {
+    let key = key(command)?;
+    let mut state = replies();
+    let position = state
+        .held
+        .iter()
+        .position(|(existing, _)| *existing == key)?;
+    Some(state.held.remove(position).1)
+}
+
+/// The words of `text`, lowercased, for comparing two replies.
+fn comparable(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// Whether two reply texts say the same thing, ignoring case and spacing.
+pub fn same_reply_text(left: &str, right: &str) -> bool {
+    comparable(left) == comparable(right)
+}
+
+/// RR-518: remember an interim reply offered for `command`.
+pub fn note_interim_reply(command: Option<&Dict>, text: &str) {
+    let Some(key) = key(command) else {
+        return;
+    };
+    let mut state = replies();
+    state.interim.push((key, comparable(text)));
+    if state.interim.len() > 64 {
+        state.interim.remove(0);
+    }
+}
+
+/// RR-518: whether `text` repeats an interim reply already offered for
+/// `command`.
+pub fn repeats_interim_reply(command: Option<&Dict>, text: &str) -> bool {
+    let Some(key) = key(command) else {
+        return false;
+    };
+    let text = comparable(text);
+    replies()
+        .interim
+        .iter()
+        .any(|(existing, interim)| *existing == key && *interim == text)
 }
 
 /// `_note_pm_trace`.
