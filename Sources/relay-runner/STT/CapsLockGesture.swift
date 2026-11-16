@@ -20,6 +20,9 @@ final class CapsLockGesture {
     ) -> Any?
     typealias MonitorRemover = (Any) -> Void
     typealias DiagnosticLogger = (String) -> Void
+    /// Reads Caps Lock's on/off state. The recording toggle polls this, so it
+    /// works without Accessibility and without any key event monitor.
+    typealias CapsLockStateReader = () -> Bool
 
     enum Event: Equatable {
         case startRecording
@@ -47,6 +50,7 @@ final class CapsLockGesture {
     private let localMonitorInstaller: LocalMonitorInstaller
     private let monitorRemover: MonitorRemover
     private let diagnosticLogger: DiagnosticLogger
+    private let capsLockState: CapsLockStateReader
     private var customKeyDown = false
     private var keyMonitors: [Any] = []
     private var modifierGlobalMonitor: Any?
@@ -98,9 +102,8 @@ final class CapsLockGesture {
         monitorRemover: @escaping MonitorRemover = { monitor in
             NSEvent.removeMonitor(monitor)
         },
-        diagnosticLogger: @escaping DiagnosticLogger = { message in
-            NSLog("%@", message)
-        }
+        diagnosticLogger: @escaping DiagnosticLogger = RelayUnifiedLog.sink(category: "CapsLockGesture"),
+        capsLockState: @escaping CapsLockStateReader = CapsLockGesture.isCapsLockOn
     ) {
         let isCapsLock = activationKey.isEmpty
             || activationKey.lowercased() == "caps lock"
@@ -120,7 +123,8 @@ final class CapsLockGesture {
         self.localMonitorInstaller = localMonitorInstaller
         self.monitorRemover = monitorRemover
         self.diagnosticLogger = diagnosticLogger
-        prevKeyOn = useCapsLock ? Self.isCapsLockOn() : false
+        self.capsLockState = capsLockState
+        prevKeyOn = useCapsLock ? capsLockState() : false
 
         startModifierMonitor()
         if !useCapsLock {
@@ -139,7 +143,7 @@ final class CapsLockGesture {
 
     private var isKeyOn: Bool {
         if let manual = manualKeyDown { return manual }
-        return useCapsLock ? Self.isCapsLockOn() : customKeyDown
+        return useCapsLock ? capsLockState() : customKeyDown
     }
 
     /// Toggle recording from the menu button.
@@ -147,7 +151,7 @@ final class CapsLockGesture {
         if manualKeyDown != nil {
             manualKeyDown = nil
         } else {
-            let current = useCapsLock ? Self.isCapsLockOn() : customKeyDown
+            let current = useCapsLock ? capsLockState() : customKeyDown
             manualKeyDown = !current
         }
     }

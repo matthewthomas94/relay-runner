@@ -1,4 +1,5 @@
 import AppKit
+import RelayPowerHelperProtocol
 import SwiftUI
 
 struct OnboardingPermissionPromptPresentation: Equatable {
@@ -7,6 +8,52 @@ struct OnboardingPermissionPromptPresentation: Equatable {
     let supportingCopy: String?
     let buttonTitle: String
     let isButtonEnabled: Bool
+    /// Shown after an attempt came back without a grant: the Mac may manage
+    /// this permission, so the step offers an IT request and a way on.
+    var managedNotice: String? = nil
+    var continueTitle: String? = nil
+}
+
+/// The managed-Mac buttons on a permission step.
+struct OnboardingPermissionManagedActions {
+    let copyITRequest: () -> Void
+    let continueWithout: () -> Void
+}
+
+/// What an IT admin needs to allow Relay Runner with a PPPC profile.
+enum ManagedPermissionRequest {
+    static let copyTitle = "Copy IT request"
+
+    /// PPPC lets an admin allow Accessibility and PostEvent outright; Input
+    /// Monitoring and Screen Recording can only be opened to standard users.
+    static let services: [(service: String, name: String, authorization: String)] = [
+        ("Accessibility", "Accessibility (Device Control and Data Access)", "Allow"),
+        ("PostEvent", "Posting keyboard and mouse events", "Allow"),
+        ("ListenEvent", "Input Monitoring", "AllowStandardUserToSetSystemService"),
+        ("ScreenCapture", "Screen Recording", "AllowStandardUserToSetSystemService"),
+    ]
+
+    static func text(bundleIdentifier: String = RelayPowerHelperIdentity.appIdentifier,
+                     teamIdentifier: String = RelayPowerHelperIdentity.teamIdentifier,
+                     codeRequirement: String = RelayPowerHelperIdentity.appRequirement) -> String {
+        var lines = [
+            "Please allow Relay Runner on my Mac with a Privacy Preferences Policy Control (PPPC) profile.",
+            "",
+            "App: Relay Runner",
+            "Bundle ID: \(bundleIdentifier)",
+            "Identifier type: bundleID",
+            "Team ID: \(teamIdentifier) (Developer ID)",
+            "Code requirement: \(codeRequirement)",
+            "",
+            "Services:",
+        ]
+        lines += services.map { "- \($0.service) (\($0.name)): \($0.authorization)" }
+        lines += [
+            "",
+            "Relay Runner uses these for computer control and screenshots. Voice and Caps Lock work without them.",
+        ]
+        return lines.joined(separator: "\n")
+    }
 }
 
 enum OnboardingPermissionTreatment {
@@ -48,6 +95,26 @@ enum OnboardingPermissionTreatment {
         case .camera:
             return "Camera lets True Whisper, the experimental lip-reading input mode, read silently mouthed commands. Only lip geometry is kept, never images. Voice transcription and speech don't need it."
         }
+    }
+
+    /// Microphone is needed for voice; the others only gate computer control.
+    static func canContinueWithout(_ kind: PermissionKind) -> Bool {
+        kind != .microphone
+    }
+
+    static func continueWithoutTitle(for kind: PermissionKind) -> String {
+        "Continue without \(kind.displayName)"
+    }
+
+    static func managedNotice(for kind: PermissionKind,
+                              itRequestCopied: Bool,
+                              macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion) -> String {
+        let pane = kind.settingsPaneName(macOSMajorVersion: macOSMajorVersion)
+        let feature = kind == .screenRecording ? "screenshots need it" : "computer control needs it"
+        let base = "If Relay Runner isn't listed under Privacy & Security > \(pane), or its switch can't be turned on, " +
+            "your organisation manages this setting on this Mac. Ask IT to allow Relay Runner. " +
+            "Caps Lock and voice work without it; only \(feature)."
+        return itRequestCopied ? base + " IT request copied." : base
     }
 
     static func presentation(permission: PermissionKind,

@@ -1277,11 +1277,13 @@ final class AppState {
                 await MainActor.run { [weak self, engine] in
                     self?.failSTTSetupIfCurrent(engine, error: error)
                 }
-                NSLog("[AppState] \(failureLogPrefix): \(error)")
+                Self.speechLog("[AppState] \(failureLogPrefix): \(error)")
             }
         }
-        NSLog("[AppState] STT setup started: \(reason)")
+        Self.speechLog("[AppState] STT setup started: \(reason)")
     }
+
+    private static let speechLog = RelayUnifiedLog.sink(category: "AppState")
 
     private func completeSTTSetupIfCurrent(_ engine: STTEngine) {
         guard sttEngine === engine else { return }
@@ -3261,14 +3263,44 @@ final class AppState {
         }
         onboardingTutorialSpeechActive = true
         // The tutorial waits for speech readiness, so make sure loading began.
-        if sttEngine == nil && permissions.microphone == .granted {
-            NSLog("[AppState] Tutorial started speech recognition")
+        switch Self.tutorialSpeechStart(
+            engineExists: sttEngine != nil,
+            engineFailed: sttEngineError != nil,
+            microphone: permissions.microphone
+        ) {
+        case .start:
+            Self.speechLog("[AppState] Tutorial started speech recognition")
             startAwareness()
+        case .restartFailed:
+            Self.speechLog("[AppState] Tutorial restarted failed speech recognition")
+            retrySTTSetup()
+        case .running:
+            break
+        case .waitForMicrophone:
+            Self.speechLog("[AppState] Tutorial speech waits for microphone access")
         }
         sttEngine?.tutorialActive = true
         syncCommandCaptureOwnership()
         stateMachine.dismissSessionPrompt()
         return true
+    }
+
+    enum TutorialSpeechStart: Equatable {
+        case running
+        case start
+        case restartFailed
+        case waitForMicrophone
+    }
+
+    /// What a tutorial step that needs speech must do so Caps Lock works,
+    /// including a step resumed straight after a relaunch. The engine owns the
+    /// Caps Lock gesture, so starting it also arms the gesture.
+    static func tutorialSpeechStart(engineExists: Bool,
+                                    engineFailed: Bool,
+                                    microphone: PermissionStatus) -> TutorialSpeechStart {
+        guard microphone == .granted else { return .waitForMicrophone }
+        if !engineExists { return .start }
+        return engineFailed ? .restartFailed : .running
     }
 
     private func surfaceProjectScopeFailure(_ detail: String) {

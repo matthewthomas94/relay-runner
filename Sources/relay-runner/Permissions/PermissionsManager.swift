@@ -530,8 +530,20 @@ private extension PermissionStatus {
 }
 
 extension PermissionKind {
-    /// Deep-link URL for the Privacy & Security subpane.
-    /// Stable across macOS 13 (Ventura) / 14 (Sonoma) / 15 (Sequoia).
+    /// The Privacy & Security row's name. macOS 27 renamed the Accessibility
+    /// row (kTCCServiceAccessibility) "Device Control and Data Access".
+    func settingsPaneName(macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion) -> String {
+        if self == .accessibility, macOSMajorVersion >= 27 {
+            return "Device Control and Data Access"
+        }
+        return displayName
+    }
+
+    /// Deep-link URL for the Privacy & Security subpane. The legacy
+    /// `com.apple.preference.security` id still routes on macOS 13–27: the
+    /// macOS 27 Privacy extension declares it as its legacy id, allows the
+    /// URL scheme, and still reveals `Privacy_Accessibility` and
+    /// `Privacy_ListenEvent`.
     var settingsURL: String {
         switch self {
         case .microphone:

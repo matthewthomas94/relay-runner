@@ -979,6 +979,7 @@ final class OnboardingIntroTests: XCTestCase {
             defer { try? FileManager.default.removeItem(at: directory) }
 
             let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+            try Data().write(to: flagURLs.started)
             OnboardingResumeState.save(
                 step: step,
                 provider: .codex,
@@ -1009,6 +1010,7 @@ final class OnboardingIntroTests: XCTestCase {
             defer { try? FileManager.default.removeItem(at: directory) }
 
             let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+            try Data().write(to: flagURLs.started)
             OnboardingResumeState.save(
                 step: .tutorialRecording,
                 provider: provider,

@@ -128,14 +128,14 @@ final class OnboardingTutorialRecordingHelpTests: XCTestCase {
 
         let access = diagnose(.noCapsLockEvents) { $0.keyboardAccess = .denied }
         XCTAssertEqual(access.reason, .keyboardAccessMissing)
-        XCTAssertEqual(access.fix, .openSettings(.accessibility))
+        XCTAssertEqual(access.fix, .openSettings(.inputMonitoring))
 
         let noMic = diagnose(.pressedWithoutRecording) { $0.microphoneCaptureReady = false }
         XCTAssertEqual(noMic.reason, .microphoneUnavailable)
         XCTAssertEqual(noMic.fix, .openSettings(.sound))
 
         XCTAssertEqual(diagnose(.pressedWithoutRecording) { _ in }.reason, .recordingDidNotStart)
-        XCTAssertEqual(diagnose(.noCapsLockEvents) { _ in }.reason, .capsLockNotSeen)
+        XCTAssertEqual(diagnose(.noCapsLockEvents) { _ in }.reason, .keyMonitoringUnverified)
         XCTAssertEqual(Help.Fix.openSettings(.keyboard).title, "Open Keyboard Settings")
         XCTAssertEqual(
             Help.SettingsPane.microphone.url.absoluteString,
@@ -350,7 +350,7 @@ final class OnboardingTutorialRecordingHelpTests: XCTestCase {
         controller.showIfNeeded()
         clock.advance(OnboardingTutorialRecordingWatch.silenceGrace)
         controller.checkTutorialRecording()
-        XCTAssertEqual(intro.presentations.last?.recordingHelp?.reason, .capsLockNotSeen)
+        XCTAssertEqual(intro.presentations.last?.recordingHelp?.reason, .keyMonitoringUnverified)
 
         controller.noteTutorialRecordingStarted()
         XCTAssertEqual(intro.presentations.last?.screen, .recordingActive)
@@ -399,7 +399,9 @@ final class OnboardingTutorialRecordingHelpTests: XCTestCase {
 
     private typealias Probe = OnboardingTutorialRecordingProbe
 
+    /// An interrupted onboarding: the started flag plus the saved step.
     private func resume(at step: OnboardingStepID) {
+        try? Data().write(to: directory.appendingPathComponent(".onboarding-started"))
         OnboardingResumeState.save(step: step, provider: .claude, parentPermissionsReviewed: true)
     }
 

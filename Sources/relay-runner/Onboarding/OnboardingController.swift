@@ -113,6 +113,7 @@ final class OnboardingController {
     private let tutorialRecordingCheckInterval: TimeInterval
     private let now: () -> Date
     private let diagnosticLog: (String) -> Void
+    private let copyToPasteboard: (String) -> Void
     private var tutorialRecordingWatch: OnboardingTutorialRecordingWatch?
     private var tutorialRecordingHelp: OnboardingTutorialRecordingHelp?
     private var tutorialRecordingTimer: Timer?
@@ -153,6 +154,12 @@ final class OnboardingController {
     private struct FreshPermissionState {
         var activePermission: PermissionKind?
         var requestInFlight = false
+        /// Attempts that came back without a grant. The next prompt for the
+        /// same permission explains a managed Mac and offers to continue.
+        var endedWithoutGrant: Set<PermissionKind> = []
+        /// Optional permissions the user chose to continue without.
+        var skipped: Set<PermissionKind> = []
+        var itRequestCopied = false
     }
 
     private struct AgentSetupState {
@@ -225,7 +232,11 @@ final class OnboardingController {
          openTutorialSettings: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) },
          tutorialRecordingCheckInterval: TimeInterval = 0.5,
          now: @escaping () -> Date = Date.init,
-         diagnosticLog: @escaping (String) -> Void = { NSLog("%@", $0) }) {
+         diagnosticLog: @escaping (String) -> Void = RelayUnifiedLog.sink(category: "Onboarding"),
+         copyToPasteboard: @escaping (String) -> Void = { text in
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+         }) {
         self.presentation = presentation
         self.flagURLs = flagURLs
         self.permissions = permissions
@@ -268,6 +279,7 @@ final class OnboardingController {
         self.tutorialRecordingCheckInterval = tutorialRecordingCheckInterval
         self.now = now
         self.diagnosticLog = diagnosticLog
+        self.copyToPasteboard = copyToPasteboard
     }
 
     deinit {
@@ -452,6 +464,12 @@ final class OnboardingController {
 
         setFirstRunExperienceActive(true)
         let wasInterruptedBeforeStart = wasInterrupted
+        if !wasInterruptedBeforeStart {
+            // A resume step without the started flag belongs to an earlier
+            // install whose app files were reset (RR-517). Honouring it skipped
+            // voice setup and opened the tutorial at "Turn Caps Lock on".
+            OnboardingResumeState.clear()
+        }
         // Mark before the cinematic begins so a termination during the
         // transient overlay resumes through the focused recovery flow.
         try? Data().write(to: flagURLs.started)
@@ -498,17 +516,35 @@ final class OnboardingController {
             completeFreshPermissionSequence()
             return
         }
-        freshPermissionState = FreshPermissionState(activePermission: permission)
-        let prompt = OnboardingPermissionTreatment.presentation(
+        var state = freshPermissionState ?? FreshPermissionState()
+        if state.activePermission != permission { state.itRequestCopied = false }
+        state.activePermission = permission
+        state.requestInFlight = false
+        freshPermissionState = state
+        var prompt = OnboardingPermissionTreatment.presentation(
             permission: permission,
             status: permissionStatus(permission),
             explanation: OnboardingPermissionTreatment.explanation(for: permission),
             likelyRestricted: permissionLikelyRestricted(permission)
         )
+        var managedActions: OnboardingPermissionManagedActions?
+        if OnboardingPermissionTreatment.canContinueWithout(permission),
+           state.endedWithoutGrant.contains(permission) {
+            prompt.managedNotice = OnboardingPermissionTreatment.managedNotice(
+                for: permission,
+                itRequestCopied: state.itRequestCopied
+            )
+            prompt.continueTitle = OnboardingPermissionTreatment.continueWithoutTitle(for: permission)
+            managedActions = OnboardingPermissionManagedActions(
+                copyITRequest: { [weak self] in self?.copyManagedPermissionRequest(permission) },
+                continueWithout: { [weak self] in self?.continueWithoutFreshPermission(permission) }
+            )
+        }
         intro.presentPermissionPrompt(
             prompt,
             action: { [weak self] in self?.startFreshPermissionSetup(permission) },
-            skipAction: { [weak self] in self?.skipFreshPermissions() }
+            skipAction: { [weak self] in self?.skipFreshPermissions() },
+            managedActions: managedActions
         )
     }
 
@@ -522,6 +558,22 @@ final class OnboardingController {
         cancelExternalHandoff()
         OnboardingResumeState.markPermissionsSkipped()
         completeFreshPermissionSequence()
+    }
+
+    private func copyManagedPermissionRequest(_ permission: PermissionKind) {
+        guard freshPermissionState?.activePermission == permission else { return }
+        copyToPasteboard(ManagedPermissionRequest.text())
+        freshPermissionState?.itRequestCopied = true
+        diagnosticLog("[OnboardingPermissions] copied IT request permission=\(permission.rawValue)")
+        showNextFreshPermission()
+    }
+
+    private func continueWithoutFreshPermission(_ permission: PermissionKind) {
+        guard freshPermissionState?.activePermission == permission,
+              OnboardingPermissionTreatment.canContinueWithout(permission) else { return }
+        freshPermissionState?.skipped.insert(permission)
+        diagnosticLog("[OnboardingPermissions] continued without permission=\(permission.rawValue)")
+        showNextFreshPermission()
     }
 
     private func startFreshPermissionSetup(_ permission: PermissionKind) {
@@ -542,7 +594,10 @@ final class OnboardingController {
     }
 
     private func firstMissingFreshPermission() -> PermissionKind? {
-        PermissionKind.guidedSetupOrder.first { permissionStatus($0) != .granted }
+        let skipped = freshPermissionState?.skipped ?? []
+        return PermissionKind.guidedSetupOrder.first {
+            permissionStatus($0) != .granted && !skipped.contains($0)
+        }
     }
 
     private func freshPermissionGranted(_ permission: PermissionKind) {
@@ -556,6 +611,11 @@ final class OnboardingController {
         guard event.source == .onboarding,
               freshPermissionState?.activePermission == event.permission else { return }
         freshPermissionState?.requestInFlight = false
+        freshPermissionState?.endedWithoutGrant.insert(event.permission)
+        diagnosticLog(
+            "[OnboardingPermissions] setup ended without grant permission=\(event.permission.rawValue) " +
+            "status=\(permissionStatus(event.permission))"
+        )
         endExternalHandoff { [weak self] in self?.showNextFreshPermission() }
     }
 
@@ -1240,6 +1300,14 @@ final class OnboardingController {
             tutorialState?.responseText = nil
         }
 
+        if safeScreen == .recording, !tutorialSpeechReadiness().isReady {
+            // A relaunch resumes here while the model is still loading, and
+            // Caps Lock does nothing until it has. Wait like the intro does.
+            diagnosticLog("[OnboardingTutorial] resumed recording step waits for speech")
+            tutorialIntroSpeechWaitLogged = false
+            advanceTutorialIntroWhenSpeechReady(provider: provider)
+            return
+        }
         presentTutorial(screen: safeScreen)
         if safeScreen == .intro {
             scheduleTutorialIntroAdvance(provider: provider)
