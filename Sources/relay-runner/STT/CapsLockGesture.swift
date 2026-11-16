@@ -21,7 +21,9 @@ final class CapsLockGesture {
     typealias MonitorRemover = (Any) -> Void
     typealias DiagnosticLogger = (String) -> Void
     /// Reads Caps Lock's on/off state. The recording toggle polls this, so it
-    /// works without Accessibility and without any key event monitor.
+    /// works without Accessibility and without any key event monitor. Caps
+    /// Lock key events the monitors receive also count (RR-517), so a read
+    /// that misses the key cannot leave the toggle dead.
     typealias CapsLockStateReader = () -> Bool
 
     enum Event: Equatable {
@@ -62,6 +64,10 @@ final class CapsLockGesture {
     /// Caps Lock `flagsChanged` events seen by the monitors. Counted, never
     /// logged per event, so a silent Caps Lock can be told from a missing one.
     private(set) var capsLockKeyEventCount = 0
+    /// Caps Lock's state as carried by the last `flagsChanged` event. Every
+    /// modifier event carries it, so a missed Caps Lock event is corrected by
+    /// the next modifier press.
+    private var eventCapsLockOn = false
     static let capsLockKeyCode: UInt16 = 57
 
     // Menu-driven activation override (nil = use hardware state)
@@ -143,15 +149,25 @@ final class CapsLockGesture {
 
     private var isKeyOn: Bool {
         if let manual = manualKeyDown { return manual }
-        return useCapsLock ? capsLockState() : customKeyDown
+        return useCapsLock ? capsLockOn : customKeyDown
     }
+
+    /// Caps Lock is on by the state read or by the last key event.
+    private var capsLockOn: Bool {
+        capsLockState() || eventCapsLockOn
+    }
+
+    /// The global key monitor is installed, so keys pressed while another
+    /// app is in front reach the gesture. False until macOS lets it attach;
+    /// the gesture retries every second.
+    var hasGlobalKeyMonitor: Bool { hasAllGlobalMonitors }
 
     /// Toggle recording from the menu button.
     func toggleActivation() {
         if manualKeyDown != nil {
             manualKeyDown = nil
         } else {
-            let current = useCapsLock ? capsLockState() : customKeyDown
+            let current = useCapsLock ? capsLockOn : customKeyDown
             manualKeyDown = !current
         }
     }
@@ -275,6 +291,9 @@ final class CapsLockGesture {
         guard !stoppingMonitors else { return }
         switch event.type {
         case .flagsChanged:
+            if useCapsLock {
+                eventCapsLockOn = event.modifierFlags.contains(.capsLock)
+            }
             if event.keyCode == Self.capsLockKeyCode {
                 capsLockKeyEventCount += 1
                 if capsLockKeyEventCount == 1 {
@@ -388,6 +407,9 @@ final class CapsLockGesture {
             if loggedGlobalMonitorFailure {
                 diagnosticLogger("[CapsLockGesture] global monitor recovered")
                 loggedGlobalMonitorFailure = false
+                // A monitor that attaches late starts from a clean slate, so
+                // taps half-seen before it can't complete a double tap.
+                clearModifierTaps()
             }
             return
         }
@@ -404,6 +426,15 @@ final class CapsLockGesture {
         }
         globalMonitorRetryWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: workItem)
+    }
+
+    private func clearModifierTaps() {
+        optionTaps.removeAll()
+        controlTaps.removeAll()
+        pendingPlay = false
+        pendingCancel = false
+        pendingBoardToggle = false
+        boardHotkeyGesture = BoardHotkeyGesture()
     }
 
     private func handleKeyEvent(_ event: NSEvent) {
@@ -447,6 +478,7 @@ final class CapsLockGesture {
         keyMonitors.removeAll()
         modifierGlobalMonitor = nil
         customKeyGlobalMonitor = nil
+        eventCapsLockOn = false
         diagnosticLogger("[CapsLockGesture] monitors stopped count=\(monitorCount)")
     }
 

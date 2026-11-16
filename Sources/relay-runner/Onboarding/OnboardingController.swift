@@ -107,6 +107,9 @@ final class OnboardingController {
     private let tutorialSpeechReadiness: () -> SetupRuntimeReadiness
     /// Nil turns the recording step's Caps Lock diagnostics off.
     private let tutorialRecordingProbe: (() -> OnboardingTutorialRecordingProbe)?
+    /// The Caps Lock gesture's global key monitor is installed. The recording
+    /// step waits visibly until it is, then carries on by itself (RR-517).
+    private let tutorialKeyMonitorAttached: () -> Bool
     private let toggleTutorialRecording: () -> Void
     private let retryTutorialSpeechSetup: () -> Void
     private let openTutorialSettings: (URL) -> Void
@@ -117,6 +120,8 @@ final class OnboardingController {
     private var tutorialRecordingWatch: OnboardingTutorialRecordingWatch?
     private var tutorialRecordingHelp: OnboardingTutorialRecordingHelp?
     private var tutorialRecordingTimer: Timer?
+    private var tutorialKeyMonitorTimer: Timer?
+    private var tutorialKeyMonitorPending = false
     private var tutorialIntroSpeechWaitLogged = false
     private var freshPermissionState: FreshPermissionState?
     private var freshWorkspaceSelectionInFlight = false
@@ -227,6 +232,7 @@ final class OnboardingController {
          openWorkspaceAfterCompletion: @escaping () -> Void = {},
          tutorialSpeechReadiness: @escaping () -> SetupRuntimeReadiness = { .ready },
          tutorialRecordingProbe: (() -> OnboardingTutorialRecordingProbe)? = nil,
+         tutorialKeyMonitorAttached: @escaping () -> Bool = { true },
          toggleTutorialRecording: @escaping () -> Void = {},
          retryTutorialSpeechSetup: @escaping () -> Void = {},
          openTutorialSettings: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) },
@@ -273,6 +279,7 @@ final class OnboardingController {
         self.openWorkspaceAfterCompletion = openWorkspaceAfterCompletion
         self.tutorialSpeechReadiness = tutorialSpeechReadiness
         self.tutorialRecordingProbe = tutorialRecordingProbe
+        self.tutorialKeyMonitorAttached = tutorialKeyMonitorAttached
         self.toggleTutorialRecording = toggleTutorialRecording
         self.retryTutorialSpeechSetup = retryTutorialSpeechSetup
         self.openTutorialSettings = openTutorialSettings
@@ -1327,7 +1334,14 @@ final class OnboardingController {
             parentPermissionsReviewed: true
         )
         diagnosticLog("[OnboardingTutorial] screen=\(screen.rawValue)")
-        let help = screen == .recording ? tutorialRecordingHelp : nil
+        if screen == .recording, tutorialRecordingWatch == nil, tutorialKeyMonitorTimer == nil,
+           !tutorialKeyMonitorAttached() {
+            tutorialKeyMonitorPending = true
+            diagnosticLog("[OnboardingTutorial] recording step waits for the key monitor")
+        }
+        let help = screen == .recording
+            ? (tutorialKeyMonitorPending ? OnboardingTutorialRecordingHelp.keyMonitorWaiting : tutorialRecordingHelp)
+            : nil
         intro.presentTutorial(
             OnboardingTutorialPresentation(
                 screen: screen,
@@ -1347,8 +1361,36 @@ final class OnboardingController {
             skipAction: { [weak self] in self?.skipSessionControlsTutorial() }
         )
         if screen == .recording {
-            startTutorialRecordingWatchIfNeeded()
+            if tutorialKeyMonitorPending {
+                startTutorialKeyMonitorWaitIfNeeded()
+            } else {
+                startTutorialRecordingWatchIfNeeded()
+            }
         }
+    }
+
+    private func startTutorialKeyMonitorWaitIfNeeded() {
+        guard tutorialKeyMonitorTimer == nil else { return }
+        let timer = Timer(timeInterval: tutorialRecordingCheckInterval, repeats: true) { [weak self] _ in
+            self?.checkTutorialKeyMonitor()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        tutorialKeyMonitorTimer = timer
+    }
+
+    /// One tick of the recording step's wait for the key monitor; the timer
+    /// drives it. Once the monitor attaches, the normal step shows by itself.
+    func checkTutorialKeyMonitor() {
+        guard tutorialKeyMonitorPending,
+              OnboardingResumeState.load()?.step == .tutorialRecording,
+              tutorialKeyMonitorAttached() else { return }
+        tutorialKeyMonitorPending = false
+        tutorialKeyMonitorTimer?.invalidate()
+        tutorialKeyMonitorTimer = nil
+        diagnosticLog("[OnboardingTutorial] key monitor attached; recording step continues")
+        // Away in System Settings, the step shows again when the person returns.
+        guard externalHandoff == nil else { return }
+        presentTutorial(screen: .recording)
     }
 
     private func recordingActions(
@@ -1414,6 +1456,9 @@ final class OnboardingController {
     }
 
     private func stopTutorialRecordingWatch() {
+        tutorialKeyMonitorTimer?.invalidate()
+        tutorialKeyMonitorTimer = nil
+        tutorialKeyMonitorPending = false
         tutorialRecordingTimer?.invalidate()
         tutorialRecordingTimer = nil
         tutorialRecordingWatch = nil

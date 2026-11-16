@@ -23,11 +23,14 @@ enum PermissionStatus: Equatable {
 /// Privacy permissions Relay Runner can use. All are optional — the app
 /// degrades gracefully when any of them is denied:
 /// - Microphone: required to capture speech.
-/// - Accessibility: required by Relay Runner's app-hosted Relay Actions tool
-///   host to click, type, press keys, scroll, and automate UI.
-/// - Input Monitoring: retained as a compatibility signal for existing
-///   grants. Accessibility already covers Relay Runner's global hotkeys, so
-///   this permission is not requested during setup.
+/// - Input Monitoring: the key monitors behind Caps Lock and the global
+///   hotkeys (double-tap Shift, Option and Control). Guided setup asks for
+///   it on every install, before Accessibility, so key monitoring never
+///   hinges on Accessibility, which a managed Mac may not let the person
+///   grant or even list (RR-517).
+/// - Accessibility: required only by Relay Runner's app-hosted Relay Actions
+///   tool host to click, type, press keys, scroll, and automate UI. Voice,
+///   Caps Lock and the hotkeys never depend on it.
 /// - Screen Recording: required by Relay Runner's app-hosted Relay Vision
 ///   screenshot tool. Without it, the screenshot tool returns a clear error
 ///   string but the rest of the app keeps working.
@@ -55,6 +58,7 @@ enum PermissionKind: String, CaseIterable, Identifiable {
 
     static let guidedSetupOrder: [PermissionKind] = [
         .microphone,
+        .inputMonitoring,
         .accessibility,
         .screenRecording,
     ]
@@ -530,6 +534,16 @@ private extension PermissionStatus {
 }
 
 extension PermissionKind {
+    /// The permission Caps Lock and the global hotkeys are gated on. Not
+    /// Accessibility: that one is only for computer control (RR-517).
+    static let keyMonitoring: PermissionKind = .inputMonitoring
+
+    /// Whether Caps Lock and the global hotkeys have their grant, given each
+    /// permission's status. Only Input Monitoring counts.
+    static func keyMonitoringStatus(_ status: (PermissionKind) -> PermissionStatus) -> PermissionStatus {
+        status(keyMonitoring)
+    }
+
     /// The Privacy & Security row's name. macOS 27 renamed the Accessibility
     /// row (kTCCServiceAccessibility) "Device Control and Data Access".
     func settingsPaneName(macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion) -> String {

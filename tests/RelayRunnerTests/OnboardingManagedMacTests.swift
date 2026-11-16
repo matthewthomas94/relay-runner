@@ -377,6 +377,248 @@ final class OnboardingManagedMacTests: XCTestCase {
         XCTAssertEqual(RelayUnifiedLog.subsystem, "com.relay-runner")
     }
 
+    // MARK: - The onboarding Caps Lock deadlock
+
+    func testCapsLockKeyEventAdvancesTutorialResumedAfterRelocation() throws {
+        // Onboarding incomplete and resumed at the recording step after the
+        // DMG-to-/Applications relaunch.
+        try Data().write(to: flagURLs.started)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+        OnboardingResumeState.save(step: .tutorialRecording, provider: .claude, parentPermissionsReviewed: true)
+
+        // The Caps Lock state read never sees the key; only the key event arrives.
+        let host = SpeechHost(capsLockReaderWorks: false, engines: { self.engines.append($0) })
+        let intro = PresenterSpy()
+        let controller = makeController(
+            intro: intro,
+            prepareTutorialSpeech: { host.prepare() },
+            speechReadiness: { host.readiness }
+        )
+        controller.showIfNeeded()
+        let engine = try XCTUnwrap(host.engine)
+        wait(until: { intro.tutorialScreens.last == .recording })
+        wait(until: { host.logs.contains { $0.contains("Activation key loop started") } })
+        XCTAssertNil(intro.tutorialHelp.last ?? nil, "the monitor is attached, so no waiting state")
+
+        // Caps Lock on, delivered to the running gesture's monitor.
+        _ = try XCTUnwrap(host.localHandler)(capsLockEvent(on: true))
+
+        // AppState's poll timer forwards a recording start to the tutorial.
+        var observedStarts = 0
+        wait(until: {
+            if engine.recordingStartedSerial > observedStarts {
+                observedStarts = engine.recordingStartedSerial
+                controller.noteTutorialRecordingStarted()
+            }
+            return intro.tutorialScreens.last == .recordingActive
+        })
+        XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialRecordingActive)
+        XCTAssertEqual(engine.capsLockKeyEventCount, 1)
+    }
+
+    func testCapsLockKeyEventTurnsRecordingOnAndOffWithoutAStateRead() throws {
+        var local: ((NSEvent) -> NSEvent?)?
+        let gesture = CapsLockGesture(
+            globalMonitorInstaller: { _, _ in nil },
+            localMonitorInstaller: { _, handler in local = handler; return NSObject() },
+            monitorRemover: { _ in },
+            diagnosticLogger: { _ in },
+            capsLockState: { false }
+        )
+        defer { gesture.stopMonitoring() }
+        let handler = try XCTUnwrap(local)
+
+        XCTAssertNil(gesture.poll(currentSegment: ""))
+        _ = handler(capsLockEvent(on: true))
+        XCTAssertEqual(gesture.poll(currentSegment: ""), .startRecording)
+        // Any later modifier event carries Caps Lock's state too.
+        _ = handler(modifierEvent(flags: [.capsLock, .shift], keyCode: 56))
+        XCTAssertNil(gesture.poll(currentSegment: ""))
+        _ = handler(capsLockEvent(on: false))
+        XCTAssertNil(gesture.poll(currentSegment: ""))
+        XCTAssertFalse(gesture.isActivationHeld)
+    }
+
+    // MARK: - A key monitor that attaches late
+
+    func testLateKeyMonitorShowsWaitingStateThenAdvancesWithoutWorkspaceToggle() throws {
+        try Data().write(to: flagURLs.started)
+        OnboardingResumeState.save(step: .tutorialRecording, provider: .claude, parentPermissionsReviewed: true)
+        // The global monitor install fails three times, then succeeds.
+        let host = SpeechHost(globalMonitorFailures: 3, engines: { self.engines.append($0) })
+        var opened: [URL] = []
+        var workspaceOpens = 0
+        let intro = PresenterSpy()
+        let controller = makeController(
+            intro: intro,
+            prepareTutorialSpeech: { host.prepare() },
+            speechReadiness: { host.readiness },
+            openSettings: { opened.append($0) },
+            keyMonitorAttached: { host.engine?.isGlobalKeyMonitorAttached ?? false },
+            openWorkspace: { workspaceOpens += 1 }
+        )
+
+        controller.showIfNeeded()
+        let engine = try XCTUnwrap(host.engine)
+        let gesture = try XCTUnwrap(host.gesture)
+        wait(until: { intro.tutorialScreens.last == .recording })
+        XCTAssertFalse(engine.isGlobalKeyMonitorAttached)
+
+        // Waiting state: the message, Open Settings and the click fallback.
+        let waiting = try XCTUnwrap(intro.tutorialHelp.last ?? nil)
+        XCTAssertEqual(waiting, OnboardingTutorialRecordingHelp.keyMonitorWaiting)
+        XCTAssertEqual(waiting.message, "Waiting for macOS to apply the permission. This can take a minute.")
+        let actions = try XCTUnwrap(intro.recordingActions)
+        actions.fix?()
+        XCTAssertEqual(opened.map(\.absoluteString), [PermissionKind.inputMonitoring.settingsURL])
+        XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialRecording)
+        // Back from System Settings, the step is still waiting.
+        XCTAssertTrue(controller.resumeAgentLoginIfWaiting())
+        XCTAssertEqual(intro.tutorialHelp.last ?? nil, OnboardingTutorialRecordingHelp.keyMonitorWaiting)
+
+        // Half a double-tap Shift reaches the window before the monitor attaches.
+        let local = try XCTUnwrap(host.localHandler)
+        _ = local(modifierEvent(flags: [.shift], keyCode: 56))
+        _ = local(modifierEvent(flags: [], keyCode: 56))
+
+        // Retries two and three still fail, so the step keeps waiting.
+        gesture.retryMissingGlobalMonitors()
+        gesture.retryMissingGlobalMonitors()
+        controller.checkTutorialKeyMonitor()
+        XCTAssertFalse(engine.isGlobalKeyMonitorAttached)
+        XCTAssertEqual(intro.tutorialHelp.last ?? nil, OnboardingTutorialRecordingHelp.keyMonitorWaiting)
+
+        // The fourth install succeeds: the step carries on by itself.
+        let screensBefore = intro.tutorialScreens.count
+        gesture.retryMissingGlobalMonitors()
+        XCTAssertTrue(engine.isGlobalKeyMonitorAttached)
+        XCTAssertEqual(host.globalInstallAttempts, 4)
+        wait(until: { intro.tutorialScreens.count > screensBefore })
+        XCTAssertEqual(intro.tutorialScreens.last, .recording)
+        XCTAssertNil(intro.tutorialHelp.last ?? nil)
+        XCTAssertTrue(intro.recordingActions != nil, "the click fallback stays")
+
+        // The other half of that Shift tap, now through the global monitor,
+        // must not complete a double tap and open the Workspace.
+        let global = try XCTUnwrap(host.globalHandler)
+        global(modifierEvent(flags: [.shift], keyCode: 56))
+        global(modifierEvent(flags: [], keyCode: 56))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        XCTAssertFalse(engine.boardToggleRequested)
+        XCTAssertEqual(workspaceOpens, 0)
+        XCTAssertEqual(OnboardingResumeState.load()?.step, .tutorialRecording)
+    }
+
+    // MARK: - Input Monitoring
+
+    func testGuidedSetupRequestsInputMonitoringBeforeAccessibilityOnEveryInstall() {
+        XCTAssertEqual(PermissionKind.guidedSetupOrder,
+                       [.microphone, .inputMonitoring, .accessibility, .screenRecording])
+        XCTAssertEqual(PermissionKind.keyMonitoring, .inputMonitoring)
+
+        // Caps Lock and the hotkeys are gated on Input Monitoring, not Accessibility.
+        let onlyAccessibility: [PermissionKind: PermissionStatus] = [.accessibility: .granted, .inputMonitoring: .denied]
+        let onlyInputMonitoring: [PermissionKind: PermissionStatus] = [.accessibility: .denied, .inputMonitoring: .granted]
+        XCTAssertEqual(PermissionKind.keyMonitoringStatus { onlyAccessibility[$0] ?? .denied }, .denied)
+        XCTAssertEqual(PermissionKind.keyMonitoringStatus { onlyInputMonitoring[$0] ?? .denied }, .granted)
+
+        // A fresh install with nothing granted asks for Input Monitoring second.
+        var statuses: [PermissionKind: PermissionStatus] = [.microphone: .granted]
+        var requests: [PermissionKind] = []
+        let intro = PresenterSpy()
+        let controller = makeController(
+            intro: intro,
+            permissionStatus: { statuses[$0] ?? .notDetermined },
+            requestPermissionSetup: { permission, _, _ in requests.append(permission) }
+        )
+        controller.showIfNeeded()
+        XCTAssertEqual(intro.permissionPrompts.map(\.permission), [.inputMonitoring])
+        intro.permissionAction?()
+        XCTAssertEqual(requests, [.inputMonitoring])
+        statuses[.inputMonitoring] = .granted
+        NotificationCenter.default.post(name: .relayPermissionSetupGrantReady,
+                                        object: PermissionKind.inputMonitoring.rawValue)
+        wait(until: { intro.permissionPrompts.count == 2 })
+        XCTAssertEqual(intro.permissionPrompts.last?.permission, .accessibility)
+    }
+
+    func testManagedAccessibilityFallsBackToInputMonitoringAndCapsLockWorksWithItAlone() throws {
+        // A managed Mac hides Accessibility; Input Monitoring is still offered.
+        var statuses: [PermissionKind: PermissionStatus] = [
+            .microphone: .granted, .inputMonitoring: .notDetermined,
+            .accessibility: .denied, .screenRecording: .granted,
+        ]
+        var requests: [PermissionKind] = []
+        let intro = PresenterSpy()
+        let controller = makeController(
+            intro: intro,
+            permissionStatus: { statuses[$0] ?? .denied },
+            requestPermissionSetup: { permission, _, _ in requests.append(permission) }
+        )
+        controller.showIfNeeded()
+        XCTAssertEqual(intro.permissionPrompts.map(\.permission), [.inputMonitoring])
+        intro.permissionAction?()
+        statuses[.inputMonitoring] = .granted
+        NotificationCenter.default.post(name: .relayPermissionSetupGrantReady,
+                                        object: PermissionKind.inputMonitoring.rawValue)
+        wait(until: { intro.permissionPrompts.last?.permission == .accessibility })
+
+        intro.permissionAction?()
+        NotificationCenter.default.post(
+            name: .relayPermissionSetupEndedWithoutGrant,
+            object: PermissionSetupLifecycleEvent(permission: .accessibility, source: .onboarding)
+        )
+        wait(until: { intro.permissionPrompts.last?.managedNotice != nil })
+        XCTAssertTrue(intro.permissionPrompts.last?.managedNotice?.contains("Ask IT") == true)
+        XCTAssertNotNil(intro.managedActions?.copyITRequest)
+        intro.managedActions?.continueWithout()
+        XCTAssertEqual(intro.agentChoicePrompts, 1, "onboarding carries on without Accessibility")
+        XCTAssertEqual(requests, [.inputMonitoring, .accessibility])
+
+        // The tutorial treats key monitoring as granted on Input Monitoring alone.
+        var probe = OnboardingTutorialRecordingProbe()
+        probe.keyboardAccess = PermissionKind.keyMonitoringStatus { statuses[$0] ?? .denied }
+        XCTAssertEqual(probe.keyboardAccess, .granted)
+        XCTAssertNotEqual(OnboardingTutorialRecordingHelp.diagnose(.noCapsLockEvents, probe: probe).reason,
+                          .keyboardAccessMissing)
+
+        // With Input Monitoring the global monitor sees Caps Lock in other apps,
+        // and that alone starts recording.
+        var global: ((NSEvent) -> Void)?
+        let gesture = CapsLockGesture(
+            globalMonitorInstaller: { _, handler in global = handler; return NSObject() },
+            localMonitorInstaller: { _, _ in nil },
+            monitorRemover: { _ in },
+            diagnosticLogger: { _ in },
+            capsLockState: { false }
+        )
+        defer { gesture.stopMonitoring() }
+        XCTAssertTrue(gesture.hasGlobalKeyMonitor)
+        try XCTUnwrap(global)(capsLockEvent(on: true))
+        XCTAssertEqual(gesture.poll(currentSegment: ""), .startRecording)
+    }
+
+    func testSetupCopyNoLongerSaysAccessibilityCoversHotkeys() {
+        let accessibility = OnboardingPermissionTreatment.explanation(for: .accessibility)
+        XCTAssertTrue(accessibility.contains("Voice, Caps Lock and the hotkeys don't need it"))
+        XCTAssertTrue(OnboardingPermissionTreatment.explanation(for: .inputMonitoring).contains("Caps Lock"))
+        XCTAssertTrue(OnboardingPermissionTreatment.managedNotice(for: .inputMonitoring, itRequestCopied: false)
+            .contains("Caps Lock and the hotkeys need it"))
+        XCTAssertTrue(ManagedPermissionRequest.text().contains("Input Monitoring lets Caps Lock and the hotkeys work"))
+    }
+
+    private func capsLockEvent(on: Bool) -> NSEvent {
+        modifierEvent(flags: on ? [.capsLock] : [], keyCode: CapsLockGesture.capsLockKeyCode)
+    }
+
+    private func modifierEvent(flags: NSEvent.ModifierFlags, keyCode: UInt16) -> NSEvent {
+        NSEvent.keyEvent(
+            with: .flagsChanged, location: .zero, modifierFlags: flags,
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0, context: nil,
+            characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: keyCode
+        )!
+    }
+
     // MARK: - Helpers
 
     private func makeController(
@@ -389,7 +631,9 @@ final class OnboardingManagedMacTests: XCTestCase {
         clock: Clock = Clock(),
         openSettings: @escaping (URL) -> Void = { _ in },
         log: @escaping (String) -> Void = { _ in },
-        copyToPasteboard: @escaping (String) -> Void = { _ in }
+        copyToPasteboard: @escaping (String) -> Void = { _ in },
+        keyMonitorAttached: @escaping () -> Bool = { true },
+        openWorkspace: @escaping () -> Void = {}
     ) -> OnboardingController {
         OnboardingController(
             permissions: PermissionsManager(),
@@ -407,8 +651,10 @@ final class OnboardingManagedMacTests: XCTestCase {
             reduceMotion: { true },
             prepareTutorialSpeech: prepareTutorialSpeech,
             scheduleWorkspaceOpenAfterTutorialDismissal: { $0() },
+            openWorkspaceAfterCompletion: openWorkspace,
             tutorialSpeechReadiness: speechReadiness,
             tutorialRecordingProbe: probe,
+            tutorialKeyMonitorAttached: keyMonitorAttached,
             openTutorialSettings: openSettings,
             tutorialRecordingCheckInterval: probe == nil ? 0.01 : 3_600,
             now: { clock.now },
@@ -484,14 +730,35 @@ private final class SpeechHost: @unchecked Sendable {
     private var _logs: [String] = []
     private var _capsLockOn = false
     private(set) var engine: STTEngine?
+    private(set) var gesture: CapsLockGesture?
     private(set) var prepareCount = 0
     private(set) var monitorMasks: [NSEvent.EventTypeMask] = []
+    /// The handler macOS would call for events sent to Relay Runner's windows.
+    private(set) var localHandler: ((NSEvent) -> NSEvent?)?
+    /// The handler macOS would call for events sent to other apps.
+    private(set) var globalHandler: ((NSEvent) -> Void)?
+    private(set) var globalInstallAttempts = 0
     private var _started = false
     private let engines: (STTEngine) -> Void
     private let backend = Backend()
+    /// False stands in for a Caps Lock state read that never sees the key.
+    private let capsLockReaderWorks: Bool
+    /// Global monitor installs that fail before one succeeds; nil never succeeds.
+    private let globalMonitorFailures: Int?
 
-    init(engines: @escaping (STTEngine) -> Void) {
+    init(capsLockReaderWorks: Bool = true,
+         globalMonitorFailures: Int? = nil,
+         engines: @escaping (STTEngine) -> Void) {
+        self.capsLockReaderWorks = capsLockReaderWorks
+        self.globalMonitorFailures = globalMonitorFailures
         self.engines = engines
+    }
+
+    private func installGlobal(_ handler: @escaping (NSEvent) -> Void) -> Any? {
+        globalInstallAttempts += 1
+        guard let failures = globalMonitorFailures, globalInstallAttempts > failures else { return nil }
+        globalHandler = handler
+        return NSObject()
     }
 
     var logs: [String] { lock.lock(); defer { lock.unlock() }; return _logs }
@@ -524,14 +791,23 @@ private final class SpeechHost: @unchecked Sendable {
                                           sampleHandler: sampleHandler, isRecording: isRecording)
                 },
                 makeGesture: { [weak self] key in
-                    CapsLockGesture(
+                    let gesture = CapsLockGesture(
                         activationKey: key,
-                        globalMonitorInstaller: { _, _ in nil }, // no usable Accessibility grant
-                        localMonitorInstaller: { mask, _ in self?.monitorMasks.append(mask); return NSObject() },
+                        globalMonitorInstaller: { _, handler in self?.installGlobal(handler) },
+                        localMonitorInstaller: { mask, handler in
+                            self?.monitorMasks.append(mask)
+                            self?.localHandler = handler
+                            return NSObject()
+                        },
                         monitorRemover: { _ in },
                         diagnosticLogger: { self?.log($0) },
-                        capsLockState: { self?.capsLockOn ?? false }
+                        capsLockState: { [weak self] in
+                            guard let self, self.capsLockReaderWorks else { return false }
+                            return self.capsLockOn
+                        }
                     )
+                    self?.gesture = gesture
+                    return gesture
                 },
                 prepareVoiceOutput: {},
                 writeVoiceOutput: { _ in true },
@@ -628,6 +904,8 @@ private final class PresenterSpy: OnboardingIntroPresenting {
     func presentAgentLoginPrompt(_ presentation: OnboardingAgentLoginPromptPresentation,
                                  fullyRendered: @escaping () -> Void,
                                  signInAction: @escaping () -> Void) {}
+    func presentAgentLoginTerminal(_ login: any ProviderLoginRunning,
+                                   cancelAction: @escaping () -> Void) {}
     func presentWorkspacePrompt(currentPath: String,
                                 continueAction: @escaping () -> Void,
                                 browseAction: @escaping () -> Void) {}

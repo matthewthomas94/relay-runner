@@ -72,9 +72,10 @@ struct CapsLockKeyboardConfiguration: Equatable {
 struct OnboardingTutorialRecordingProbe: Equatable {
     var speech: SetupRuntimeReadiness = .ready
     var microphone: PermissionStatus = .granted
-    /// Accessibility or Input Monitoring preflight, whichever lets key
-    /// monitors run. A preflight answer only: RR-517 saw "allowed" with no
-    /// visible grant, so the watch still requires Caps Lock activity.
+    /// Input Monitoring preflight, the grant the key monitors run on
+    /// (RR-517; Accessibility doesn't count). A preflight answer only: RR-517
+    /// saw "allowed" with no visible grant, so the watch still requires Caps
+    /// Lock activity.
     var keyboardAccess: PermissionStatus = .granted
     var microphoneCaptureReady = true
     var capsLockOn = false
@@ -103,6 +104,8 @@ struct OnboardingTutorialRecordingWatch {
     enum Symptom: String, Equatable {
         case noCapsLockEvents
         case pressedWithoutRecording
+        /// The global key monitor hasn't attached yet (RR-517).
+        case keyMonitorNotAttached
     }
 
     static let pressGrace: TimeInterval = 3
@@ -146,6 +149,8 @@ struct OnboardingTutorialRecordingHelp: Equatable {
         /// Preflight says key monitoring is allowed, yet no Caps Lock activity
         /// arrived, so it isn't treated as working.
         case keyMonitoringUnverified
+        /// macOS hasn't let the global key monitor attach yet (RR-517).
+        case keyMonitorPending
         case recordingDidNotStart
     }
 
@@ -188,6 +193,17 @@ struct OnboardingTutorialRecordingHelp: Equatable {
         }
     }
 
+    static let keyMonitorWaitingMessage =
+        "Waiting for macOS to apply the permission. This can take a minute."
+
+    /// The recording step's waiting state while the key monitor can't attach.
+    static let keyMonitorWaiting = OnboardingTutorialRecordingHelp(
+        symptom: .keyMonitorNotAttached,
+        reason: .keyMonitorPending,
+        message: keyMonitorWaitingMessage,
+        fix: .openSettings(.inputMonitoring)
+    )
+
     static let startRecordingTitle = "Start recording"
     static let stopRecordingTitle = "Stop and send"
 
@@ -201,6 +217,7 @@ struct OnboardingTutorialRecordingHelp: Equatable {
         func help(_ reason: Reason, _ message: String, _ fix: Fix?) -> OnboardingTutorialRecordingHelp {
             OnboardingTutorialRecordingHelp(symptom: symptom, reason: reason, message: message, fix: fix)
         }
+        if symptom == .keyMonitorNotAttached { return keyMonitorWaiting }
         if probe.microphone != .granted {
             return help(.microphoneNotGranted,
                         "Relay Runner can't use the microphone yet.",
@@ -231,6 +248,8 @@ struct OnboardingTutorialRecordingHelp: Equatable {
         // Caps Lock recording reads the key's state directly, so it never needs
         // Accessibility; only a Caps Lock that was never seen points at access.
         switch symptom {
+        case .keyMonitorNotAttached:
+            return keyMonitorWaiting
         case .pressedWithoutRecording:
             if !probe.microphoneCaptureReady {
                 return help(.microphoneUnavailable,

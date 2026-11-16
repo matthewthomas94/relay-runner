@@ -188,6 +188,10 @@ final class STTEngine: @unchecked Sendable {
     /// Caps Lock key events the gesture's monitors have seen (no key contents).
     var capsLockKeyEventCount: Int { gesture.capsLockKeyEventCount }
 
+    /// The gesture's global key monitor is installed (RR-517). Until it is,
+    /// Caps Lock and the hotkeys only reach Relay Runner while it is in front.
+    var isGlobalKeyMonitorAttached: Bool { gesture.hasGlobalKeyMonitor }
+
     /// The microphone stream is open and a press can start recording.
     var isMicrophoneCaptureReady: Bool { isCaptureReady() }
 

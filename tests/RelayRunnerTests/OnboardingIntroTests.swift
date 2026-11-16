@@ -190,7 +190,15 @@ final class OnboardingIntroTests: XCTestCase {
         statuses[.microphone] = .granted
         postGrant(.microphone)
         drainMainQueue()
-        XCTAssertEqual(intro.permissionPrompts.map(\.permission), [.microphone, .accessibility])
+        // RR-517: Input Monitoring comes before Accessibility on every install.
+        XCTAssertEqual(intro.permissionPrompts.map(\.permission), [.microphone, .inputMonitoring])
+
+        intro.performPermissionAction()
+        XCTAssertEqual(Array(events.suffix(2)), ["dismiss", "request:inputMonitoring:onboarding"])
+        statuses[.inputMonitoring] = .granted
+        postGrant(.inputMonitoring)
+        drainMainQueue()
+        XCTAssertEqual(intro.permissionPrompts.map(\.permission), [.microphone, .inputMonitoring, .accessibility])
 
         intro.performPermissionAction()
         XCTAssertEqual(Array(events.suffix(2)), ["dismiss", "request:accessibility:onboarding"])
@@ -199,6 +207,7 @@ final class OnboardingIntroTests: XCTestCase {
         drainMainQueue()
         XCTAssertEqual(intro.permissionPrompts.map(\.permission), [
             .microphone,
+            .inputMonitoring,
             .accessibility,
             .screenRecording,
         ])
@@ -3317,7 +3326,7 @@ final class OnboardingIntroTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let intro = CapturingIntroPresenter()
-        var statuses: [PermissionKind: PermissionStatus] = [.microphone: .granted]
+        var statuses: [PermissionKind: PermissionStatus] = [.microphone: .granted, .inputMonitoring: .granted]
         var events: [String] = []
         intro.onDismiss = { events.append("dismiss") }
         let controller = OnboardingController(
@@ -3403,7 +3412,8 @@ final class OnboardingIntroTests: XCTestCase {
 
         let skippable = intro.events.filter { $0.hasPrefix("permission:") || $0.hasPrefix("tutorial:") }
         XCTAssertEqual(intro.skipOfferedEvents, skippable)
-        XCTAssertEqual(skippable.filter { $0.hasPrefix("permission:") }.count, 3)
+        XCTAssertEqual(skippable.filter { $0.hasPrefix("permission:") }.count,
+                       PermissionKind.guidedSetupOrder.count)
         XCTAssertEqual(
             Set(skippable.filter { $0.hasPrefix("tutorial:") }),
             ["tutorial:intro", "tutorial:recording", "tutorial:recordingActive",

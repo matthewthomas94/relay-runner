@@ -369,6 +369,9 @@ final class AppState {
             tutorialRecordingProbe: { [weak self] in
                 self?.onboardingTutorialRecordingProbe() ?? OnboardingTutorialRecordingProbe()
             },
+            tutorialKeyMonitorAttached: { [weak self] in
+                self?.sttEngine?.isGlobalKeyMonitorAttached ?? false
+            },
             toggleTutorialRecording: { [weak self] in
                 _ = self?.sttEngine?.toggleRecording()
             },
@@ -1115,7 +1118,7 @@ final class AppState {
                     } else {
                         self.restartSTTForRecovery()
                     }
-                } else if kind == .accessibility || kind == .inputMonitoring {
+                } else if kind == PermissionKind.keyMonitoring {
                     self.programBoardOverlay.installGlobalDismissHotkey()
                     self.restartSTTForRecovery()
                 }
@@ -3316,14 +3319,10 @@ final class AppState {
 
     /// What the tutorial's recording step needs to explain a silent Caps Lock.
     private func onboardingTutorialRecordingProbe() -> OnboardingTutorialRecordingProbe {
-        let keyboardAccess: PermissionStatus =
-            permissions.accessibility == .granted || permissions.inputMonitoring == .granted
-                ? .granted
-                : permissions.accessibility
         return OnboardingTutorialRecordingProbe(
             speech: setupRuntimeReadiness,
             microphone: permissions.microphone,
-            keyboardAccess: keyboardAccess,
+            keyboardAccess: PermissionKind.keyMonitoringStatus(permissions.status(for:)),
             microphoneCaptureReady: sttEngine?.isMicrophoneCaptureReady ?? false,
             capsLockOn: CapsLockGesture.isCapsLockOn(),
             capsLockKeyEvents: sttEngine?.capsLockKeyEventCount ?? 0,
@@ -4693,11 +4692,11 @@ final class AppState {
         overlayController = oc
 
         // Workspace overlay — install Esc dismissal once macOS has granted
-        // either global-event permission. Accessibility is the normal setup
-        // path; an existing Input Monitoring grant remains compatible. The
-        // double-tap Shift board trigger is emitted by the STT gesture monitor
-        // in voice mode and by the note gesture monitor while taking notes.
-        if permissions.accessibility == .granted || permissions.inputMonitoring == .granted {
+        // Input Monitoring, the permission every global key monitor is gated
+        // on (RR-517). The double-tap Shift board trigger is emitted by the
+        // STT gesture monitor in voice mode and by the note gesture monitor
+        // while taking notes.
+        if PermissionKind.keyMonitoringStatus(permissions.status(for:)) == .granted {
             programBoardOverlay.installGlobalDismissHotkey()
         }
         programBoardOverlay.setThemeResolver { [weak self] in
