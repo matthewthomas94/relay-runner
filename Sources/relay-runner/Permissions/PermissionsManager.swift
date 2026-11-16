@@ -23,11 +23,15 @@ enum PermissionStatus: Equatable {
 /// Privacy permissions Relay Runner can use. All are optional — the app
 /// degrades gracefully when any of them is denied:
 /// - Microphone: required to capture speech.
-/// - Accessibility: required by Relay Runner's app-hosted Relay Actions tool
-///   host to click, type, press keys, scroll, and automate UI.
-/// - Input Monitoring: retained as a compatibility signal for existing
-///   grants. Accessibility already covers Relay Runner's global hotkeys, so
-///   this permission is not requested during setup.
+/// - Input Monitoring: the key monitors behind Caps Lock and the global
+///   hotkeys (double-tap Shift, Option and Control). Guided setup asks for
+///   it on every install, before Accessibility, so key monitoring never
+///   hinges on Accessibility, which a managed Mac may not let the person
+///   grant or even list (RR-517).
+/// - Accessibility: required by Relay Runner's app-hosted Relay Actions
+///   tool host to click, type, press keys, scroll, and automate UI. Voice,
+///   Caps Lock and the hotkeys don't require it, though an existing
+///   Accessibility-only grant still runs the key monitors.
 /// - Screen Recording: required by Relay Runner's app-hosted Relay Vision
 ///   screenshot tool. Without it, the screenshot tool returns a clear error
 ///   string but the rest of the app keeps working.
@@ -55,6 +59,7 @@ enum PermissionKind: String, CaseIterable, Identifiable {
 
     static let guidedSetupOrder: [PermissionKind] = [
         .microphone,
+        .inputMonitoring,
         .accessibility,
         .screenRecording,
     ]
@@ -530,8 +535,38 @@ private extension PermissionStatus {
 }
 
 extension PermissionKind {
-    /// Deep-link URL for the Privacy & Security subpane.
-    /// Stable across macOS 13 (Ventura) / 14 (Sonoma) / 15 (Sequoia).
+    /// The permission guided setup asks for so Caps Lock and the global
+    /// hotkeys never hinge on Accessibility, which a managed Mac may not let
+    /// the person grant (RR-517).
+    static let keyMonitoring: PermissionKind = .inputMonitoring
+
+    /// Either grant lets global key monitors receive events. Input Monitoring
+    /// is what setup requests now; Accessibility still counts so existing
+    /// installs that only granted it keep their hotkeys after upgrading.
+    static let keyMonitoringGrants: Set<PermissionKind> = [.inputMonitoring, .accessibility]
+
+    /// Whether Caps Lock and the global hotkeys have their grant, given each
+    /// permission's status: granted when Input Monitoring or Accessibility
+    /// is, otherwise Input Monitoring's status, the one setup asks for.
+    static func keyMonitoringStatus(_ status: (PermissionKind) -> PermissionStatus) -> PermissionStatus {
+        if keyMonitoringGrants.contains(where: { status($0) == .granted }) { return .granted }
+        return status(keyMonitoring)
+    }
+
+    /// The Privacy & Security row's name. macOS 27 renamed the Accessibility
+    /// row (kTCCServiceAccessibility) "Device Control and Data Access".
+    func settingsPaneName(macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion) -> String {
+        if self == .accessibility, macOSMajorVersion >= 27 {
+            return "Device Control and Data Access"
+        }
+        return displayName
+    }
+
+    /// Deep-link URL for the Privacy & Security subpane. The legacy
+    /// `com.apple.preference.security` id still routes on macOS 13–27: the
+    /// macOS 27 Privacy extension declares it as its legacy id, allows the
+    /// URL scheme, and still reveals `Privacy_Accessibility` and
+    /// `Privacy_ListenEvent`.
     var settingsURL: String {
         switch self {
         case .microphone:

@@ -72,7 +72,10 @@ struct CapsLockKeyboardConfiguration: Equatable {
 struct OnboardingTutorialRecordingProbe: Equatable {
     var speech: SetupRuntimeReadiness = .ready
     var microphone: PermissionStatus = .granted
-    /// Accessibility or Input Monitoring, whichever lets key monitors run.
+    /// Key-monitoring preflight: Input Monitoring, or Accessibility on an
+    /// existing install (RR-517). A preflight answer only: RR-517
+    /// saw "allowed" with no visible grant, so the watch still requires Caps
+    /// Lock activity.
     var keyboardAccess: PermissionStatus = .granted
     var microphoneCaptureReady = true
     var capsLockOn = false
@@ -101,6 +104,8 @@ struct OnboardingTutorialRecordingWatch {
     enum Symptom: String, Equatable {
         case noCapsLockEvents
         case pressedWithoutRecording
+        /// The global key monitor hasn't attached yet (RR-517).
+        case keyMonitorNotAttached
     }
 
     static let pressGrace: TimeInterval = 3
@@ -141,22 +146,29 @@ struct OnboardingTutorialRecordingHelp: Equatable {
         case capsLockRemapped
         case keyboardAccessMissing
         case microphoneUnavailable
-        case capsLockNotSeen
+        /// Preflight says key monitoring is allowed, yet no Caps Lock activity
+        /// arrived, so it isn't treated as working.
+        case keyMonitoringUnverified
+        /// macOS hasn't let the global key monitor attach yet (RR-517).
+        case keyMonitorPending
         case recordingDidNotStart
     }
 
     enum SettingsPane: String, Equatable {
         case microphone
         case accessibility
+        case inputMonitoring
         case keyboard
         case sound
 
         var url: URL {
             switch self {
             case .microphone:
-                return URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!
+                return URL(string: PermissionKind.microphone.settingsURL)!
             case .accessibility:
-                return URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
+                return URL(string: PermissionKind.accessibility.settingsURL)!
+            case .inputMonitoring:
+                return URL(string: PermissionKind.inputMonitoring.settingsURL)!
             case .keyboard:
                 return URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!
             case .sound:
@@ -174,11 +186,23 @@ struct OnboardingTutorialRecordingHelp: Equatable {
             case .retrySpeechSetup: return "Retry Speech Setup"
             case .openSettings(.microphone): return "Open Microphone Settings"
             case .openSettings(.accessibility): return "Open Accessibility Settings"
+            case .openSettings(.inputMonitoring): return "Open Input Monitoring Settings"
             case .openSettings(.keyboard): return "Open Keyboard Settings"
             case .openSettings(.sound): return "Open Sound Settings"
             }
         }
     }
+
+    static let keyMonitorWaitingMessage =
+        "Waiting for macOS to apply the permission. This can take a minute."
+
+    /// The recording step's waiting state while the key monitor can't attach.
+    static let keyMonitorWaiting = OnboardingTutorialRecordingHelp(
+        symptom: .keyMonitorNotAttached,
+        reason: .keyMonitorPending,
+        message: keyMonitorWaitingMessage,
+        fix: .openSettings(.inputMonitoring)
+    )
 
     static let startRecordingTitle = "Start recording"
     static let stopRecordingTitle = "Stop and send"
@@ -193,6 +217,7 @@ struct OnboardingTutorialRecordingHelp: Equatable {
         func help(_ reason: Reason, _ message: String, _ fix: Fix?) -> OnboardingTutorialRecordingHelp {
             OnboardingTutorialRecordingHelp(symptom: symptom, reason: reason, message: message, fix: fix)
         }
+        if symptom == .keyMonitorNotAttached { return keyMonitorWaiting }
         if probe.microphone != .granted {
             return help(.microphoneNotGranted,
                         "Relay Runner can't use the microphone yet.",
@@ -220,12 +245,11 @@ struct OnboardingTutorialRecordingHelp: Equatable {
                         "Caps Lock is remapped in Keyboard Settings > Modifier Keys.",
                         .openSettings(.keyboard))
         }
-        if probe.keyboardAccess != .granted {
-            return help(.keyboardAccessMissing,
-                        "Relay Runner needs Accessibility access to see Caps Lock.",
-                        .openSettings(.accessibility))
-        }
+        // Caps Lock recording reads the key's state directly, so it never needs
+        // Accessibility; only a Caps Lock that was never seen points at access.
         switch symptom {
+        case .keyMonitorNotAttached:
+            return keyMonitorWaiting
         case .pressedWithoutRecording:
             if !probe.microphoneCaptureReady {
                 return help(.microphoneUnavailable,
@@ -236,9 +260,14 @@ struct OnboardingTutorialRecordingHelp: Equatable {
                         "Caps Lock was pressed but recording didn't start. Click Start recording instead.",
                         nil)
         case .noCapsLockEvents:
-            return help(.capsLockNotSeen,
-                        "Relay Runner hasn't seen Caps Lock turn on yet. You can click Start recording instead.",
-                        nil)
+            if probe.keyboardAccess != .granted {
+                return help(.keyboardAccessMissing,
+                            "Relay Runner hasn't seen Caps Lock. Turn Relay Runner on in Privacy & Security > Input Monitoring, or click Start recording.",
+                            .openSettings(.inputMonitoring))
+            }
+            return help(.keyMonitoringUnverified,
+                        "macOS says Relay Runner can see the keyboard, but no Caps Lock press has reached it. Check Relay Runner is on in Privacy & Security > Input Monitoring, or click Start recording.",
+                        .openSettings(.inputMonitoring))
         }
     }
 }

@@ -71,6 +71,10 @@ protocol OnboardingIntroPresenting: AnyObject {
     func presentPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
                                  action: @escaping () -> Void,
                                  skipAction: (() -> Void)?)
+    func presentPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
+                                 action: @escaping () -> Void,
+                                 skipAction: (() -> Void)?,
+                                 managedActions: OnboardingPermissionManagedActions?)
     func presentAgentChoicePrompt(selectedProvider: GeneralConfig.AgentProvider,
                                   codexAction: @escaping () -> Void,
                                   claudeAction: @escaping () -> Void)
@@ -107,6 +111,14 @@ extension OnboardingIntroPresenting {
                                  action: @escaping () -> Void,
                                  skipAction: (() -> Void)?) {
         presentPermissionPrompt(presentation, action: action)
+    }
+
+    /// Presenters without managed-Mac buttons ignore them.
+    func presentPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
+                                 action: @escaping () -> Void,
+                                 skipAction: (() -> Void)?,
+                                 managedActions: OnboardingPermissionManagedActions?) {
+        presentPermissionPrompt(presentation, action: action, skipAction: skipAction)
     }
 
     func presentTutorial(_ presentation: OnboardingTutorialPresentation,
@@ -737,12 +749,19 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
 
     func presentPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
                                  action: @escaping () -> Void) {
-        presentPermissionPrompt(presentation, action: action, skipAction: nil)
+        presentPermissionPrompt(presentation, action: action, skipAction: nil, managedActions: nil)
     }
 
     func presentPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
                                  action: @escaping () -> Void,
                                  skipAction: (() -> Void)?) {
+        presentPermissionPrompt(presentation, action: action, skipAction: skipAction, managedActions: nil)
+    }
+
+    func presentPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
+                                 action: @escaping () -> Void,
+                                 skipAction: (() -> Void)?,
+                                 managedActions: OnboardingPermissionManagedActions?) {
         timelineTimer?.invalidate()
         timelineTimer = nil
         removeSkipMonitors()
@@ -752,7 +771,8 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
             presentation,
             transitionFrom: lastPromptText,
             action: action,
-            skipAction: skipAction
+            skipAction: skipAction,
+            managedActions: managedActions
         )
         lastPromptText = presentation.prompt
 
@@ -1122,7 +1142,8 @@ final class OnboardingIntroRootView: NSView {
     func showPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
                               transitionFrom: String,
                               action: @escaping () -> Void,
-                              skipAction: (() -> Void)? = nil) {
+                              skipAction: (() -> Void)? = nil,
+                              managedActions: OnboardingPermissionManagedActions? = nil) {
         runtimeModel = nil
         setSkipAction(skipAction)
         showPrompt(
@@ -1132,7 +1153,8 @@ final class OnboardingIntroRootView: NSView {
             content: AnyView(
                 OnboardingIntroPermissionControlsView(
                     presentation: presentation,
-                    action: action
+                    action: action,
+                    managedActions: managedActions
                 )
             )
         )
@@ -2245,6 +2267,7 @@ struct OnboardingBlinkingTitle: View {
 private struct OnboardingIntroPermissionControlsView: View {
     let presentation: OnboardingPermissionPromptPresentation
     let action: () -> Void
+    var managedActions: OnboardingPermissionManagedActions?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -2268,6 +2291,30 @@ private struct OnboardingIntroPermissionControlsView: View {
                             .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
                     }
                     .transition(.relayText)
+                }
+
+                if let managedNotice = presentation.managedNotice, let managedActions {
+                    VStack(spacing: 18) {
+                        RelaySwap(managedNotice, style: .text, alignment: .center) { notice in
+                            Text(notice)
+                                .font(AppTypography.font(.body))
+                                .foregroundStyle(.white.opacity(0.72))
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
+                        }
+                        HStack(spacing: 28) {
+                            Button(ManagedPermissionRequest.copyTitle, action: managedActions.copyITRequest)
+                                .accessibilityHint("Copies the bundle ID, code requirement and services for your IT team")
+                            if let continueTitle = presentation.continueTitle {
+                                Button(continueTitle, action: managedActions.continueWithout)
+                            }
+                        }
+                        .buttonStyle(.graphicalPress)
+                        .font(AppTypography.font(.body))
+                        .foregroundStyle(.white.opacity(0.72))
+                    }
+                    .transition(.relayElement)
                 }
             }
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: presentation)

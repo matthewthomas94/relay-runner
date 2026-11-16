@@ -247,7 +247,7 @@ final class STTTrueWhisperCaptureTests: XCTestCase {
         try await engine.start()
         engine.setCaptureAllowed(true)
         XCTAssertEqual(backend.starts, 1)
-        XCTAssertTrue(log.lines.isEmpty)
+        XCTAssertFalse(log.lines.contains { $0.contains("True Whisper") })
     }
 
     func testTogglingTrueWhisperThroughSaveConfigRebuildsTheEngineOnTheCameraPath() {

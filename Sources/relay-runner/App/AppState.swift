@@ -369,6 +369,9 @@ final class AppState {
             tutorialRecordingProbe: { [weak self] in
                 self?.onboardingTutorialRecordingProbe() ?? OnboardingTutorialRecordingProbe()
             },
+            tutorialKeyMonitorAttached: { [weak self] in
+                self?.sttEngine?.isGlobalKeyMonitorAttached ?? false
+            },
             toggleTutorialRecording: { [weak self] in
                 _ = self?.sttEngine?.toggleRecording()
             },
@@ -1115,7 +1118,7 @@ final class AppState {
                     } else {
                         self.restartSTTForRecovery()
                     }
-                } else if kind == .accessibility || kind == .inputMonitoring {
+                } else if PermissionKind.keyMonitoringGrants.contains(kind) {
                     self.programBoardOverlay.installGlobalDismissHotkey()
                     self.restartSTTForRecovery()
                 }
@@ -1277,11 +1280,13 @@ final class AppState {
                 await MainActor.run { [weak self, engine] in
                     self?.failSTTSetupIfCurrent(engine, error: error)
                 }
-                NSLog("[AppState] \(failureLogPrefix): \(error)")
+                Self.speechLog("[AppState] \(failureLogPrefix): \(error)")
             }
         }
-        NSLog("[AppState] STT setup started: \(reason)")
+        Self.speechLog("[AppState] STT setup started: \(reason)")
     }
+
+    private static let speechLog = RelayUnifiedLog.sink(category: "AppState")
 
     private func completeSTTSetupIfCurrent(_ engine: STTEngine) {
         guard sttEngine === engine else { return }
@@ -3261,14 +3266,44 @@ final class AppState {
         }
         onboardingTutorialSpeechActive = true
         // The tutorial waits for speech readiness, so make sure loading began.
-        if sttEngine == nil && permissions.microphone == .granted {
-            NSLog("[AppState] Tutorial started speech recognition")
+        switch Self.tutorialSpeechStart(
+            engineExists: sttEngine != nil,
+            engineFailed: sttEngineError != nil,
+            microphone: permissions.microphone
+        ) {
+        case .start:
+            Self.speechLog("[AppState] Tutorial started speech recognition")
             startAwareness()
+        case .restartFailed:
+            Self.speechLog("[AppState] Tutorial restarted failed speech recognition")
+            retrySTTSetup()
+        case .running:
+            break
+        case .waitForMicrophone:
+            Self.speechLog("[AppState] Tutorial speech waits for microphone access")
         }
         sttEngine?.tutorialActive = true
         syncCommandCaptureOwnership()
         stateMachine.dismissSessionPrompt()
         return true
+    }
+
+    enum TutorialSpeechStart: Equatable {
+        case running
+        case start
+        case restartFailed
+        case waitForMicrophone
+    }
+
+    /// What a tutorial step that needs speech must do so Caps Lock works,
+    /// including a step resumed straight after a relaunch. The engine owns the
+    /// Caps Lock gesture, so starting it also arms the gesture.
+    static func tutorialSpeechStart(engineExists: Bool,
+                                    engineFailed: Bool,
+                                    microphone: PermissionStatus) -> TutorialSpeechStart {
+        guard microphone == .granted else { return .waitForMicrophone }
+        if !engineExists { return .start }
+        return engineFailed ? .restartFailed : .running
     }
 
     private func surfaceProjectScopeFailure(_ detail: String) {
@@ -3284,14 +3319,10 @@ final class AppState {
 
     /// What the tutorial's recording step needs to explain a silent Caps Lock.
     private func onboardingTutorialRecordingProbe() -> OnboardingTutorialRecordingProbe {
-        let keyboardAccess: PermissionStatus =
-            permissions.accessibility == .granted || permissions.inputMonitoring == .granted
-                ? .granted
-                : permissions.accessibility
         return OnboardingTutorialRecordingProbe(
             speech: setupRuntimeReadiness,
             microphone: permissions.microphone,
-            keyboardAccess: keyboardAccess,
+            keyboardAccess: PermissionKind.keyMonitoringStatus(permissions.status(for:)),
             microphoneCaptureReady: sttEngine?.isMicrophoneCaptureReady ?? false,
             capsLockOn: CapsLockGesture.isCapsLockOn(),
             capsLockKeyEvents: sttEngine?.capsLockKeyEventCount ?? 0,
@@ -4660,14 +4691,15 @@ final class AppState {
         oc.start(stateMachine: stateMachine)
         overlayController = oc
 
-        // Workspace overlay — install Esc dismissal once macOS has granted
-        // either global-event permission. Accessibility is the normal setup
-        // path; an existing Input Monitoring grant remains compatible. The
-        // double-tap Shift board trigger is emitted by the STT gesture monitor
-        // in voice mode and by the note gesture monitor while taking notes.
-        if permissions.accessibility == .granted || permissions.inputMonitoring == .granted {
-            programBoardOverlay.installGlobalDismissHotkey()
-        }
+        // Workspace overlay — its in-app key handling (Esc, Command-T/W)
+        // needs no permission, so it is always installed. Esc dismissal from
+        // other apps also needs a global key grant: Input Monitoring or, for
+        // existing installs, Accessibility (RR-517). The double-tap Shift
+        // board trigger is emitted by the STT gesture monitor in voice mode
+        // and by the note gesture monitor while taking notes.
+        programBoardOverlay.installKeyMonitors(
+            keyMonitoring: PermissionKind.keyMonitoringStatus(permissions.status(for:))
+        )
         programBoardOverlay.setThemeResolver { [weak self] in
             guard let state = self?.stateMachine.state else { return nil }
             if case .actionGlow = state { return .stt }

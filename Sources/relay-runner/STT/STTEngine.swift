@@ -28,7 +28,9 @@ struct STTEngineDependencies {
     /// enrolled templates, and the log its decisions go to.
     var makeFrameSource: () -> FrameSource = { LipCaptureSession() }
     var loadTrueWhisperTemplates: () -> [Template] = { TemplateStore().load() }
-    var log: (String) -> Void = { NSLog("%@", $0) }
+    /// Start, capture and gesture-gate diagnostics. Live builds write them to
+    /// the unified log; lines carry states and errors, never transcripts.
+    var log: (String) -> Void = RelayUnifiedLog.sink(category: "STTEngine")
 
     static let live = STTEngineDependencies(
         loadModel: STTEngine.loadSTTModel,
@@ -186,6 +188,10 @@ final class STTEngine: @unchecked Sendable {
     /// Caps Lock key events the gesture's monitors have seen (no key contents).
     var capsLockKeyEventCount: Int { gesture.capsLockKeyEventCount }
 
+    /// The gesture's global key monitor is installed (RR-517). Until it is,
+    /// Caps Lock and the hotkeys only reach Relay Runner while it is in front.
+    var isGlobalKeyMonitorAttached: Bool { gesture.hasGlobalKeyMonitor }
+
     /// The microphone stream is open and a press can start recording.
     var isMicrophoneCaptureReady: Bool { isCaptureReady() }
 
@@ -207,28 +213,34 @@ final class STTEngine: @unchecked Sendable {
 
         if trueWhisper != nil {
             // Lip reading needs neither the speech model nor the microphone.
-            NSLog("[STTEngine] True Whisper owns Caps Lock; speech model not loaded.")
+            dependencies.log("[STTEngine] True Whisper owns Caps Lock; speech model not loaded.")
         } else {
             // Load model (with download progress feedback)
-            NSLog("[STTEngine] Loading model: \(modelName)...")
+            dependencies.log("[STTEngine] Loading model: \(modelName)...")
             statusMessage = "Loading STT model..."
             _ = dependencies.writeVoiceOutput("__STATUS__:Loading \(modelName) model...")
 
-            let manager = try await dependencies.loadModel(modelName) { [weak self] message in
-                Task { @MainActor in
-                    self?.statusMessage = message
+            let manager: AsrManager
+            do {
+                manager = try await dependencies.loadModel(modelName) { [weak self] message in
+                    Task { @MainActor in
+                        self?.statusMessage = message
+                    }
+                    _ = self?.dependencies.writeVoiceOutput("__STATUS__:\(message)")
+                    self?.dependencies.log("[STTEngine] \(message)")
                 }
-                _ = self?.dependencies.writeVoiceOutput("__STATUS__:\(message)")
-                NSLog("[STTEngine] \(message)")
+            } catch {
+                dependencies.log("[STTEngine] Start failed: model load error=\(error)")
+                throw error
             }
             // A model load that finishes after stop() must not reopen the mic.
             guard !isEngineStopped else {
-                NSLog("[STTEngine] Model load finished after stop; capture stays closed.")
+                dependencies.log("[STTEngine] Model load finished after stop; capture stays closed.")
                 await manager.cleanup()
                 return
             }
             self.asrManager = manager
-            NSLog("[STTEngine] Model loaded.")
+            dependencies.log("[STTEngine] Model loaded.")
         }
         statusMessage = "Listening"
         _ = dependencies.writeVoiceOutput("__STATUS__:Listening")
@@ -242,6 +254,7 @@ final class STTEngine: @unchecked Sendable {
         do {
             guard try markModelReadyAndApplyOwnership() else { return }
         } catch {
+            dependencies.log("[STTEngine] Start failed: microphone capture error=\(error)")
             _ = dependencies.writeVoiceOutput("__CONTINUITY__:capture_failed")
             throw error
         }
@@ -292,7 +305,7 @@ final class STTEngine: @unchecked Sendable {
             statusMessage = message
             _ = dependencies.writeVoiceOutput("__CONTINUITY__:capture_failed")
             _ = dependencies.writeVoiceOutput("__STATUS__:\(message)")
-            NSLog("[STTEngine] Audio capture start failed: \(error)")
+            dependencies.log("[STTEngine] Audio capture start failed: \(error)")
         }
     }
 
@@ -374,7 +387,7 @@ final class STTEngine: @unchecked Sendable {
         if let route = try audioCapture.start() {
             setCaptureReady(true)
             audioBuffer.accepting = inputMode != "caps_lock_toggle"
-            NSLog(
+            dependencies.log(
                 "[STTEngine] Audio capture started. device=\(route.deviceID) " +
                 "format=\(route.sampleRate)Hz/\(route.channelCount)ch mode=\(inputMode)"
             )
@@ -529,7 +542,7 @@ final class STTEngine: @unchecked Sendable {
         statusMessage = ""
         resetRecordingBuffer()
         gesture.reset()
-        NSLog("[STTEngine] Stopped.")
+        dependencies.log("[STTEngine] Stopped.")
     }
 
     private func resetRecordingBuffer() {
@@ -612,7 +625,7 @@ final class STTEngine: @unchecked Sendable {
             statusMessage = error.localizedDescription
             writeVoiceOutput("__CONTINUITY__:capture_failed")
             _ = dependencies.writeVoiceOutput("__STATUS__:\(error.localizedDescription)")
-            NSLog(
+            dependencies.log(
                 "[STTEngine] Audio route recovery failed. " +
                 "reasons=\(recovery.reasons.sorted().joined(separator: ",")) error=\(error)"
             )
@@ -691,7 +704,7 @@ final class STTEngine: @unchecked Sendable {
         // Don't accumulate audio while idle — saves memory over long sessions.
         // A wheel request made before this loop started keeps its target.
         resetAudioBuffer()
-        NSLog("[STTEngine] Activation key loop started")
+        dependencies.log("[STTEngine] Activation key loop started")
 
         while !Task.isCancelled {
             try await Task.sleep(for: .milliseconds(pollMs))
@@ -739,7 +752,7 @@ final class STTEngine: @unchecked Sendable {
                     // No session owns the mic: keep it closed, skip __TTS_STOP__,
                     // and let AppState show the session affordance instead.
                     guard isCaptureAllowed else {
-                        NSLog("[STTEngine] Activation ignored: no session owns capture")
+                        dependencies.log("[STTEngine] Activation ignored: no session owns capture")
                         gesture.reset()
                         resetRecordingBuffer()
                         isRecording = false
@@ -748,7 +761,7 @@ final class STTEngine: @unchecked Sendable {
                         continue
                     }
                     guard isCaptureReady() else {
-                        NSLog("[STTEngine] Activation ignored: microphone capture not ready")
+                        dependencies.log("[STTEngine] Activation ignored: microphone capture not ready")
                         gesture.reset()
                         resetRecordingBuffer()
                         isRecording = false
@@ -905,7 +918,7 @@ final class STTEngine: @unchecked Sendable {
             if nowRecording != isRecording {
                 isRecording = nowRecording
                 if nowRecording {
-                    NSLog("[STTEngine] Recording...")
+                    dependencies.log("[STTEngine] Recording...")
                     writeVoiceOutput("__STATUS__:recording...")
                 }
             }
