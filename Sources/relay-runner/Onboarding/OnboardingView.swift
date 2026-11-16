@@ -13,12 +13,9 @@ enum OnboardingPermissionTreatment {
     static let actionScale: CGFloat = 0.75
     static let buttonTitle = "Grant permission"
     static let buttonSize = CGSize(width: 195 * actionScale, height: 50 * actionScale)
-    static let buttonCornerRadius: CGFloat = 12 * actionScale
     static let buttonHorizontalPadding: CGFloat = 32 * actionScale
     static let buttonVerticalPadding: CGFloat = 16 * actionScale
     static let buttonLineHeight: CGFloat = 18 * actionScale
-    static let buttonLabelSize: CGFloat = 16 * actionScale
-    static let buttonBorderColor = NSColor(srgbRed: 17 / 255, green: 22 / 255, blue: 29 / 255, alpha: 1)
     static let promptMaxWidth: CGFloat = 1180
     static let supportingMaxWidth: CGFloat = 620
     static let promptMinHeight: CGFloat = 560

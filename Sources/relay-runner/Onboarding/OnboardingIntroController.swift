@@ -1925,7 +1925,6 @@ struct OnboardingIntroWorkspacePromptView: View {
                         OnboardingIntroWhiteActionButton(
                             title: "Continue",
                             accessibilityLabel: "Continue with the current workspace folder",
-                            height: Self.controlHeight,
                             action: continueAction
                         )
                         .keyboardShortcut(.defaultAction)
@@ -1933,7 +1932,6 @@ struct OnboardingIntroWorkspacePromptView: View {
                         OnboardingIntroWhiteActionButton(
                             title: "Browse\u{2026}",
                             accessibilityLabel: "Browse for workspace folder",
-                            height: Self.controlHeight,
                             action: browseAction
                         )
                     }
@@ -2042,50 +2040,31 @@ private struct OnboardingIntroPermissionControlsView: View {
 }
 
 struct OnboardingIntroWhiteActionButton: View {
-    static let hoverScale: CGFloat = 1
-    static let hoverAnimation: Animation = RelayMotion.hover
-
     let title: String
     var accessibilityLabel: String?
     var width: CGFloat = OnboardingPermissionTreatment.buttonSize.width
-    var height: CGFloat = OnboardingPermissionTreatment.buttonSize.height
     let action: () -> Void
     @Environment(\.isEnabled) private var isEnabled
-    @State private var isHovering = false
 
+    /// The app's primary action, the same white button as everywhere else,
+    /// kept at the onboarding step's width.
     var body: some View {
-        let showsHover = isEnabled && isHovering
-        Button(action: action) {
+        SharedActionButtonChrome(
+            prominence: .primary,
+            isEnabled: isEnabled,
+            accessibilityLabel: accessibilityLabel ?? title,
+            helpText: "",
+            palette: .settingsPrimary,
+            action: action
+        ) {
             RelaySwap(title, style: .text, alignment: .center) { title in
                 Text(title)
-                    .font(AppTypography.font(
-                        .permissionButton,
-                        size: OnboardingPermissionTreatment.buttonLabelSize
-                    ))
-                    .foregroundStyle(Color(nsColor: OnboardingPermissionTreatment.buttonBorderColor))
+                    .font(AppTypography.font(.primaryButton))
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
-            .frame(width: width, height: height)
-            .background(
-                RoundedRectangle(cornerRadius: OnboardingPermissionTreatment.buttonCornerRadius, style: .continuous)
-                    .fill(Color.white.opacity(showsHover ? 0.86 : 1))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: OnboardingPermissionTreatment.buttonCornerRadius, style: .continuous)
-                    .stroke(
-                        Color(nsColor: OnboardingPermissionTreatment.buttonBorderColor)
-                            .opacity(showsHover ? 0.72 : 1),
-                        lineWidth: showsHover ? 1.5 : 1
-                    )
-            )
+            .frame(minWidth: max(0, width - 2 * SharedActionButtonMetrics.horizontalPadding))
         }
-        .buttonStyle(.graphicalPress)
-        .scaleEffect(Self.hoverScale)
-        .shadow(color: .white.opacity(showsHover ? 0.16 : 0), radius: 7)
-        .animation(Self.hoverAnimation, value: showsHover)
-        .onHover { isHovering = $0 }
-        .accessibilityLabel(accessibilityLabel ?? title)
     }
 }
 
