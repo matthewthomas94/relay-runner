@@ -319,7 +319,7 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertEqual(intro.runtimePrompts.map(\.provider).suffix(2), [.claude, .claude])
     }
 
-    func testClaudeSetupCanContinueWithoutSignInWhileCodexStillRequiresIt() throws {
+    func testSignInLaterFinishesSetupUnsignedForBothProviders() throws {
         for provider in [GeneralConfig.AgentProvider.codex, .claude] {
             OnboardingResumeState.clear()
             let directory = FileManager.default.temporaryDirectory
@@ -354,18 +354,13 @@ final class OnboardingIntroTests: XCTestCase {
             waitForMainQueue(after: 0.05)
 
             XCTAssertEqual(intro.loginPrompts.last?.signedIn, false, provider.rawValue)
-            XCTAssertEqual(intro.continueWithoutSignInOffered.last, provider == .claude, provider.rawValue)
+            XCTAssertEqual(intro.continueWithoutSignInOffered.last, true, provider.rawValue)
 
             intro.performContinueWithoutSignIn()
 
             XCTAssertEqual(terminalLaunches, [], provider.rawValue)
-            if provider == .claude {
-                XCTAssertEqual(intro.workspacePromptPaths, ["/Users/example/current"])
-                XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.agentChoice.path))
-            } else {
-                XCTAssertTrue(intro.workspacePromptPaths.isEmpty)
-                XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.agentChoice.path))
-            }
+            XCTAssertEqual(intro.workspacePromptPaths, ["/Users/example/current"], provider.rawValue)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.agentChoice.path), provider.rawValue)
         }
     }
 
@@ -420,7 +415,8 @@ final class OnboardingIntroTests: XCTestCase {
         intro.performClaudeAction()
         waitForMainQueue(after: 0.05)
         XCTAssertEqual(intro.loginPrompts.last?.signedIn, false)
-        XCTAssertEqual(intro.loginPrompts.last?.message, gateMessage)
+        // RR-514: the gate's reason waits for a failed attempt.
+        XCTAssertNil(intro.loginPrompts.last?.message)
 
         // Console sign-in: logged in, but not on a subscription. The exit
         // alone reruns the gate, which still refuses.
@@ -668,7 +664,7 @@ final class OnboardingIntroTests: XCTestCase {
 
         intro.performLoginAction()
 
-        XCTAssertEqual(events, ["dismiss", "notch:false", "external", "terminal:codex"])
+        XCTAssertEqual(events, ["dismiss", "external", "notch:false", "terminal:codex"])
 
         NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: NSApp)
         waitForMainQueue(after: 0.05)
@@ -2469,12 +2465,16 @@ final class OnboardingIntroTests: XCTestCase {
             DispatchQueue.main.asyncAfter(
                 deadline: .now() + OnboardingFlowMotion.surfaceTransitionDuration * 2 + 0.2
             ) {
-                XCTAssertTrue(root.subviews.last === queued)
+                // The corner Skip button (RR-514) stays above every page.
+                let isSkip: (NSView) -> Bool = { $0 is NSHostingView<OnboardingSkipButton> }
+                XCTAssertTrue(root.subviews.last(where: { !isSkip($0) }) === queued)
+                XCTAssertTrue(root.subviews.last.map(isSkip) == true)
                 XCTAssertEqual(queued.alphaValue, 1, accuracy: 0.001)
 
                 let final = NSView(frame: root.bounds)
                 root.replaceContent(with: final, policy: .immediate)
-                XCTAssertTrue(root.subviews.last === final)
+                XCTAssertTrue(root.subviews.last(where: { !isSkip($0) }) === final)
+                XCTAssertTrue(root.subviews.last.map(isSkip) == true)
                 completed.fulfill()
             }
         }
@@ -3177,6 +3177,433 @@ final class OnboardingIntroTests: XCTestCase {
             "Gate says no."
         )
     }
+
+    // MARK: - RR-514 hand-offs, Skip and the trimmed sign-in step
+
+    func testSignInBrowserHandoffStepsAsideAndReturnsToTheSameStepForBothProviders() throws {
+        for provider in [GeneralConfig.AgentProvider.claude, .codex] {
+            OnboardingResumeState.clear()
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+
+            let intro = CapturingIntroPresenter()
+            var events: [String] = []
+            intro.onDismiss = { events.append("dismiss") }
+            var authenticated = false
+            var logins: [FakeProviderLogin] = []
+            let controller = OnboardingController(
+                permissions: PermissionsManager(),
+                flagURLs: OnboardingFlagURLs.testURLs(in: directory),
+                getWorkingDirectory: { "/Users/example/current" },
+                permissionStatus: { _ in .granted },
+                makeIntroController: { intro },
+                makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+                runtimeAlreadyInstalled: { _ in false },
+                isAgentAuthenticated: { _ in authenticated },
+                refreshAgentReadiness: { _, completion in
+                    DispatchQueue.main.async { completion(nil) }
+                },
+                makeProviderLogin: { provider in
+                    let login = FakeProviderLogin(provider: provider)
+                    logins.append(login)
+                    return login
+                },
+                onOpenExternalWindow: { events.append("external") },
+                runtimePollInterval: 0.01,
+                authPollInterval: 0.01,
+                introAdvanceDelay: 0,
+                loginPromptDwell: 0,
+                reduceMotion: { true }
+            )
+
+            controller.showIfNeeded()
+            provider == .codex ? intro.performCodexAction() : intro.performClaudeAction()
+            waitForMainQueue(after: 0.05)
+            intro.performLoginAction()
+            let login = try XCTUnwrap(logins.last)
+            let promptsWhileSigningIn = intro.loginPrompts.count
+            XCTAssertEqual(intro.loginTerminals, [provider])
+            XCTAssertEqual(events, [], provider.rawValue)
+
+            // The login command opens its page in the browser: onboarding and
+            // the Workspace step aside first.
+            login.reportSignInPage()
+            XCTAssertEqual(events, ["dismiss", "external"], provider.rawValue)
+            XCTAssertEqual(intro.loginTerminals, [provider])
+
+            // Returning to Relay Runner shows the same sign-in terminal.
+            postAppDeactivated()
+            postAppActivated()
+            drainMainQueue()
+            XCTAssertEqual(intro.loginTerminals, [provider, provider], provider.rawValue)
+            XCTAssertEqual(intro.loginPrompts.count, promptsWhileSigningIn)
+
+            // "Open sign-in page" goes through the same hand-off, and a Dock
+            // click (no activation change) also brings the step back.
+            login.openSignInURL()
+            XCTAssertEqual(events, ["dismiss", "external", "dismiss", "external"], provider.rawValue)
+            XCTAssertEqual(login.openedSignInPages, 1)
+            XCTAssertTrue(controller.resumeAgentLoginIfWaiting())
+            XCTAssertEqual(intro.loginTerminals, [provider, provider, provider], provider.rawValue)
+
+            // Away again, the login finishes: the readiness recheck passes and
+            // setup continues without waiting for an activation.
+            login.openSignInURL()
+            authenticated = true
+            login.finish(.exited(0))
+            waitForMainQueue(after: 0.05)
+            XCTAssertEqual(intro.workspacePromptPaths, ["/Users/example/current"], provider.rawValue)
+
+            // That return was used up; later activations restore nothing.
+            postAppDeactivated()
+            postAppActivated()
+            drainMainQueue()
+            XCTAssertEqual(intro.loginTerminals.count, 3, provider.rawValue)
+            XCTAssertFalse(controller.resumeAgentLoginIfWaiting(), provider.rawValue)
+        }
+    }
+
+    func testSignInPageHandoffWithoutReturningStillShowsTheFailureWhenLoginEnds() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let intro = CapturingIntroPresenter()
+        var logins: [FakeProviderLogin] = []
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: OnboardingFlagURLs.testURLs(in: directory),
+            permissionStatus: { _ in .granted },
+            makeIntroController: { intro },
+            makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            runtimeAlreadyInstalled: { _ in false },
+            isAgentAuthenticated: { _ in false },
+            refreshAgentReadiness: { _, completion in
+                DispatchQueue.main.async { completion(nil) }
+            },
+            makeProviderLogin: { provider in
+                let login = FakeProviderLogin(provider: provider)
+                logins.append(login)
+                return login
+            },
+            runtimePollInterval: 0.01,
+            introAdvanceDelay: 0,
+            loginPromptDwell: 0,
+            reduceMotion: { true }
+        )
+
+        controller.showIfNeeded()
+        intro.performClaudeAction()
+        waitForMainQueue(after: 0.05)
+        intro.performLoginAction()
+        try XCTUnwrap(logins.last).reportSignInPage()
+        try XCTUnwrap(logins.last).finish(.exited(1))
+        waitForMainQueue(after: 0.05)
+
+        XCTAssertEqual(intro.loginPrompts.last?.retry, true)
+        XCTAssertEqual(intro.loginPrompts.last?.message, "Claude sign-in exited with code 1.")
+        XCTAssertFalse(controller.resumeAgentLoginIfWaiting())
+    }
+
+    func testPermissionSystemSettingsHandoffStepsAsideUntilSetupEnds() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let intro = CapturingIntroPresenter()
+        var statuses: [PermissionKind: PermissionStatus] = [.microphone: .granted]
+        var events: [String] = []
+        intro.onDismiss = { events.append("dismiss") }
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: OnboardingFlagURLs.testURLs(in: directory),
+            requestPermissionSetup: { kind, _, _ in events.append("request:\(kind.rawValue)") },
+            permissionStatus: { statuses[$0] ?? .denied },
+            makeIntroController: { intro },
+            onOpenExternalWindow: { events.append("external") },
+            reduceMotion: { true }
+        )
+
+        controller.showIfNeeded()
+        XCTAssertEqual(intro.permissionPrompts.map(\.permission), [.accessibility])
+
+        intro.performPermissionAction()
+        XCTAssertEqual(events, ["dismiss", "external", "request:accessibility"])
+
+        // The setup companion owns this return, so activation alone (the
+        // person clicking the drag guide) leaves System Settings in front.
+        postAppDeactivated()
+        postAppActivated()
+        drainMainQueue()
+        XCTAssertEqual(intro.permissionPrompts.map(\.permission), [.accessibility])
+
+        // Setup ends without a grant: the same step comes back.
+        postEndedWithoutGrant(.accessibility)
+        drainMainQueue()
+        XCTAssertEqual(intro.permissionPrompts.map(\.permission), [.accessibility, .accessibility])
+
+        // A grant moves on to the next permission.
+        intro.performPermissionAction()
+        statuses[.accessibility] = .granted
+        postGrant(.accessibility)
+        drainMainQueue()
+        XCTAssertEqual(
+            intro.permissionPrompts.map(\.permission),
+            [.accessibility, .accessibility, .screenRecording]
+        )
+        XCTAssertEqual(events.filter { $0 == "external" }.count, 2)
+    }
+
+    func testSkipIsOfferedOnEveryPermissionAndTutorialStepAndNoOtherStep() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let intro = CapturingIntroPresenter()
+        var statuses = Dictionary(
+            uniqueKeysWithValues: PermissionKind.guidedSetupOrder.map { ($0, PermissionStatus.denied) }
+        )
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: OnboardingFlagURLs.testURLs(in: directory),
+            setWorkingDirectory: { _ in },
+            permissionStatus: { statuses[$0] ?? .denied },
+            makeIntroController: { intro },
+            makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            isAgentAuthenticated: { _ in true },
+            runtimePollInterval: 0.01,
+            introAdvanceDelay: 0,
+            loginPromptDwell: 0,
+            pickWorkspaceDirectory: { prepare, completion in
+                prepare { completion("/Users/example/dev") }
+            },
+            reduceMotion: { true },
+            scheduleWorkspaceOpenAfterTutorialDismissal: { $0() }
+        )
+
+        controller.showIfNeeded()
+        for permission in PermissionKind.guidedSetupOrder {
+            intro.performPermissionAction()
+            statuses[permission] = .granted
+            postGrant(permission)
+            drainMainQueue()
+        }
+        intro.performCodexAction()
+        waitForMainQueue(after: 0.05)
+        intro.performWorkspaceAction()
+        drainMainQueue()
+        completeSessionControlsTutorial(controller)
+
+        let skippable = intro.events.filter { $0.hasPrefix("permission:") || $0.hasPrefix("tutorial:") }
+        XCTAssertEqual(intro.skipOfferedEvents, skippable)
+        XCTAssertEqual(skippable.filter { $0.hasPrefix("permission:") }.count, 3)
+        XCTAssertEqual(
+            Set(skippable.filter { $0.hasPrefix("tutorial:") }),
+            ["tutorial:intro", "tutorial:recording", "tutorial:recordingActive",
+             "tutorial:playback", "tutorial:cancellation", "tutorial:workspace"]
+        )
+        for prefix in ["agentChoice:", "runtime:", "login:", "workspace"] {
+            XCTAssertTrue(intro.events.contains { $0.hasPrefix(prefix) }, prefix)
+        }
+    }
+
+    func testIntroSurfaceShowsTheCornerSkipOnlyOnPermissionAndTutorialSteps() throws {
+        let root = OnboardingIntroRootView(frame: NSRect(x: 0, y: 0, width: 1200, height: 800))
+        let permission = OnboardingPermissionTreatment.presentation(
+            permission: .accessibility,
+            status: .denied,
+            explanation: "",
+            likelyRestricted: false
+        )
+        let tutorial = OnboardingTutorialPresentation(screen: .recording, reduceMotion: true, message: nil)
+
+        root.showPermissionPrompt(permission, transitionFrom: "", action: {}, skipAction: {})
+        XCTAssertTrue(root.showsSkipButton)
+        root.showAgentChoicePrompt(selectedProvider: .codex, transitionFrom: "", codexAction: {}, claudeAction: {})
+        XCTAssertFalse(root.showsSkipButton)
+        root.showTutorial(tutorial, retryAction: {}, skipAction: {})
+        XCTAssertTrue(root.showsSkipButton)
+        root.showRuntimePrompt(
+            OnboardingRuntimePromptPresentation(provider: .claude, status: .idle),
+            transitionFrom: "",
+            retryAction: {}
+        )
+        XCTAssertFalse(root.showsSkipButton)
+        root.showTutorial(tutorial, retryAction: {}, skipAction: {})
+        root.showAgentLoginPrompt(
+            OnboardingAgentLoginPromptPresentation(provider: .codex, signedIn: false, message: nil),
+            transitionFrom: "",
+            fullyRendered: {},
+            signInAction: {}
+        )
+        XCTAssertFalse(root.showsSkipButton)
+        root.showPermissionPrompt(permission, transitionFrom: "", action: {}, skipAction: {})
+        root.showWorkspacePrompt(currentPath: "/tmp", transitionFrom: "", continueAction: {}, browseAction: {})
+        XCTAssertFalse(root.showsSkipButton)
+        root.showTutorial(tutorial, retryAction: {}, skipAction: {})
+        root.showCinematic()
+        XCTAssertFalse(root.showsSkipButton)
+
+        // A text button: the label, then a trailing arrow icon.
+        XCTAssertEqual(OnboardingSkipButton.title, "Skip")
+        let source = try onboardingIntroSource()
+        let start = try XCTUnwrap(source.range(of: "struct OnboardingSkipButton: View"))
+        let body = String(source[start.upperBound...].prefix(1400))
+        let label = try XCTUnwrap(body.range(of: "Text(Self.title)"))
+        let arrow = try XCTUnwrap(body.range(of: "LucideImage(.arrowRight"))
+        XCTAssertLessThan(label.lowerBound, arrow.lowerBound)
+        XCTAssertTrue(body.contains(".buttonStyle(.graphicalPress)"))
+        XCTAssertTrue(body.contains("alignment: .bottomTrailing"))
+    }
+
+    func testSkippingPermissionsMovesPastThemAndSurvivesRelaunch() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+        let intro = CapturingIntroPresenter()
+        var cancellations: [PermissionSetupSource?] = []
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            cancelPermissionSetup: { cancellations.append($0) },
+            permissionStatus: { _ in .denied },
+            makeIntroController: { intro },
+            makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            reduceMotion: { true }
+        )
+
+        controller.showIfNeeded()
+        XCTAssertEqual(intro.permissionPrompts.map(\.permission), [.microphone])
+        intro.performSkip()
+
+        XCTAssertEqual(intro.permissionPrompts.map(\.permission), [.microphone])
+        XCTAssertEqual(intro.agentChoiceSelectedProviders, [.codex])
+        XCTAssertTrue(cancellations.contains(.onboarding))
+        XCTAssertTrue(OnboardingResumeState.permissionsSkipped)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+
+        // Relaunch mid-flow: setup resumes after the permissions.
+        let relaunchedIntro = CapturingIntroPresenter()
+        let relaunched = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: flagURLs,
+            permissionStatus: { _ in .denied },
+            makeIntroController: { relaunchedIntro },
+            makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            reduceMotion: { true }
+        )
+        relaunched.showIfNeeded()
+        XCTAssertTrue(relaunchedIntro.permissionPrompts.isEmpty)
+        XCTAssertEqual(relaunchedIntro.agentChoiceSelectedProviders, [.codex])
+        withExtendedLifetime(controller) {}
+    }
+
+    func testSkippingTheTutorialFinishesOpensTheWorkspaceAndSurvivesRelaunchForBothProviders() throws {
+        for provider in [GeneralConfig.AgentProvider.codex, .claude] {
+            OnboardingResumeState.clear()
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+
+            let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+            let intro = CapturingIntroPresenter()
+            var workspaceOpens = 0
+            var speechStops = 0
+            let controller = makeSessionControlsTutorialController(
+                flagURLs: flagURLs,
+                intro: intro,
+                stopTutorialSpeech: { speechStops += 1 },
+                workspaceOpen: { workspaceOpens += 1 }
+            )
+            beginSessionControlsTutorial(controller, intro: intro, provider: provider)
+            drainMainQueue()
+            XCTAssertEqual(intro.tutorialPresentations.last?.screen, .recording, provider.rawValue)
+
+            intro.performSkip()
+            drainMainQueue()
+
+            XCTAssertEqual(workspaceOpens, 1, provider.rawValue)
+            XCTAssertGreaterThan(speechStops, 0)
+            XCTAssertFalse(controller.isSessionControlsTutorialActive)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.onboarded.path))
+            XCTAssertNil(OnboardingResumeState.load())
+
+            // A second Skip (a double click) does nothing more.
+            intro.performSkip()
+            drainMainQueue()
+            XCTAssertEqual(workspaceOpens, 1)
+
+            let relaunchedIntro = CapturingIntroPresenter()
+            let relaunched = makeSessionControlsTutorialController(flagURLs: flagURLs, intro: relaunchedIntro)
+            relaunched.showIfNeeded()
+            XCTAssertTrue(relaunchedIntro.events.isEmpty, provider.rawValue)
+        }
+    }
+
+    func testSignInStepShowsOnlyItsSubtitleUntilAnAttemptFails() throws {
+        for (provider, plan) in [(GeneralConfig.AgentProvider.claude, "Claude"), (.codex, "ChatGPT")] {
+            let first = OnboardingAgentLoginPromptPresentation(provider: provider, signedIn: false, message: "Gate detail.")
+            XCTAssertEqual(
+                OnboardingIntroAgentLoginPromptView.subtitle(for: first),
+                "Your browser opens to sign in with your \(plan) subscription."
+            )
+            let failed = OnboardingAgentLoginPromptPresentation(
+                provider: provider,
+                signedIn: false,
+                message: "Gate detail.",
+                retry: true
+            )
+            XCTAssertEqual(OnboardingIntroAgentLoginPromptView.subtitle(for: failed), "Gate detail.")
+            let signedIn = OnboardingAgentLoginPromptPresentation(provider: provider, signedIn: true, message: nil)
+            XCTAssertNil(OnboardingIntroAgentLoginPromptView.subtitle(for: signedIn))
+        }
+        XCTAssertEqual(OnboardingIntroAgentLoginPromptView.signInLaterTitle, "Sign in later")
+
+        // Besides the title, the step's only copy is that one line (or
+        // "Signed in."), the sign-in button and Sign in later.
+        let source = try onboardingIntroSource()
+        let start = try XCTUnwrap(source.range(of: "struct OnboardingIntroAgentLoginPromptView: View"))
+        let end = try XCTUnwrap(source.range(of: "struct OnboardingIntroAgentLoginTerminalView", range: start.upperBound..<source.endIndex))
+        let view = String(source[start.upperBound..<end.lowerBound])
+        XCTAssertEqual(view.components(separatedBy: "Text(").count - 1, 2)
+        XCTAssertEqual(view.components(separatedBy: "OnboardingIntroWhiteActionButton(").count - 1, 1)
+        XCTAssertEqual(view.components(separatedBy: "Button(Self.signInLaterTitle").count - 1, 1)
+        // Those two are the only buttons.
+        XCTAssertEqual(view.components(separatedBy: "Button(").count - 1, 2)
+    }
+
+    private func onboardingIntroSource() throws -> String {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = root.appendingPathComponent("Sources/relay-runner/Onboarding/OnboardingIntroController.swift")
+        return try String(contentsOf: source, encoding: .utf8)
+    }
+}
+
+private func postAppDeactivated() {
+    NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: NSApp)
+}
+
+private func postAppActivated() {
+    NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: NSApp)
+}
+
+private func postEndedWithoutGrant(_ permission: PermissionKind) {
+    NotificationCenter.default.post(
+        name: .relayPermissionSetupEndedWithoutGrant,
+        object: PermissionSetupLifecycleEvent(permission: permission, source: .onboarding)
+    )
 }
 
 private final class CapturingIntroPresenter: OnboardingIntroPresenting {
@@ -3203,6 +3630,9 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
     private var workspaceAction: (() -> Void)?
     var onDismiss: (() -> Void)?
     var automaticallyCompletesLoginPresentation = true
+    /// Events whose step offered the corner Skip button (RR-514).
+    private(set) var skipOfferedEvents: [String] = []
+    private var skipAction: (() -> Void)?
 
     func present(completion: @escaping () -> Void) {
         presentCallCount += 1
@@ -3215,12 +3645,40 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
         events.append("permission:\(presentation.permission.rawValue)")
         permissionPrompts.append(presentation)
         permissionAction = action
+        skipAction = nil
+    }
+
+    func presentPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
+                                 action: @escaping () -> Void,
+                                 skipAction: (() -> Void)?) {
+        presentPermissionPrompt(presentation, action: action)
+        recordSkip(skipAction)
+    }
+
+    func presentTutorial(_ presentation: OnboardingTutorialPresentation,
+                         retryAction: @escaping () -> Void,
+                         recordingActions: OnboardingTutorialRecordingActions?,
+                         skipAction: (() -> Void)?) {
+        presentTutorial(presentation, retryAction: retryAction)
+        recordSkip(skipAction)
+    }
+
+    private func recordSkip(_ action: (() -> Void)?) {
+        skipAction = action
+        if action != nil, let event = events.last {
+            skipOfferedEvents.append(event)
+        }
+    }
+
+    func performSkip() {
+        skipAction?()
     }
 
     func presentAgentChoicePrompt(selectedProvider: GeneralConfig.AgentProvider,
                                   codexAction: @escaping () -> Void,
                                   claudeAction: @escaping () -> Void) {
         events.append("agentChoice:\(selectedProvider.rawValue)")
+        skipAction = nil
         agentChoiceSelectedProviders.append(selectedProvider)
         self.codexAction = codexAction
         self.claudeAction = claudeAction
@@ -3284,6 +3742,7 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
         events.append("tutorial:\(presentation.screen.rawValue)")
         tutorialPresentations.append(presentation)
         runtimeRetryAction = retryAction
+        skipAction = nil
     }
 
     func dismiss(completion: @escaping () -> Void) {
@@ -3442,6 +3901,8 @@ private final class FakeProviderLogin: ProviderLoginRunning {
     private let startError: Error?
     private var onExit: ((ProviderLoginOutcome) -> Void)?
     var onStart: (() -> Void)?
+    var onBrowserHandoff: ((_ open: (() -> Void)?) -> Void)?
+    private(set) var openedSignInPages = 0
 
     init(provider: GeneralConfig.AgentProvider, startError: Error? = nil) {
         self.provider = provider
@@ -3468,7 +3929,22 @@ private final class FakeProviderLogin: ProviderLoginRunning {
         exit?(outcome)
     }
 
-    func openSignInURL() {}
+    /// The login command printed its page and opened the browser itself.
+    func reportSignInPage(_ url: String = "https://example.com/sign-in") {
+        let isFirstPage = signInURL == nil
+        signInURL = url
+        if isFirstPage { onBrowserHandoff?(nil) }
+    }
+
+    func openSignInURL() {
+        let open: () -> Void = { [weak self] in self?.openedSignInPages += 1 }
+        guard let onBrowserHandoff else {
+            open()
+            return
+        }
+        onBrowserHandoff(open)
+    }
+
     func copySignInURL() {}
 }
 

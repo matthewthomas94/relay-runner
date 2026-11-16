@@ -18,6 +18,10 @@ protocol ProviderLoginRunning: AnyObject {
     /// The latest sign-in page the login command printed.
     var signInURL: String? { get }
     var isCancelling: Bool { get }
+    /// RR-514: called whenever sign-in sends the person to the browser, so
+    /// onboarding can step aside first. `open` is nil when the login command
+    /// opened its sign-in page itself; otherwise calling it opens the page.
+    var onBrowserHandoff: ((_ open: (() -> Void)?) -> Void)? { get set }
     /// Throws when the embedded terminal cannot start the command.
     /// `onExit` is called once, on the main thread.
     func start(onExit: @escaping (ProviderLoginOutcome) -> Void) throws
@@ -135,6 +139,7 @@ final class ProviderLoginTerminal: ProviderLoginRunning, TerminalViewDelegate, L
     @ObservationIgnored private let killGracePeriod: TimeInterval
     @ObservationIgnored private let openURL: (URL) -> Void
     @ObservationIgnored private let copyString: (String) -> Void
+    @ObservationIgnored var onBrowserHandoff: ((_ open: (() -> Void)?) -> Void)?
 
     init(
         provider: GeneralConfig.AgentProvider,
@@ -216,7 +221,16 @@ final class ProviderLoginTerminal: ProviderLoginRunning, TerminalViewDelegate, L
 
     func openSignInURL() {
         guard let signInURL, let url = URL(string: signInURL) else { return }
-        openURL(url)
+        openInBrowser(url)
+    }
+
+    private func openInBrowser(_ url: URL) {
+        let open = { [openURL] in openURL(url) }
+        guard let onBrowserHandoff else {
+            open()
+            return
+        }
+        onBrowserHandoff(open)
     }
 
     func copySignInURL() {
@@ -235,7 +249,13 @@ final class ProviderLoginTerminal: ProviderLoginRunning, TerminalViewDelegate, L
     func dataReceived(slice: ArraySlice<UInt8>) {
         view.feed(byteArray: slice)
         if let url = scanner.consume(slice), url != signInURL {
+            let isFirstPage = signInURL == nil
             signInURL = url
+            // Claude's and Codex's login commands open their first sign-in
+            // page in the browser as they print it.
+            if isFirstPage {
+                onBrowserHandoff?(nil)
+            }
         }
     }
 
@@ -264,7 +284,7 @@ final class ProviderLoginTerminal: ProviderLoginRunning, TerminalViewDelegate, L
 
     func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
         guard let url = URL(string: link) else { return }
-        openURL(url)
+        openInBrowser(url)
     }
 
     func setTerminalTitle(source: TerminalView, title: String) {}
