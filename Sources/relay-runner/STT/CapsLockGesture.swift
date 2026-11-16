@@ -64,10 +64,14 @@ final class CapsLockGesture {
     /// Caps Lock `flagsChanged` events seen by the monitors. Counted, never
     /// logged per event, so a silent Caps Lock can be told from a missing one.
     private(set) var capsLockKeyEventCount = 0
-    /// Caps Lock's state as carried by the last `flagsChanged` event. Every
-    /// modifier event carries it, so a missed Caps Lock event is corrected by
-    /// the next modifier press.
-    private var eventCapsLockOn = false
+    /// Caps Lock's state from whichever source changed most recently: the
+    /// state read or a `flagsChanged` event (every modifier event carries it).
+    /// A read that misses the key can't leave the toggle dead, and an off
+    /// event missed while no global monitor is attached can't leave it stuck
+    /// on, because the read's own transition then wins.
+    private var latestCapsLockOn = false
+    /// The state read's last value, so only its transitions override events.
+    private var lastReadCapsLockOn = false
     static let capsLockKeyCode: UInt16 = 57
 
     // Menu-driven activation override (nil = use hardware state)
@@ -130,7 +134,9 @@ final class CapsLockGesture {
         self.monitorRemover = monitorRemover
         self.diagnosticLogger = diagnosticLogger
         self.capsLockState = capsLockState
-        prevKeyOn = useCapsLock ? capsLockState() : false
+        lastReadCapsLockOn = capsLockState()
+        latestCapsLockOn = lastReadCapsLockOn
+        prevKeyOn = useCapsLock ? latestCapsLockOn : false
 
         startModifierMonitor()
         if !useCapsLock {
@@ -152,9 +158,15 @@ final class CapsLockGesture {
         return useCapsLock ? capsLockOn : customKeyDown
     }
 
-    /// Caps Lock is on by the state read or by the last key event.
+    /// Caps Lock's state by the most recent transition of the state read or
+    /// a key event.
     private var capsLockOn: Bool {
-        capsLockState() || eventCapsLockOn
+        let read = capsLockState()
+        if read != lastReadCapsLockOn {
+            lastReadCapsLockOn = read
+            latestCapsLockOn = read
+        }
+        return latestCapsLockOn
     }
 
     /// The global key monitor is installed, so keys pressed while another
@@ -292,7 +304,10 @@ final class CapsLockGesture {
         switch event.type {
         case .flagsChanged:
             if useCapsLock {
-                eventCapsLockOn = event.modifierFlags.contains(.capsLock)
+                latestCapsLockOn = event.modifierFlags.contains(.capsLock)
+                // Read transitions count from here, so a later change the
+                // read sees still wins over this event.
+                lastReadCapsLockOn = capsLockState()
             }
             if event.keyCode == Self.capsLockKeyCode {
                 capsLockKeyEventCount += 1
@@ -478,7 +493,7 @@ final class CapsLockGesture {
         keyMonitors.removeAll()
         modifierGlobalMonitor = nil
         customKeyGlobalMonitor = nil
-        eventCapsLockOn = false
+        latestCapsLockOn = lastReadCapsLockOn
         diagnosticLogger("[CapsLockGesture] monitors stopped count=\(monitorCount)")
     }
 

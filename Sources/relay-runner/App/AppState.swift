@@ -1118,7 +1118,7 @@ final class AppState {
                     } else {
                         self.restartSTTForRecovery()
                     }
-                } else if kind == PermissionKind.keyMonitoring {
+                } else if PermissionKind.keyMonitoringGrants.contains(kind) {
                     self.programBoardOverlay.installGlobalDismissHotkey()
                     self.restartSTTForRecovery()
                 }
@@ -4691,14 +4691,15 @@ final class AppState {
         oc.start(stateMachine: stateMachine)
         overlayController = oc
 
-        // Workspace overlay — install Esc dismissal once macOS has granted
-        // Input Monitoring, the permission every global key monitor is gated
-        // on (RR-517). The double-tap Shift board trigger is emitted by the
-        // STT gesture monitor in voice mode and by the note gesture monitor
-        // while taking notes.
-        if PermissionKind.keyMonitoringStatus(permissions.status(for:)) == .granted {
-            programBoardOverlay.installGlobalDismissHotkey()
-        }
+        // Workspace overlay — its in-app key handling (Esc, Command-T/W)
+        // needs no permission, so it is always installed. Esc dismissal from
+        // other apps also needs a global key grant: Input Monitoring or, for
+        // existing installs, Accessibility (RR-517). The double-tap Shift
+        // board trigger is emitted by the STT gesture monitor in voice mode
+        // and by the note gesture monitor while taking notes.
+        programBoardOverlay.installKeyMonitors(
+            keyMonitoring: PermissionKind.keyMonitoringStatus(permissions.status(for:))
+        )
         programBoardOverlay.setThemeResolver { [weak self] in
             guard let state = self?.stateMachine.state else { return nil }
             if case .actionGlow = state { return .stt }

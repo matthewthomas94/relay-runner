@@ -72,8 +72,8 @@ struct CapsLockKeyboardConfiguration: Equatable {
 struct OnboardingTutorialRecordingProbe: Equatable {
     var speech: SetupRuntimeReadiness = .ready
     var microphone: PermissionStatus = .granted
-    /// Input Monitoring preflight, the grant the key monitors run on
-    /// (RR-517; Accessibility doesn't count). A preflight answer only: RR-517
+    /// Key-monitoring preflight: Input Monitoring, or Accessibility on an
+    /// existing install (RR-517). A preflight answer only: RR-517
     /// saw "allowed" with no visible grant, so the watch still requires Caps
     /// Lock activity.
     var keyboardAccess: PermissionStatus = .granted

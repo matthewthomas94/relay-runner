@@ -28,9 +28,10 @@ enum PermissionStatus: Equatable {
 ///   it on every install, before Accessibility, so key monitoring never
 ///   hinges on Accessibility, which a managed Mac may not let the person
 ///   grant or even list (RR-517).
-/// - Accessibility: required only by Relay Runner's app-hosted Relay Actions
+/// - Accessibility: required by Relay Runner's app-hosted Relay Actions
 ///   tool host to click, type, press keys, scroll, and automate UI. Voice,
-///   Caps Lock and the hotkeys never depend on it.
+///   Caps Lock and the hotkeys don't require it, though an existing
+///   Accessibility-only grant still runs the key monitors.
 /// - Screen Recording: required by Relay Runner's app-hosted Relay Vision
 ///   screenshot tool. Without it, the screenshot tool returns a clear error
 ///   string but the rest of the app keeps working.
@@ -534,14 +535,22 @@ private extension PermissionStatus {
 }
 
 extension PermissionKind {
-    /// The permission Caps Lock and the global hotkeys are gated on. Not
-    /// Accessibility: that one is only for computer control (RR-517).
+    /// The permission guided setup asks for so Caps Lock and the global
+    /// hotkeys never hinge on Accessibility, which a managed Mac may not let
+    /// the person grant (RR-517).
     static let keyMonitoring: PermissionKind = .inputMonitoring
 
+    /// Either grant lets global key monitors receive events. Input Monitoring
+    /// is what setup requests now; Accessibility still counts so existing
+    /// installs that only granted it keep their hotkeys after upgrading.
+    static let keyMonitoringGrants: Set<PermissionKind> = [.inputMonitoring, .accessibility]
+
     /// Whether Caps Lock and the global hotkeys have their grant, given each
-    /// permission's status. Only Input Monitoring counts.
+    /// permission's status: granted when Input Monitoring or Accessibility
+    /// is, otherwise Input Monitoring's status, the one setup asks for.
     static func keyMonitoringStatus(_ status: (PermissionKind) -> PermissionStatus) -> PermissionStatus {
-        status(keyMonitoring)
+        if keyMonitoringGrants.contains(where: { status($0) == .granted }) { return .granted }
+        return status(keyMonitoring)
     }
 
     /// The Privacy & Security row's name. macOS 27 renamed the Accessibility

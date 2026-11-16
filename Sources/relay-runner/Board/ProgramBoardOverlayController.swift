@@ -465,15 +465,31 @@ final class ProgramBoardOverlayController {
         }
     }
 
+    /// Installs the Workspace's key handling for a key-monitoring status
+    /// (`PermissionKind.keyMonitoringStatus`). The in-app monitor needs no
+    /// permission; Esc from other apps waits for a global key grant (RR-517).
+    func installKeyMonitors(keyMonitoring: PermissionStatus) {
+        installLocalKeyMonitor()
+        if keyMonitoring == .granted { installGlobalDismissHotkey() }
+    }
+
+    var hasLocalKeyMonitor: Bool { localMonitor != nil }
+    var hasGlobalKeyMonitor: Bool { globalMonitor != nil }
+
     func installGlobalDismissHotkey() {
-        let mask: NSEvent.EventTypeMask = [.keyDown]
         if globalMonitor == nil {
-            globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+            globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
                 self?.handle(event)
             }
         }
+        installLocalKeyMonitor()
+    }
+
+    /// Esc and Command-T/W while Relay Runner is in front. Local monitors
+    /// need no privacy permission, so this is installed unconditionally.
+    func installLocalKeyMonitor() {
         if localMonitor == nil {
-            localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
                 if self?.handlePMTabShortcut(event) == true { return nil }
                 self?.handle(event)
                 return event

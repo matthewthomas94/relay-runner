@@ -439,6 +439,66 @@ final class OnboardingManagedMacTests: XCTestCase {
         XCTAssertFalse(gesture.isActivationHeld)
     }
 
+    func testMissedCapsLockOffEventYieldsToTheStateRead() throws {
+        // No global monitor: Caps Lock goes on while Relay is in front, then
+        // off in another app, so only the state read sees it go off.
+        var capsLockRead = false
+        var local: ((NSEvent) -> NSEvent?)?
+        let gesture = CapsLockGesture(
+            globalMonitorInstaller: { _, _ in nil },
+            localMonitorInstaller: { _, handler in local = handler; return NSObject() },
+            monitorRemover: { _ in },
+            diagnosticLogger: { _ in },
+            capsLockState: { capsLockRead }
+        )
+        defer { gesture.stopMonitoring() }
+        let handler = try XCTUnwrap(local)
+
+        capsLockRead = true
+        _ = handler(capsLockEvent(on: true))
+        XCTAssertEqual(gesture.poll(currentSegment: ""), .startRecording)
+        capsLockRead = false
+        XCTAssertNil(gesture.poll(currentSegment: ""))
+        XCTAssertFalse(gesture.isActivationHeld, "the missed off event doesn't leave recording on")
+
+        // reset() doesn't suppress, so the next Caps Lock press records again.
+        gesture.reset()
+        _ = handler(capsLockEvent(on: true))
+        XCTAssertEqual(gesture.poll(currentSegment: ""), .startRecording)
+    }
+
+    // MARK: - Existing installs with only Accessibility
+
+    func testAccessibilityOnlyUpgraderKeepsWorkspaceHotkeysAndKeyMonitoring() {
+        // Before RR-517 setup never asked for Input Monitoring.
+        let upgrader: [PermissionKind: PermissionStatus] = [
+            .microphone: .granted, .accessibility: .granted, .inputMonitoring: .notDetermined,
+        ]
+        let keyMonitoring = PermissionKind.keyMonitoringStatus { upgrader[$0] ?? .notDetermined }
+        XCTAssertEqual(keyMonitoring, .granted)
+        // An Accessibility grant arriving later restarts STT and installs Esc too.
+        XCTAssertTrue(PermissionKind.keyMonitoringGrants.contains(.accessibility))
+        XCTAssertTrue(PermissionKind.keyMonitoringGrants.contains(.inputMonitoring))
+
+        var probe = OnboardingTutorialRecordingProbe()
+        probe.keyboardAccess = keyMonitoring
+        XCTAssertNotEqual(OnboardingTutorialRecordingHelp.diagnose(.noCapsLockEvents, probe: probe).reason,
+                          .keyboardAccessMissing)
+
+        let board = ProgramBoardOverlayController(boardRouteResolver: { .unavailable })
+        board.installKeyMonitors(keyMonitoring: keyMonitoring)
+        XCTAssertTrue(board.hasLocalKeyMonitor)
+        XCTAssertTrue(board.hasGlobalKeyMonitor)
+    }
+
+    func testWorkspaceInAppShortcutsInstallWithoutAnyKeyGrant() {
+        // Esc and Command-T/W in front of Relay need no permission at all.
+        let board = ProgramBoardOverlayController(boardRouteResolver: { .unavailable })
+        board.installKeyMonitors(keyMonitoring: .notDetermined)
+        XCTAssertTrue(board.hasLocalKeyMonitor)
+        XCTAssertFalse(board.hasGlobalKeyMonitor)
+    }
+
     // MARK: - A key monitor that attaches late
 
     func testLateKeyMonitorShowsWaitingStateThenAdvancesWithoutWorkspaceToggle() throws {
@@ -519,8 +579,10 @@ final class OnboardingManagedMacTests: XCTestCase {
         // Caps Lock and the hotkeys are gated on Input Monitoring, not Accessibility.
         let onlyAccessibility: [PermissionKind: PermissionStatus] = [.accessibility: .granted, .inputMonitoring: .denied]
         let onlyInputMonitoring: [PermissionKind: PermissionStatus] = [.accessibility: .denied, .inputMonitoring: .granted]
-        XCTAssertEqual(PermissionKind.keyMonitoringStatus { onlyAccessibility[$0] ?? .denied }, .denied)
+        XCTAssertEqual(PermissionKind.keyMonitoringStatus { onlyAccessibility[$0] ?? .denied }, .granted,
+                       "an existing Accessibility grant still runs the key monitors")
         XCTAssertEqual(PermissionKind.keyMonitoringStatus { onlyInputMonitoring[$0] ?? .denied }, .granted)
+        XCTAssertEqual(PermissionKind.keyMonitoringStatus { _ in .notDetermined }, .notDetermined)
 
         // A fresh install with nothing granted asks for Input Monitoring second.
         var statuses: [PermissionKind: PermissionStatus] = [.microphone: .granted]
