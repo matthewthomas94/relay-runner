@@ -148,6 +148,7 @@ final class ProgramBoardOverlayController {
     private var boardFileRevisions: [String: WorkspaceActivitySnapshotStore.FileRevision]?
     private var boardChangeRefreshTask: Task<Void, Never>?
     private var boardRouteResolver: () -> ProjectResolver.BoardRoute
+    private var spaceChangeObserver: NSObjectProtocol?
 
     init(
         boardRouteResolver: @escaping () -> ProjectResolver.BoardRoute = ProjectResolver.resolveBoardRoute,
@@ -157,6 +158,15 @@ final class ProgramBoardOverlayController {
         self.boardRouteResolver = boardRouteResolver
         self.diagnostics = diagnostics
         self.model = model ?? ProgramBoardViewModel(diagnostics: diagnostics)
+        // A three-finger swipe to another Space dismisses the Workspace,
+        // which otherwise follows the user onto every Space.
+        spaceChangeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.hide()
+        }
     }
 
     func setThemeResolver(_ resolver: @escaping () -> ParticleFieldRenderer.Theme?) {
@@ -511,6 +521,7 @@ final class ProgramBoardOverlayController {
     }
 
     deinit {
+        if let o = spaceChangeObserver { NSWorkspace.shared.notificationCenter.removeObserver(o) }
         if let m = globalMonitor { NSEvent.removeMonitor(m) }
         if let m = localMonitor { NSEvent.removeMonitor(m) }
         updateCheckTask?.cancel()
