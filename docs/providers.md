@@ -116,6 +116,8 @@ The supported default is **Start Session** in Workspace. It launches the selecte
 
 If sign-in is needed, Start Session opens the selected provider's login flow automatically. Complete the browser sign-in or paste the code into the terminal; startup continues after authentication succeeds. Queued voice prompts wait until the provider is ready. Canceling or failing sign-in ends startup with a retry message. The external Terminal.app compatibility route uses the same login behavior.
 
+Onboarding's sign-in step runs the same login command (`claude auth login --claudeai`, or `codex login` limited to ChatGPT) in an embedded terminal on the setup screen. **Open sign-in page** and **Copy link** use the link the command prints, and a click on a link in the terminal opens it too. **Cancel** stops the command and everything it started. When the command exits, onboarding rechecks readiness by itself and continues, or shows why not with **Try again**. Terminal.app opens only if the embedded terminal cannot start.
+
 For a terminal you launched yourself, install Relay Skills from **Settings → General**, then invoke the relay-bridge skill from the active Codex or Claude session. `relay-stop` ends that manual bridge. Directly running `relay-rs bridge` is an implementation path, not a supported user entry point.
 
 ### Embedded terminal editing keys

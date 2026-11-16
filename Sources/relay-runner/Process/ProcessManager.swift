@@ -2579,13 +2579,13 @@ final class ProcessManager {
         return "cd \(Self.shellQuoted(url.path))"
     }
 
-    private static func shellQuoted(_ value: String) -> String {
+    static func shellQuoted(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
     /// Returns shell commands to source the user's profile so PATH includes
     /// tools like claude, codex, etc. that aren't on the default app PATH.
-    private static func shellProfileSource() -> String {
+    static func shellProfileSource() -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         // Try zprofile/zshrc first (macOS default), then bash
         let candidates = [

@@ -383,6 +383,8 @@ final class OnboardingIntroTests: XCTestCase {
         var loggedIn = false
         var subscriptionAccount = false
         var verified = false
+        var terminalLaunches: [GeneralConfig.AgentProvider] = []
+        var logins: [FakeProviderLogin] = []
         let controller = OnboardingController(
             permissions: PermissionsManager(),
             flagURLs: flagURLs,
@@ -398,8 +400,13 @@ final class OnboardingIntroTests: XCTestCase {
                     completion(verified ? nil : gateMessage)
                 }
             },
-            openAgentLoginInTerminal: { _ in
-                loggedIn = true
+            makeProviderLogin: { provider in
+                let login = FakeProviderLogin(provider: provider)
+                logins.append(login)
+                return login
+            },
+            openAgentLoginInTerminal: {
+                terminalLaunches.append($0)
                 return true
             },
             runtimePollInterval: 0.01,
@@ -415,22 +422,25 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertEqual(intro.loginPrompts.last?.signedIn, false)
         XCTAssertEqual(intro.loginPrompts.last?.message, gateMessage)
 
-        // Console sign-in: logged in, but not on a subscription.
+        // Console sign-in: logged in, but not on a subscription. The exit
+        // alone reruns the gate, which still refuses.
         intro.performLoginAction()
-        waitForMainQueue(after: 0.1)
-        XCTAssertTrue(loggedIn)
+        loggedIn = true
+        try XCTUnwrap(logins.last).finish(.exited(0))
+        waitForMainQueue(after: 0.05)
         XCTAssertTrue(intro.workspacePromptPaths.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.agentChoice.path))
-
-        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: NSApp)
-        waitForMainQueue(after: 0.05)
         XCTAssertEqual(intro.loginPrompts.last?.signedIn, false)
         XCTAssertEqual(intro.loginPrompts.last?.message, gateMessage)
+        XCTAssertEqual(intro.loginPrompts.last?.retry, true)
 
         // Signing in again with the subscription account passes the recheck.
         subscriptionAccount = true
         intro.performLoginAction()
-        waitForMainQueue(after: 0.1)
+        try XCTUnwrap(logins.last).finish(.exited(0))
+        waitForMainQueue(after: 0.05)
+        XCTAssertEqual(logins.count, 2)
+        XCTAssertEqual(terminalLaunches, [])
         XCTAssertEqual(intro.workspacePromptPaths, ["/Users/example/current"])
         XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.agentChoice.path))
     }
@@ -614,7 +624,7 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertTrue(secondIntro.agentChoiceSelectedProviders.isEmpty)
     }
 
-    func testLoginDismissesIntroBeforeTerminalAndRestoresRetryOnCancel() throws {
+    func testTerminalAppFallbackDismissesIntroBeforeTerminalAndRestoresRetryOnCancel() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -636,6 +646,7 @@ final class OnboardingIntroTests: XCTestCase {
             makeSetupInstaller: { installer },
             runtimeAlreadyInstalled: { _ in false },
             isAgentAuthenticated: { _ in false },
+            makeProviderLogin: { FakeProviderLogin(provider: $0, startError: EmbeddedTerminalProcessError.couldNotStart) },
             openAgentLoginInTerminal: {
                 events.append("terminal:\($0.rawValue)")
                 return true
@@ -694,6 +705,7 @@ final class OnboardingIntroTests: XCTestCase {
                 refreshAgentReadiness: { _, completion in
                     DispatchQueue.main.async { completion(authenticated ? nil : gateMessage) }
                 },
+                makeProviderLogin: { FakeProviderLogin(provider: $0, startError: EmbeddedTerminalProcessError.couldNotStart) },
                 openAgentLoginInTerminal: { _ in true },
                 runtimePollInterval: 0.01,
                 authPollInterval: 0.01,
@@ -748,9 +760,15 @@ final class OnboardingIntroTests: XCTestCase {
             makeSetupInstaller: { installer },
             runtimeAlreadyInstalled: { _ in false },
             isAgentAuthenticated: { _ in authenticated },
-            openAgentLoginInTerminal: { _ in
-                authenticated = true
-                return true
+            makeProviderLogin: { provider in
+                let login = FakeProviderLogin(provider: provider)
+                login.onStart = {
+                    DispatchQueue.main.async {
+                        authenticated = true
+                        login.finish(.exited(0))
+                    }
+                }
+                return login
             },
             runtimePollInterval: 0.01,
             authPollInterval: 0.01,
@@ -2892,6 +2910,280 @@ final class OnboardingIntroTests: XCTestCase {
         controller.noteTutorialWorkspaceToggled()
         drainMainQueue()
     }
+
+    // MARK: - RR-513 in-app sign-in
+
+    func testSignInRunsInTheEmbeddedTerminalAndContinuesWhenLoginExitsForBothProviders() throws {
+        for provider in [GeneralConfig.AgentProvider.claude, .codex] {
+            OnboardingResumeState.clear()
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+
+            let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+            let intro = CapturingIntroPresenter()
+            var authenticated = false
+            var readinessChecks = 0
+            var terminalLaunches: [GeneralConfig.AgentProvider] = []
+            var externalWindows = 0
+            var logins: [FakeProviderLogin] = []
+            var dismissals = 0
+            intro.onDismiss = { dismissals += 1 }
+            let controller = OnboardingController(
+                permissions: PermissionsManager(),
+                flagURLs: flagURLs,
+                getWorkingDirectory: { "/Users/example/current" },
+                permissionStatus: { _ in .granted },
+                makeIntroController: { intro },
+                makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+                runtimeAlreadyInstalled: { _ in false },
+                isAgentAuthenticated: { _ in authenticated },
+                refreshAgentReadiness: { _, completion in
+                    readinessChecks += 1
+                    DispatchQueue.main.async { completion(authenticated ? nil : "Not signed in.") }
+                },
+                makeProviderLogin: { provider in
+                    let login = FakeProviderLogin(provider: provider)
+                    logins.append(login)
+                    return login
+                },
+                openAgentLoginInTerminal: {
+                    terminalLaunches.append($0)
+                    return true
+                },
+                onOpenExternalWindow: { externalWindows += 1 },
+                runtimePollInterval: 0.01,
+                authPollInterval: 0.01,
+                introAdvanceDelay: 0,
+                loginPromptDwell: 0,
+                reduceMotion: { true }
+            )
+
+            controller.showIfNeeded()
+            provider == .codex ? intro.performCodexAction() : intro.performClaudeAction()
+            waitForMainQueue(after: 0.05)
+            XCTAssertEqual(intro.loginPrompts.last?.retry, false, provider.rawValue)
+
+            intro.performLoginAction()
+            XCTAssertEqual(intro.loginTerminals, [provider], provider.rawValue)
+            XCTAssertEqual(logins.map(\.provider), [provider])
+            XCTAssertEqual(logins.first?.startCount, 1)
+            XCTAssertEqual(dismissals, 0, "sign-in stays inside Relay Runner")
+            XCTAssertEqual(externalWindows, 0)
+
+            // A second click while the login runs starts nothing new.
+            intro.performLoginAction()
+            XCTAssertEqual(logins.count, 1)
+
+            // The login exits 0; the recheck runs without any user action.
+            let checksBeforeExit = readinessChecks
+            authenticated = true
+            try XCTUnwrap(logins.first).finish(.exited(0))
+            waitForMainQueue(after: 0.05)
+
+            XCTAssertGreaterThan(readinessChecks, checksBeforeExit, provider.rawValue)
+            XCTAssertEqual(intro.workspacePromptPaths, ["/Users/example/current"], provider.rawValue)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: flagURLs.agentChoice.path), provider.rawValue)
+            XCTAssertEqual(terminalLaunches, [], "Terminal.app must not open on the in-app path")
+        }
+    }
+
+    func testFailedOrUnverifiedSignInShowsWhyAndOffersTryAgainForBothProviders() throws {
+        for provider in [GeneralConfig.AgentProvider.claude, .codex] {
+            OnboardingResumeState.clear()
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+
+            let flagURLs = OnboardingFlagURLs.testURLs(in: directory)
+            let intro = CapturingIntroPresenter()
+            let detail = "Relay Runner only uses your \(provider.displayName) subscription."
+            var logins: [FakeProviderLogin] = []
+            var terminalLaunches = 0
+            let controller = OnboardingController(
+                permissions: PermissionsManager(),
+                flagURLs: flagURLs,
+                permissionStatus: { _ in .granted },
+                makeIntroController: { intro },
+                makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+                runtimeAlreadyInstalled: { _ in false },
+                isAgentAuthenticated: { _ in false },
+                refreshAgentReadiness: { _, completion in
+                    DispatchQueue.main.async { completion(detail) }
+                },
+                makeProviderLogin: { provider in
+                    let login = FakeProviderLogin(provider: provider)
+                    logins.append(login)
+                    return login
+                },
+                openAgentLoginInTerminal: { _ in
+                    terminalLaunches += 1
+                    return true
+                },
+                runtimePollInterval: 0.01,
+                introAdvanceDelay: 0,
+                loginPromptDwell: 0,
+                reduceMotion: { true }
+            )
+
+            controller.showIfNeeded()
+            provider == .codex ? intro.performCodexAction() : intro.performClaudeAction()
+            waitForMainQueue(after: 0.05)
+
+            // Non-zero exit: the code and the readiness reason, with Try again.
+            intro.performLoginAction()
+            try XCTUnwrap(logins.last).finish(.exited(1))
+            waitForMainQueue(after: 0.05)
+            XCTAssertEqual(intro.loginPrompts.last?.signedIn, false)
+            XCTAssertEqual(intro.loginPrompts.last?.retry, true, provider.rawValue)
+            XCTAssertEqual(intro.loginPrompts.last?.message,
+                           "\(provider.displayName) sign-in exited with code 1. \(detail)")
+
+            // Try again starts a fresh login; it exits 0 but the recheck fails.
+            intro.performLoginAction()
+            XCTAssertEqual(logins.count, 2)
+            XCTAssertEqual(intro.loginTerminals, [provider, provider])
+            try XCTUnwrap(logins.last).finish(.exited(0))
+            waitForMainQueue(after: 0.05)
+            XCTAssertEqual(intro.loginPrompts.last?.retry, true)
+            XCTAssertEqual(intro.loginPrompts.last?.message, detail)
+            XCTAssertTrue(intro.workspacePromptPaths.isEmpty)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: flagURLs.agentChoice.path))
+            XCTAssertEqual(terminalLaunches, 0)
+        }
+    }
+
+    func testCancellingSignInStopsTheLoginAndReturnsToTryAgain() throws {
+        for provider in [GeneralConfig.AgentProvider.claude, .codex] {
+            OnboardingResumeState.clear()
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+
+            let intro = CapturingIntroPresenter()
+            var logins: [FakeProviderLogin] = []
+            let controller = OnboardingController(
+                permissions: PermissionsManager(),
+                flagURLs: OnboardingFlagURLs.testURLs(in: directory),
+                permissionStatus: { _ in .granted },
+                makeIntroController: { intro },
+                makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+                runtimeAlreadyInstalled: { _ in false },
+                isAgentAuthenticated: { _ in false },
+                makeProviderLogin: { provider in
+                    let login = FakeProviderLogin(provider: provider)
+                    logins.append(login)
+                    return login
+                },
+                runtimePollInterval: 0.01,
+                introAdvanceDelay: 0,
+                loginPromptDwell: 0,
+                reduceMotion: { true }
+            )
+
+            controller.showIfNeeded()
+            provider == .codex ? intro.performCodexAction() : intro.performClaudeAction()
+            waitForMainQueue(after: 0.05)
+            intro.performLoginAction()
+            let login = try XCTUnwrap(logins.last)
+
+            intro.performLoginTerminalCancel()
+            XCTAssertEqual(login.cancelCount, 1)
+            login.finish(.cancelled)
+            waitForMainQueue(after: 0.05)
+
+            XCTAssertEqual(intro.loginPrompts.last?.provider, provider)
+            XCTAssertEqual(intro.loginPrompts.last?.retry, true)
+            XCTAssertEqual(intro.loginPrompts.last?.message, "\(provider.displayName) sign-in was canceled.")
+
+            // Cancelling after the login has already ended does nothing.
+            intro.performLoginTerminalCancel()
+            XCTAssertEqual(login.cancelCount, 1)
+        }
+    }
+
+    func testRealEmbeddedLoginWithAFakeBinaryRechecksAndContinuesWhenItExits() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // Prints a sign-in URL, waits, records a credential and exits 0.
+        let marker = directory.appendingPathComponent("signed-in")
+        let fake = directory.appendingPathComponent("fake-login")
+        try """
+        #!/bin/bash
+        echo 'Visit https://claude.ai/oauth/authorize?state=fake to sign in'
+        sleep 0.3
+        touch '\(marker.path)'
+        exit 0
+        """.write(to: fake, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fake.path)
+
+        let intro = CapturingIntroPresenter()
+        var login: ProviderLoginTerminal?
+        var terminalLaunches = 0
+        let controller = OnboardingController(
+            permissions: PermissionsManager(),
+            flagURLs: OnboardingFlagURLs.testURLs(in: directory),
+            getWorkingDirectory: { "/Users/example/current" },
+            permissionStatus: { _ in .granted },
+            makeIntroController: { intro },
+            makeSetupInstaller: { FakeRuntimeInstaller(installStatus: .succeeded) },
+            runtimeAlreadyInstalled: { _ in false },
+            isAgentAuthenticated: { _ in FileManager.default.fileExists(atPath: marker.path) },
+            makeProviderLogin: { provider in
+                let terminal = ProviderLoginTerminal(
+                    provider: provider,
+                    command: ProviderLoginCommand(executable: fake.path, arguments: [], banner: "fake")
+                )
+                login = terminal
+                return terminal
+            },
+            openAgentLoginInTerminal: { _ in
+                terminalLaunches += 1
+                return true
+            },
+            runtimePollInterval: 0.01,
+            introAdvanceDelay: 0,
+            loginPromptDwell: 0,
+            reduceMotion: { true }
+        )
+
+        controller.showIfNeeded()
+        intro.performClaudeAction()
+        waitForMainQueue(after: 0.05)
+        intro.performLoginAction()
+        XCTAssertEqual(intro.loginTerminals, [.claude])
+        XCTAssertEqual(login?.isRunning, true)
+
+        let deadline = Date().addingTimeInterval(10)
+        while intro.workspacePromptPaths.isEmpty, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertEqual(intro.workspacePromptPaths, ["/Users/example/current"])
+        XCTAssertEqual(login?.signInURL, "https://claude.ai/oauth/authorize?state=fake")
+        XCTAssertEqual(login?.isRunning, false)
+        XCTAssertEqual(terminalLaunches, 0)
+    }
+
+    func testInAppSignInFailureMessages() {
+        XCTAssertEqual(
+            OnboardingController.inAppLoginFailureMessage(provider: .codex, outcome: .exited(0), detail: nil),
+            "Codex sign-in finished, but Relay Runner could not confirm that you are signed in."
+        )
+        XCTAssertEqual(
+            OnboardingController.inAppLoginFailureMessage(provider: .claude, outcome: .exited(nil), detail: nil),
+            "Claude sign-in stopped before it finished."
+        )
+        XCTAssertEqual(
+            OnboardingController.inAppLoginFailureMessage(provider: .claude, outcome: .exited(0), detail: "Gate says no."),
+            "Gate says no."
+        )
+    }
 }
 
 private final class CapturingIntroPresenter: OnboardingIntroPresenting {
@@ -2901,6 +3193,8 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
     private(set) var agentChoiceSelectedProviders: [GeneralConfig.AgentProvider] = []
     private(set) var runtimePrompts: [OnboardingRuntimePromptPresentation] = []
     private(set) var loginPrompts: [OnboardingAgentLoginPromptPresentation] = []
+    private(set) var loginTerminals: [GeneralConfig.AgentProvider] = []
+    private var loginTerminalCancelAction: (() -> Void)?
     private(set) var continueWithoutSignInOffered: [Bool] = []
     private(set) var workspacePromptPaths: [String] = []
     private(set) var tutorialPresentations: [OnboardingTutorialPresentation] = []
@@ -2970,6 +3264,17 @@ private final class CapturingIntroPresenter: OnboardingIntroPresenting {
 
     func performContinueWithoutSignIn() {
         continueWithoutSignInAction?()
+    }
+
+    func presentAgentLoginTerminal(_ login: any ProviderLoginRunning,
+                                   cancelAction: @escaping () -> Void) {
+        events.append("loginTerminal:\(login.provider.rawValue)")
+        loginTerminals.append(login.provider)
+        loginTerminalCancelAction = cancelAction
+    }
+
+    func performLoginTerminalCancel() {
+        loginTerminalCancelAction?()
     }
 
     func presentWorkspacePrompt(currentPath: String,
@@ -3087,6 +3392,9 @@ private final class DeferredDismissIntroPresenter: OnboardingIntroPresenting {
         fullyRendered()
     }
 
+    func presentAgentLoginTerminal(_ login: any ProviderLoginRunning,
+                                   cancelAction: @escaping () -> Void) {}
+
     func presentWorkspacePrompt(currentPath: String,
                                 continueAction: @escaping () -> Void,
                                 browseAction: @escaping () -> Void) {
@@ -3128,6 +3436,47 @@ private final class DeferredDismissIntroPresenter: OnboardingIntroPresenting {
         dismissCompletion = nil
         completion?()
     }
+}
+
+/// Stands in for the embedded sign-in terminal; no login process runs.
+private final class FakeProviderLogin: ProviderLoginRunning {
+    let provider: GeneralConfig.AgentProvider
+    let terminalView = NSView()
+    var signInURL: String?
+    private(set) var isCancelling = false
+    private(set) var startCount = 0
+    private(set) var cancelCount = 0
+    private let startError: Error?
+    private var onExit: ((ProviderLoginOutcome) -> Void)?
+    var onStart: (() -> Void)?
+
+    init(provider: GeneralConfig.AgentProvider, startError: Error? = nil) {
+        self.provider = provider
+        self.startError = startError
+    }
+
+    var isRunning: Bool { onExit != nil }
+
+    func start(onExit: @escaping (ProviderLoginOutcome) -> Void) throws {
+        startCount += 1
+        if let startError { throw startError }
+        self.onExit = onExit
+        onStart?()
+    }
+
+    func cancel() {
+        cancelCount += 1
+        isCancelling = true
+    }
+
+    func finish(_ outcome: ProviderLoginOutcome) {
+        let exit = onExit
+        onExit = nil
+        exit?(outcome)
+    }
+
+    func openSignInURL() {}
+    func copySignInURL() {}
 }
 
 private final class FakeRuntimeInstaller: OnboardingRuntimeInstalling {

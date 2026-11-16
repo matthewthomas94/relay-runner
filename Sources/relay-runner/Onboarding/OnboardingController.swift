@@ -84,6 +84,9 @@ final class OnboardingController {
     /// why the provider isn't ready. Claude's subscription gate is slow, so it
     /// answers asynchronously; the default answers at once with no detail.
     private let refreshAgentReadiness: (GeneralConfig.AgentProvider, @escaping (String?) -> Void) -> Void
+    /// RR-513: sign-in runs in Relay Runner's embedded terminal. Terminal.app
+    /// (`openAgentLoginInTerminal`) is only the fallback when that cannot start.
+    private let makeProviderLogin: (GeneralConfig.AgentProvider) -> any ProviderLoginRunning
     private let openAgentLoginInTerminal: (GeneralConfig.AgentProvider) -> Bool
     private let onOpenExternalWindow: () -> Void
     private let runtimePollInterval: TimeInterval
@@ -108,6 +111,7 @@ final class OnboardingController {
     private var runtimePollTimer: Timer?
     private var authPollTimer: Timer?
     private var appActivationObserver: NSObjectProtocol?
+    private var providerLogin: (any ProviderLoginRunning)?
     private var forceWorkspaceSelectionAfterIntro = false
     private var tutorialState: TutorialState?
     private var tutorialIntroAdvance: DispatchWorkItem?
@@ -154,6 +158,7 @@ final class OnboardingController {
          runtimeAlreadyInstalled: @escaping (GeneralConfig.AgentProvider) -> Bool = { RelaySetupInstaller.alreadyInstalled(for: $0) },
          isAgentAuthenticated: @escaping (GeneralConfig.AgentProvider) -> Bool = { AgentAuth.isAuthenticated(for: $0) },
          refreshAgentReadiness: @escaping (GeneralConfig.AgentProvider, @escaping (String?) -> Void) -> Void = { _, done in done(nil) },
+         makeProviderLogin: @escaping (GeneralConfig.AgentProvider) -> any ProviderLoginRunning = { ProviderLoginTerminal(provider: $0) },
          openAgentLoginInTerminal: @escaping (GeneralConfig.AgentProvider) -> Bool = { AgentAuth.openLoginInTerminal(for: $0) },
          onOpenExternalWindow: @escaping () -> Void = {},
          runtimePollInterval: TimeInterval = 0.5,
@@ -203,6 +208,7 @@ final class OnboardingController {
         self.runtimeAlreadyInstalled = runtimeAlreadyInstalled
         self.isAgentAuthenticated = isAgentAuthenticated
         self.refreshAgentReadiness = refreshAgentReadiness
+        self.makeProviderLogin = makeProviderLogin
         self.openAgentLoginInTerminal = openAgentLoginInTerminal
         self.onOpenExternalWindow = onOpenExternalWindow
         self.runtimePollInterval = runtimePollInterval
@@ -221,6 +227,7 @@ final class OnboardingController {
         removeFreshPermissionObservers()
         stopRuntimePolling()
         stopAuthPolling()
+        providerLogin?.cancel()
         cancelTutorialIntroAdvance()
         stopTutorialSpeech()
     }
@@ -743,7 +750,7 @@ final class OnboardingController {
         runtimePollTimer = nil
     }
 
-    private func showIntroAgentLogin(message: String?) {
+    private func showIntroAgentLogin(message: String?, retry: Bool = false) {
         guard let state = agentSetupState,
               introController != nil else { return }
         stopRuntimePolling()
@@ -753,20 +760,26 @@ final class OnboardingController {
             parentPermissionsReviewed: true
         )
         refreshAgentReadiness(state.provider) { [weak self] detail in
-            self?.presentIntroAgentLogin(provider: state.provider, message: message ?? detail)
+            self?.presentIntroAgentLogin(provider: state.provider, message: message ?? detail, retry: retry)
         }
     }
 
-    private func presentIntroAgentLogin(provider: GeneralConfig.AgentProvider, message: String?) {
+    private func presentIntroAgentLogin(
+        provider: GeneralConfig.AgentProvider,
+        message: String?,
+        retry: Bool = false
+    ) {
         guard let state = agentSetupState,
               state.provider == provider,
+              providerLogin == nil,
               let intro = introController else { return }
         let signedIn = isAgentAuthenticated(state.provider)
         intro.presentAgentLoginPrompt(
             OnboardingAgentLoginPromptPresentation(
                 provider: state.provider,
                 signedIn: signedIn,
-                message: signedIn ? nil : message
+                message: signedIn ? nil : message,
+                retry: !signedIn && retry
             ),
             fullyRendered: { [weak self] in
                 guard signedIn else { return }
@@ -799,24 +812,92 @@ final class OnboardingController {
 
     private func startIntroAgentLogin() {
         guard let state = agentSetupState,
+              providerLogin == nil,
               let intro = introController else { return }
         OnboardingResumeState.save(
             step: .agentLogin,
             provider: state.provider,
             parentPermissionsReviewed: true
         )
+        let login = makeProviderLogin(state.provider)
+        providerLogin = login
+        do {
+            try login.start { [weak self, weak login] outcome in
+                guard let self, let login, self.providerLogin === login else { return }
+                self.providerLogin = nil
+                self.finishInAppLogin(provider: state.provider, outcome: outcome)
+            }
+        } catch {
+            providerLogin = nil
+            startTerminalAppLogin(provider: state.provider, intro: intro)
+            return
+        }
+        // A login that already ended has shown its own result.
+        guard providerLogin === login else { return }
+        intro.presentAgentLoginTerminal(login) { [weak self, weak login] in
+            guard let login, self?.providerLogin === login else { return }
+            login.cancel()
+        }
+    }
+
+    /// The login process has exited: recheck readiness at once and continue,
+    /// or say why not and offer Try again.
+    private func finishInAppLogin(provider: GeneralConfig.AgentProvider, outcome: ProviderLoginOutcome) {
+        guard agentSetupState?.provider == provider else { return }
+        refreshAgentReadiness(provider) { [weak self] detail in
+            guard let self,
+                  self.providerLogin == nil,
+                  self.agentSetupState?.provider == provider else { return }
+            if outcome != .cancelled, self.isAgentAuthenticated(provider) {
+                self.completeAuthenticatedProvider(provider, introDismissed: false)
+                return
+            }
+            self.presentIntroAgentLogin(
+                provider: provider,
+                message: Self.inAppLoginFailureMessage(provider: provider, outcome: outcome, detail: detail),
+                retry: true
+            )
+        }
+    }
+
+    static func inAppLoginFailureMessage(
+        provider: GeneralConfig.AgentProvider,
+        outcome: ProviderLoginOutcome,
+        detail: String?
+    ) -> String {
+        let name = provider.displayName
+        let reason: String?
+        switch outcome {
+        case .cancelled:
+            reason = "\(name) sign-in was canceled."
+        case .exited(0):
+            reason = nil
+        case .exited(let status?):
+            reason = "\(name) sign-in exited with code \(status)."
+        case .exited(nil):
+            reason = "\(name) sign-in stopped before it finished."
+        }
+        let fallback = "\(name) sign-in finished, but Relay Runner could not confirm that you are signed in."
+        return [reason, detail ?? (reason == nil ? fallback : nil)]
+            .compactMap { $0 }
+            .joined(separator: " ")
+    }
+
+    /// Fallback for when the embedded terminal cannot start: the earlier
+    /// Terminal.app sign-in, which brings Relay Runner back when it exits.
+    private func startTerminalAppLogin(provider: GeneralConfig.AgentProvider, intro: any OnboardingIntroPresenting) {
         intro.dismiss { [weak self] in
             guard let self else { return }
             self.setOnboardingNotchOverrideActive(false)
             self.onOpenExternalWindow()
-            guard self.openAgentLoginInTerminal(state.provider) else {
+            guard self.openAgentLoginInTerminal(provider) else {
                 self.restoreIntroAgentLogin(
-                    provider: state.provider,
-                    message: "Could not open Terminal for \(state.provider.displayName) sign-in."
+                    provider: provider,
+                    message: "Could not open Terminal for \(provider.displayName) sign-in."
                 )
                 return
             }
-            self.startAuthPolling(provider: state.provider)
+            self.startAuthPolling(provider: provider)
         }
     }
 
@@ -887,7 +968,7 @@ final class OnboardingController {
         if introController == nil {
             introController = makeIntroController()
         }
-        showIntroAgentLogin(message: message)
+        showIntroAgentLogin(message: message, retry: true)
     }
 
     private func stopAuthPolling() {
@@ -1176,6 +1257,7 @@ final class OnboardingController {
     private func finish(completion: @escaping () -> Void = {}) {
         stopRuntimePolling()
         stopAuthPolling()
+        providerLogin?.cancel()
         cancelTutorialIntroAdvance()
         stopTutorialSpeech()
         cancelPermissionSetup(.onboarding)
