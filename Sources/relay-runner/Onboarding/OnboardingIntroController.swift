@@ -66,6 +66,11 @@ protocol OnboardingIntroPresenting: AnyObject {
     func present(completion: @escaping () -> Void)
     func presentPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
                                  action: @escaping () -> Void)
+    /// RR-514: permission and tutorial steps carry the corner Skip button;
+    /// every other step shows none.
+    func presentPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
+                                 action: @escaping () -> Void,
+                                 skipAction: (() -> Void)?)
     func presentAgentChoicePrompt(selectedProvider: GeneralConfig.AgentProvider,
                                   codexAction: @escaping () -> Void,
                                   claudeAction: @escaping () -> Void)
@@ -89,10 +94,28 @@ protocol OnboardingIntroPresenting: AnyObject {
     func presentTutorial(_ presentation: OnboardingTutorialPresentation,
                          retryAction: @escaping () -> Void,
                          recordingActions: OnboardingTutorialRecordingActions?)
+    func presentTutorial(_ presentation: OnboardingTutorialPresentation,
+                         retryAction: @escaping () -> Void,
+                         recordingActions: OnboardingTutorialRecordingActions?,
+                         skipAction: (() -> Void)?)
     func dismiss(completion: @escaping () -> Void)
 }
 
 extension OnboardingIntroPresenting {
+    /// Presenters without a Skip button ignore it.
+    func presentPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
+                                 action: @escaping () -> Void,
+                                 skipAction: (() -> Void)?) {
+        presentPermissionPrompt(presentation, action: action)
+    }
+
+    func presentTutorial(_ presentation: OnboardingTutorialPresentation,
+                         retryAction: @escaping () -> Void,
+                         recordingActions: OnboardingTutorialRecordingActions?,
+                         skipAction: (() -> Void)?) {
+        presentTutorial(presentation, retryAction: retryAction, recordingActions: recordingActions)
+    }
+
     /// Presenters without recording-step buttons ignore them.
     func presentTutorial(_ presentation: OnboardingTutorialPresentation,
                          retryAction: @escaping () -> Void,
@@ -714,6 +737,12 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
 
     func presentPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
                                  action: @escaping () -> Void) {
+        presentPermissionPrompt(presentation, action: action, skipAction: nil)
+    }
+
+    func presentPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
+                                 action: @escaping () -> Void,
+                                 skipAction: (() -> Void)?) {
         timelineTimer?.invalidate()
         timelineTimer = nil
         removeSkipMonitors()
@@ -722,7 +751,8 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
         surface.rootView.showPermissionPrompt(
             presentation,
             transitionFrom: lastPromptText,
-            action: action
+            action: action,
+            skipAction: skipAction
         )
         lastPromptText = presentation.prompt
 
@@ -866,6 +896,13 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
     func presentTutorial(_ presentation: OnboardingTutorialPresentation,
                          retryAction: @escaping () -> Void,
                          recordingActions: OnboardingTutorialRecordingActions?) {
+        presentTutorial(presentation, retryAction: retryAction, recordingActions: recordingActions, skipAction: nil)
+    }
+
+    func presentTutorial(_ presentation: OnboardingTutorialPresentation,
+                         retryAction: @escaping () -> Void,
+                         recordingActions: OnboardingTutorialRecordingActions?,
+                         skipAction: (() -> Void)?) {
         timelineTimer?.invalidate()
         timelineTimer = nil
         removeSkipMonitors()
@@ -874,7 +911,8 @@ final class OnboardingIntroController: OnboardingIntroPresenting {
         surface.rootView.showTutorial(
             presentation,
             retryAction: retryAction,
-            recordingActions: recordingActions
+            recordingActions: recordingActions,
+            skipAction: skipAction
         )
 
         guard surface.didCreate else { return }
@@ -1046,15 +1084,24 @@ final class OnboardingIntroRootView: NSView {
     private var pendingContentReplacement: (view: NSView, policy: OnboardingPromptTransitionPolicy)?
     private var runtimeModel: OnboardingIntroRuntimeSurfaceModel?
     private let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    private let skipModel = OnboardingSkipButtonModel()
+    private let skipHost: NSHostingView<OnboardingSkipButton>
 
     override var isFlipped: Bool { true }
 
+    /// RR-514: the corner Skip button is offered on this step.
+    var showsSkipButton: Bool {
+        skipModel.action != nil
+    }
+
     override init(frame frameRect: NSRect) {
+        skipHost = NSHostingView(rootView: OnboardingSkipButton(model: skipModel))
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
         setAccessibilityElement(true)
         setAccessibilityLabel("Relay Runner setup is getting started")
+        addSubview(skipHost)
     }
 
     required init?(coder: NSCoder) {
@@ -1068,13 +1115,16 @@ final class OnboardingIntroRootView: NSView {
         view.timelineFrame = timelineFrame
         cinematicView = view
         runtimeModel = nil
+        setSkipAction(nil)
         replaceContent(with: view, policy: .immediate)
     }
 
     func showPermissionPrompt(_ presentation: OnboardingPermissionPromptPresentation,
                               transitionFrom: String,
-                              action: @escaping () -> Void) {
+                              action: @escaping () -> Void,
+                              skipAction: (() -> Void)? = nil) {
         runtimeModel = nil
+        setSkipAction(skipAction)
         showPrompt(
             phase: .permission,
             title: presentation.prompt,
@@ -1093,6 +1143,7 @@ final class OnboardingIntroRootView: NSView {
                                codexAction: @escaping () -> Void,
                                claudeAction: @escaping () -> Void) {
         runtimeModel = nil
+        setSkipAction(nil)
         showPrompt(
             phase: .agentChoice,
             title: OnboardingIntroPromptCopy.agentChoice,
@@ -1110,6 +1161,7 @@ final class OnboardingIntroRootView: NSView {
     func showRuntimePrompt(_ presentation: OnboardingRuntimePromptPresentation,
                            transitionFrom: String,
                            retryAction: @escaping () -> Void) {
+        setSkipAction(nil)
         let model: OnboardingIntroRuntimeSurfaceModel
         if let runtimeModel {
             model = runtimeModel
@@ -1140,6 +1192,7 @@ final class OnboardingIntroRootView: NSView {
                               signInAction: @escaping () -> Void,
                               continueWithoutSignInAction: (() -> Void)? = nil) {
         runtimeModel = nil
+        setSkipAction(nil)
         showPrompt(
             phase: .agentLogin,
             title: OnboardingIntroPromptCopy.agentLogin(presentation),
@@ -1148,7 +1201,7 @@ final class OnboardingIntroRootView: NSView {
                 OnboardingIntroAgentLoginPromptView(
                     presentation: presentation,
                     signInAction: signInAction,
-                    continueWithoutSignInAction: continueWithoutSignInAction
+                    signInLaterAction: continueWithoutSignInAction
                 )
             ),
             completion: fullyRendered
@@ -1160,6 +1213,7 @@ final class OnboardingIntroRootView: NSView {
                                 transitionFrom: String,
                                 cancelAction: @escaping () -> Void) {
         runtimeModel = nil
+        setSkipAction(nil)
         showPrompt(
             phase: .agentLogin,
             title: title,
@@ -1175,6 +1229,7 @@ final class OnboardingIntroRootView: NSView {
                              continueAction: @escaping () -> Void,
                              browseAction: @escaping () -> Void) {
         runtimeModel = nil
+        setSkipAction(nil)
         showPrompt(
             phase: .workspace,
             title: OnboardingIntroPromptCopy.workspace,
@@ -1191,8 +1246,10 @@ final class OnboardingIntroRootView: NSView {
 
     func showTutorial(_ presentation: OnboardingTutorialPresentation,
                       retryAction: @escaping () -> Void,
-                      recordingActions: OnboardingTutorialRecordingActions? = nil) {
+                      recordingActions: OnboardingTutorialRecordingActions? = nil,
+                      skipAction: (() -> Void)? = nil) {
         runtimeModel = nil
+        setSkipAction(skipAction)
         let view = OnboardingIntroHostedSurfaceView(
             frame: bounds,
             rootView: AnyView(
@@ -1217,6 +1274,32 @@ final class OnboardingIntroRootView: NSView {
         super.layout()
         currentContentView?.frame = bounds
         applyLayout(to: currentContentView)
+        layoutSkipButton()
+    }
+
+    private func setSkipAction(_ action: (() -> Void)?) {
+        skipModel.action = action
+        keepSkipButtonOnTop()
+    }
+
+    /// Pinned to the bottom-right corner of the revealed surface.
+    private func layoutSkipButton() {
+        let surface = layoutFrame.isEmpty ? bounds : layoutFrame
+        let size = OnboardingSkipButton.hostSize
+        let inset = OnboardingSkipButton.cornerInset
+        skipHost.frame = NSRect(
+            x: surface.maxX - size.width - inset,
+            y: surface.maxY - size.height - inset,
+            width: size.width,
+            height: size.height
+        )
+    }
+
+    /// Step content is added as it arrives, so the button is raised above it.
+    private func keepSkipButtonOnTop() {
+        guard subviews.last !== skipHost else { return }
+        addSubview(skipHost, positioned: .above, relativeTo: nil)
+        layoutSkipButton()
     }
 
     private func showPrompt(
@@ -1259,6 +1342,7 @@ final class OnboardingIntroRootView: NSView {
             currentContentView = view
             view.alphaValue = 1
             addSubview(view)
+            keepSkipButtonOnTop()
             applyLayout(to: view)
             view.layoutSubtreeIfNeeded()
             return
@@ -1274,6 +1358,7 @@ final class OnboardingIntroRootView: NSView {
             oldView?.removeFromSuperview()
             self.currentContentView = view
             self.addSubview(view)
+            self.keepSkipButtonOnTop()
             self.applyLayout(to: view)
             view.layoutSubtreeIfNeeded()
 
@@ -1298,6 +1383,7 @@ final class OnboardingIntroRootView: NSView {
     }
 
     private func applyLayout(to view: NSView?) {
+        layoutSkipButton()
         if let view = view as? OnboardingIntroCinematicView {
             view.layoutFrame = layoutFrame
         } else if let view = view as? OnboardingIntroPromptSurfaceView {
@@ -1904,17 +1990,44 @@ private struct OnboardingIntroRuntimePromptView: View {
 }
 
 struct OnboardingIntroAgentLoginPromptView: View {
-    static let continueWithoutSignInTitle = "Continue without sign-in"
-    static let continueWithoutSignInNote =
-        "Claude sessions stay unavailable until Relay Runner verifies your Claude subscription."
+    static let signInLaterTitle = "Sign in later"
     let presentation: OnboardingAgentLoginPromptPresentation
     let signInAction: () -> Void
-    var continueWithoutSignInAction: (() -> Void)? = nil
+    var signInLaterAction: (() -> Void)? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// RR-514: the step's one line under the title. A failed attempt puts its
+    /// reason here in place of the subtitle; nothing else is shown.
+    static func subtitle(for presentation: OnboardingAgentLoginPromptPresentation) -> String? {
+        guard !presentation.signedIn else { return nil }
+        if presentation.retry, let message = presentation.message {
+            return message
+        }
+        return "Your browser opens to sign in with your \(subscriptionName(presentation.provider)) subscription."
+    }
+
+    private static func subscriptionName(_ provider: GeneralConfig.AgentProvider) -> String {
+        switch provider {
+        case .claude: return "Claude"
+        case .codex: return "ChatGPT"
+        }
+    }
 
     var body: some View {
         OnboardingIntroPromptContentLayout {
             VStack(spacing: 24) {
+                if let subtitle = Self.subtitle(for: presentation) {
+                    RelaySwap(subtitle, style: .text, alignment: .center) { subtitle in
+                        Text(subtitle)
+                            .font(AppTypography.font(.body))
+                            .foregroundStyle(.white.opacity(0.68))
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
+                    }
+                    .transition(.relayText)
+                }
+
                 ZStack {
                     if presentation.signedIn {
                         Text("Signed in.")
@@ -1930,29 +2043,19 @@ struct OnboardingIntroAgentLoginPromptView: View {
                                     : "Sign in to \(presentation.provider.displayName)",
                                 action: signInAction
                             )
-                            if let continueWithoutSignInAction {
-                                Button(Self.continueWithoutSignInTitle, action: continueWithoutSignInAction)
+                            if let signInLaterAction {
+                                Button(Self.signInLaterTitle, action: signInLaterAction)
                                     .buttonStyle(.graphicalPress)
                                     .font(AppTypography.font(.body))
                                     .foregroundStyle(.white.opacity(0.72))
                                     .notchHint("Skip sign-in")
-                                    .accessibilityHint(Self.continueWithoutSignInNote)
+                                    .accessibilityHint(
+                                        "Finishes setup now. \(presentation.provider.displayName) sessions need you to sign in first."
+                                    )
                             }
                         }
                         .transition(.relayReplacing(.element))
                     }
-                }
-
-                if let message = presentation.message {
-                    RelaySwap(message, style: .text, alignment: .center) { message in
-                        Text(message)
-                            .font(AppTypography.font(.body))
-                            .foregroundStyle(.white.opacity(0.68))
-                            .multilineTextAlignment(.center)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: OnboardingPermissionTreatment.supportingMaxWidth)
-                    }
-                    .transition(.relayText)
                 }
             }
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: presentation)
@@ -2205,6 +2308,43 @@ struct OnboardingIntroWhiteActionButton: View {
             }
             .frame(minWidth: max(0, width - 2 * SharedActionButtonMetrics.horizontalPadding))
         }
+    }
+}
+
+@Observable
+final class OnboardingSkipButtonModel {
+    var action: (() -> Void)?
+}
+
+/// RR-514: the text button in onboarding's bottom-right corner. It skips the
+/// rest of the current part: past the permissions, or out of the tutorial.
+struct OnboardingSkipButton: View {
+    static let title = "Skip"
+    static let hostSize = CGSize(width: 160, height: 64)
+    static let cornerInset: CGFloat = 32
+    let model: OnboardingSkipButtonModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            if let action = model.action {
+                Button(action: action) {
+                    HStack(spacing: SharedActionButtonMetrics.iconSpacing) {
+                        Text(Self.title)
+                        LucideImage(.arrowRight, size: GraphicalTheme.textS)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.graphicalPress)
+                .font(AppTypography.font(.body))
+                .foregroundStyle(.white.opacity(0.72))
+                .accessibilityLabel(Self.title)
+                .accessibilityHint("Skips the rest of this part of setup. You can finish it later in Settings.")
+                .transition(.relayReplacing(.element))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.action != nil)
     }
 }
 

@@ -133,6 +133,22 @@ final class OnboardingController {
     private var workspaceOpenScheduled = false
     private var workspaceOpenedAfterTutorial = false
     private var tutorialWorkspaceHandoffInProgress = false
+    private var externalHandoff: ExternalHandoff?
+    private var externalHandoffObservers: [NSObjectProtocol] = []
+
+    /// RR-514: onboarding has stepped aside for another app.
+    private struct ExternalHandoff {
+        /// Shows the step again when the person comes back. Nil when the
+        /// step's own lifecycle decides what shows next (permission setup,
+        /// the Terminal.app sign-in fallback).
+        var restore: (() -> Void)?
+        var surfaceHidden = false
+        /// A return that arrived while the surface was still hiding.
+        var pendingReturn: (() -> Void)?
+        /// Relay Runner has been inactive since the hand-off began, so its
+        /// next activation means the person came back.
+        var leftApp = false
+    }
 
     private struct FreshPermissionState {
         var activePermission: PermissionKind?
@@ -255,6 +271,7 @@ final class OnboardingController {
     }
 
     deinit {
+        removeExternalHandoffObservers()
         removeFreshPermissionObservers()
         stopRuntimePolling()
         stopAuthPolling()
@@ -465,12 +482,18 @@ final class OnboardingController {
         if !isContinuingExistingIntro {
             setOnboardingNotchOverrideActive(true)
         }
+        guard !OnboardingResumeState.permissionsSkipped else {
+            completeFreshPermissionSequence()
+            return
+        }
         installFreshPermissionObservers()
         showNextFreshPermission()
     }
 
     private func showNextFreshPermission() {
         guard let intro = introController else { return }
+        // Showing a permission step means any earlier hand-off is over.
+        cancelExternalHandoff()
         guard let permission = firstMissingFreshPermission() else {
             completeFreshPermissionSequence()
             return
@@ -482,9 +505,23 @@ final class OnboardingController {
             explanation: OnboardingPermissionTreatment.explanation(for: permission),
             likelyRestricted: permissionLikelyRestricted(permission)
         )
-        intro.presentPermissionPrompt(prompt) { [weak self] in
-            self?.startFreshPermissionSetup(permission)
-        }
+        intro.presentPermissionPrompt(
+            prompt,
+            action: { [weak self] in self?.startFreshPermissionSetup(permission) },
+            skipAction: { [weak self] in self?.skipFreshPermissions() }
+        )
+    }
+
+    /// RR-514: Skip on a permission step moves past every permission. The
+    /// skip is kept in the resume state so a relaunch does not bring them
+    /// back; each one can still be granted later from Settings.
+    private func skipFreshPermissions() {
+        guard freshPermissionState != nil else { return }
+        diagnosticLog("[Onboarding] permissions skipped")
+        cancelPermissionSetup(.onboarding)
+        cancelExternalHandoff()
+        OnboardingResumeState.markPermissionsSkipped()
+        completeFreshPermissionSequence()
     }
 
     private func startFreshPermissionSetup(_ permission: PermissionKind) {
@@ -499,7 +536,9 @@ final class OnboardingController {
             request()
             return
         }
-        introController?.dismiss(completion: request)
+        // Permission setup brings the step back itself: a grant shows the
+        // next permission, and setup that ends without one shows this again.
+        handOffToExternalApp(restore: nil, open: request)
     }
 
     private func firstMissingFreshPermission() -> PermissionKind? {
@@ -510,14 +549,14 @@ final class OnboardingController {
         guard freshPermissionState?.activePermission == permission else { return }
         freshPermissionState?.requestInFlight = false
         freshPermissionState?.activePermission = nil
-        showNextFreshPermission()
+        endExternalHandoff { [weak self] in self?.showNextFreshPermission() }
     }
 
     private func freshPermissionEndedWithoutGrant(_ event: PermissionSetupLifecycleEvent) {
         guard event.source == .onboarding,
               freshPermissionState?.activePermission == event.permission else { return }
         freshPermissionState?.requestInFlight = false
-        showNextFreshPermission()
+        endExternalHandoff { [weak self] in self?.showNextFreshPermission() }
     }
 
     private func completeFreshPermissionSequence() {
@@ -625,6 +664,93 @@ final class OnboardingController {
             NotificationCenter.default.removeObserver(permissionEndedObserver)
             self.permissionEndedObserver = nil
         }
+    }
+
+    // MARK: - External hand-offs (RR-514)
+
+    /// The one way onboarding sends the person to another app or the browser:
+    /// sign-in, a permission's System Settings pane, a tutorial fix in System
+    /// Settings and the Terminal.app sign-in fallback all come through here.
+    /// The onboarding surface and the Workspace step aside first (Relay Runner
+    /// keeps running), then `open` runs. The same step comes back when the
+    /// person returns: `restore` runs on Relay Runner's next activation or a
+    /// Dock click. With no `restore`, the step's own lifecycle brings it back
+    /// through `endExternalHandoff`.
+    private func handOffToExternalApp(restore: (() -> Void)?, open: @escaping () -> Void) {
+        guard externalHandoff == nil else {
+            // Already stepped aside; another link from the same step.
+            open()
+            return
+        }
+        externalHandoff = ExternalHandoff(restore: restore, leftApp: !(NSApp?.isActive ?? false))
+        if restore != nil {
+            installExternalHandoffObservers()
+        }
+        let proceed: () -> Void = { [weak self] in
+            guard let self else { return }
+            self.externalHandoff?.surfaceHidden = true
+            self.onOpenExternalWindow()
+            open()
+            if let pending = self.externalHandoff?.pendingReturn {
+                self.endExternalHandoff(then: pending)
+            }
+        }
+        if let intro = introController {
+            intro.dismiss(completion: proceed)
+        } else {
+            proceed()
+        }
+    }
+
+    /// The person is back, or the step's lifecycle has moved on. Runs `next`
+    /// (by default the hand-off's `restore`) once the surface has finished
+    /// stepping aside; with no hand-off it runs `next` at once.
+    private func endExternalHandoff(then next: (() -> Void)? = nil) {
+        guard let handoff = externalHandoff else {
+            next?()
+            return
+        }
+        let action = next ?? handoff.restore ?? {}
+        guard handoff.surfaceHidden else {
+            externalHandoff?.pendingReturn = action
+            return
+        }
+        cancelExternalHandoff()
+        action()
+    }
+
+    private func cancelExternalHandoff() {
+        externalHandoff = nil
+        removeExternalHandoffObservers()
+    }
+
+    private func installExternalHandoffObservers() {
+        removeExternalHandoffObservers()
+        let center = NotificationCenter.default
+        externalHandoffObservers = [
+            center.addObserver(
+                forName: NSApplication.didResignActiveNotification,
+                object: NSApp,
+                queue: nil
+            ) { [weak self] _ in
+                DispatchQueue.main.async { self?.externalHandoff?.leftApp = true }
+            },
+            center.addObserver(
+                forName: NSApplication.didBecomeActiveNotification,
+                object: NSApp,
+                queue: nil
+            ) { [weak self] _ in
+                DispatchQueue.main.async {
+                    guard let self, self.externalHandoff?.leftApp == true else { return }
+                    self.endExternalHandoff()
+                }
+            },
+        ]
+    }
+
+    private func removeExternalHandoffObservers() {
+        externalHandoffObservers.forEach(NotificationCenter.default.removeObserver)
+        externalHandoffObservers = []
     }
 
     private func beginIntroAgentSetup(
@@ -806,11 +932,13 @@ final class OnboardingController {
               providerLogin == nil,
               let intro = introController else { return }
         let signedIn = isAgentAuthenticated(state.provider)
+        // RR-514: a reason shows only after an attempt fails; the first
+        // view of the step is just its title, subtitle and actions.
         intro.presentAgentLoginPrompt(
             OnboardingAgentLoginPromptPresentation(
                 provider: state.provider,
                 signedIn: signedIn,
-                message: signedIn ? nil : message,
+                message: signedIn || !retry ? nil : message,
                 retry: !signedIn && retry
             ),
             fullyRendered: { [weak self] in
@@ -829,11 +957,11 @@ final class OnboardingController {
         )
     }
 
-    /// Claude can finish app setup unsigned: its sessions and background model
-    /// work stay unavailable until the subscription gate verifies the account,
-    /// because every Claude launch runs that gate. Codex keeps its sign-in step.
+    /// "Sign in later" (RR-514) finishes app setup unsigned for either
+    /// provider. Claude sessions stay unavailable until the subscription gate
+    /// verifies the account; Codex asks for its sign-in when a session starts.
     static func allowsContinueWithoutSignIn(_ provider: GeneralConfig.AgentProvider) -> Bool {
-        provider == .claude
+        true
     }
 
     private func continueIntroWithoutSignIn() {
@@ -845,7 +973,7 @@ final class OnboardingController {
     private func startIntroAgentLogin() {
         guard let state = agentSetupState,
               providerLogin == nil,
-              let intro = introController else { return }
+              introController != nil else { return }
         OnboardingResumeState.save(
             step: .agentLogin,
             provider: state.provider,
@@ -853,6 +981,19 @@ final class OnboardingController {
         )
         let login = makeProviderLogin(state.provider)
         providerLogin = login
+        login.onBrowserHandoff = { [weak self, weak login] open in
+            guard let self, let login, self.providerLogin === login else {
+                open?()
+                return
+            }
+            self.handOffToExternalApp(
+                restore: { [weak self, weak login] in
+                    guard let self, let login, self.providerLogin === login else { return }
+                    self.presentLoginTerminal(login)
+                },
+                open: open ?? {}
+            )
+        }
         do {
             try login.start { [weak self, weak login] outcome in
                 guard let self, let login, self.providerLogin === login else { return }
@@ -861,12 +1002,16 @@ final class OnboardingController {
             }
         } catch {
             providerLogin = nil
-            startTerminalAppLogin(provider: state.provider, intro: intro)
+            startTerminalAppLogin(provider: state.provider)
             return
         }
         // A login that already ended has shown its own result.
         guard providerLogin === login else { return }
-        intro.presentAgentLoginTerminal(login) { [weak self, weak login] in
+        presentLoginTerminal(login)
+    }
+
+    private func presentLoginTerminal(_ login: any ProviderLoginRunning) {
+        introController?.presentAgentLoginTerminal(login) { [weak self, weak login] in
             guard let login, self?.providerLogin === login else { return }
             login.cancel()
         }
@@ -880,16 +1025,28 @@ final class OnboardingController {
             guard let self,
                   self.providerLogin == nil,
                   self.agentSetupState?.provider == provider else { return }
-            if outcome != .cancelled, self.isAgentAuthenticated(provider) {
-                self.completeAuthenticatedProvider(provider, introDismissed: false)
-                return
+            // The login has ended, so the step comes back with its result.
+            self.endExternalHandoff { [weak self] in
+                self?.showInAppLoginResult(provider: provider, outcome: outcome, detail: detail)
             }
-            self.presentIntroAgentLogin(
-                provider: provider,
-                message: Self.inAppLoginFailureMessage(provider: provider, outcome: outcome, detail: detail),
-                retry: true
-            )
         }
+    }
+
+    private func showInAppLoginResult(
+        provider: GeneralConfig.AgentProvider,
+        outcome: ProviderLoginOutcome,
+        detail: String?
+    ) {
+        guard agentSetupState?.provider == provider else { return }
+        if outcome != .cancelled, isAgentAuthenticated(provider) {
+            completeAuthenticatedProvider(provider, introDismissed: false)
+            return
+        }
+        presentIntroAgentLogin(
+            provider: provider,
+            message: Self.inAppLoginFailureMessage(provider: provider, outcome: outcome, detail: detail),
+            retry: true
+        )
     }
 
     static func inAppLoginFailureMessage(
@@ -917,11 +1074,11 @@ final class OnboardingController {
 
     /// Fallback for when the embedded terminal cannot start: the earlier
     /// Terminal.app sign-in, which brings Relay Runner back when it exits.
-    private func startTerminalAppLogin(provider: GeneralConfig.AgentProvider, intro: any OnboardingIntroPresenting) {
-        intro.dismiss { [weak self] in
+    private func startTerminalAppLogin(provider: GeneralConfig.AgentProvider) {
+        // Auth polling and Terminal's own return bring the step back.
+        handOffToExternalApp(restore: nil) { [weak self] in
             guard let self else { return }
             self.setOnboardingNotchOverrideActive(false)
-            self.onOpenExternalWindow()
             guard self.openAgentLoginInTerminal(provider) else {
                 self.restoreIntroAgentLogin(
                     provider: provider,
@@ -965,15 +1122,22 @@ final class OnboardingController {
                   self.agentSetupState?.provider == provider,
                   self.isAgentAuthenticated(provider) else { return }
             self.stopAuthPolling()
-            self.completeAuthenticatedProvider(provider, introDismissed: true)
+            self.endExternalHandoff { [weak self] in
+                self?.completeAuthenticatedProvider(provider, introDismissed: true)
+            }
         }
     }
 
-    /// A Dock click during the sign-in wait. When Relay Runner is already
-    /// active no activation notification fires, so this is the other way
-    /// back to the sign-in step. Returns false when onboarding isn't waiting.
+    /// A Dock click while onboarding waits on another app: sign-in, or a
+    /// tutorial fix in System Settings. When Relay Runner is already active no
+    /// activation notification fires, so this is the other way back to the
+    /// step. Returns false when onboarding isn't waiting.
     @discardableResult
     func resumeAgentLoginIfWaiting() -> Bool {
+        if externalHandoff?.restore != nil {
+            endExternalHandoff()
+            return true
+        }
         guard authPollTimer != nil, let provider = agentSetupState?.provider else { return false }
         restoreLoginIfAuthenticationDidNotComplete(provider: provider)
         return true
@@ -996,11 +1160,14 @@ final class OnboardingController {
 
     private func restoreIntroAgentLogin(provider: GeneralConfig.AgentProvider, message: String) {
         guard agentSetupState?.provider == provider else { return }
-        setOnboardingNotchOverrideActive(true)
-        if introController == nil {
-            introController = makeIntroController()
+        endExternalHandoff { [weak self] in
+            guard let self else { return }
+            self.setOnboardingNotchOverrideActive(true)
+            if self.introController == nil {
+                self.introController = self.makeIntroController()
+            }
+            self.showIntroAgentLogin(message: message, retry: true)
         }
-        showIntroAgentLogin(message: message, retry: true)
     }
 
     private func stopAuthPolling() {
@@ -1108,7 +1275,8 @@ final class OnboardingController {
                 }
                 self.beginSessionControlsTutorial(screen: .intro)
             },
-            recordingActions: recordingActions(for: screen, help: help)
+            recordingActions: recordingActions(for: screen, help: help),
+            skipAction: { [weak self] in self?.skipSessionControlsTutorial() }
         )
         if screen == .recording {
             startTutorialRecordingWatchIfNeeded()
@@ -1138,8 +1306,30 @@ final class OnboardingController {
         case .retrySpeechSetup:
             retryTutorialSpeechSetup()
         case .openSettings(let pane):
-            onOpenExternalWindow()
-            openTutorialSettings(pane.url)
+            handOffToExternalApp(
+                restore: { [weak self] in self?.restoreTutorialScreen() },
+                open: { [weak self] in self?.openTutorialSettings(pane.url) }
+            )
+        }
+    }
+
+    /// Shows the tutorial screen the person left from (or has since reached).
+    private func restoreTutorialScreen() {
+        guard tutorialState != nil,
+              let step = OnboardingResumeState.load()?.step,
+              let screen = OnboardingSessionControlsTutorial.screen(for: step) else { return }
+        presentTutorial(screen: screen)
+    }
+
+    /// RR-514: Skip on a tutorial step ends the tutorial and opens the
+    /// Workspace, the same way finishing its last step does. Finishing marks
+    /// onboarding complete, so a relaunch does not return to the tutorial.
+    private func skipSessionControlsTutorial() {
+        guard tutorialState != nil, !tutorialWorkspaceHandoffInProgress else { return }
+        diagnosticLog("[OnboardingTutorial] skipped")
+        tutorialWorkspaceHandoffInProgress = true
+        finish { [weak self] in
+            self?.scheduleWorkspaceOpenAfterTutorialDismissalOnce()
         }
     }
 
@@ -1181,6 +1371,8 @@ final class OnboardingController {
             "[OnboardingTutorial] recording help symptom=\(symptom.rawValue) " +
             "reason=\(help.reason.rawValue) \(probe.logSummary)"
         )
+        // Away in System Settings, the new help shows when the step returns.
+        guard externalHandoff == nil else { return }
         presentTutorial(screen: .recording)
     }
 
@@ -1403,6 +1595,7 @@ final class OnboardingController {
     /// Mark the flag file and clear the embedded presentation. Called when the user
     /// completes or skips past the final step.
     private func finish(completion: @escaping () -> Void = {}) {
+        cancelExternalHandoff()
         stopRuntimePolling()
         stopAuthPolling()
         providerLogin?.cancel()
@@ -1441,6 +1634,7 @@ final class OnboardingController {
 
     private func hostDismissed() {
         guard presentation.isPresented else { return }
+        cancelExternalHandoff()
         cancelPermissionSetup(.onboarding)
         cancelTutorialIntroAdvance()
         stopTutorialRecordingWatch()

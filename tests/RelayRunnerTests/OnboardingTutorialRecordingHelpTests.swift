@@ -265,9 +265,19 @@ final class OnboardingTutorialRecordingHelpTests: XCTestCase {
         XCTAssertEqual(help?.reason, .capsLockSwitchesInputSource)
         XCTAssertEqual(help?.fix, .openSettings(.keyboard))
 
+        let presentationsBeforeFix = intro.presentations.count
         intro.recordingActions?.fix?()
+        XCTAssertEqual(intro.dismissals, 1, "the tutorial steps aside before System Settings opens")
         XCTAssertEqual(openedURLs, [OnboardingTutorialRecordingHelp.SettingsPane.keyboard.url])
         XCTAssertEqual(externalWindows, 1)
+
+        // RR-514: coming back to Relay Runner shows the same tutorial step.
+        NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: NSApp)
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: NSApp)
+        waitForMainQueue(after: 0.05)
+        XCTAssertEqual(intro.presentations.count, presentationsBeforeFix + 1)
+        XCTAssertEqual(intro.presentations.last?.screen, .recording)
+        XCTAssertEqual(intro.presentations.last?.recordingHelp?.reason, .capsLockSwitchesInputSource)
     }
 
     func testSpeechFailureFixOnRecordingStepRetriesSpeechSetup() {
@@ -488,6 +498,8 @@ private final class RecordingIntroPresenter: OnboardingIntroPresenting {
     func presentAgentLoginPrompt(_ presentation: OnboardingAgentLoginPromptPresentation,
                                  fullyRendered: @escaping () -> Void,
                                  signInAction: @escaping () -> Void) {}
+    func presentAgentLoginTerminal(_ login: any ProviderLoginRunning,
+                                   cancelAction: @escaping () -> Void) {}
     func presentWorkspacePrompt(currentPath: String,
                                 continueAction: @escaping () -> Void,
                                 browseAction: @escaping () -> Void) {}
@@ -505,7 +517,10 @@ private final class RecordingIntroPresenter: OnboardingIntroPresenting {
         self.recordingActions = recordingActions
     }
 
+    private(set) var dismissals = 0
+
     func dismiss(completion: @escaping () -> Void) {
+        dismissals += 1
         completion()
     }
 }

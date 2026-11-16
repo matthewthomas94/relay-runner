@@ -41,6 +41,18 @@ enum OnboardingResumeState {
     private static let stepKey = "com.relayrunner.onboarding.resume.step"
     private static let providerKey = "com.relayrunner.onboarding.resume.provider"
     private static let parentReviewedKey = "com.relayrunner.onboarding.resume.parentPermissionsReviewed"
+    private static let permissionsSkippedKey = "com.relayrunner.onboarding.resume.permissionsSkipped"
+
+    /// RR-514: the person pressed Skip on a permission step, so this
+    /// onboarding run goes straight past permissions, even after a relaunch.
+    /// Skipped permissions can still be granted from Settings.
+    static var permissionsSkipped: Bool {
+        UserDefaults.standard.bool(forKey: permissionsSkippedKey)
+    }
+
+    static func markPermissionsSkipped() {
+        UserDefaults.standard.set(true, forKey: permissionsSkippedKey)
+    }
 
     static func save(step: OnboardingStepID,
                      provider: GeneralConfig.AgentProvider,
@@ -73,5 +85,6 @@ enum OnboardingResumeState {
         defaults.removeObject(forKey: stepKey)
         defaults.removeObject(forKey: providerKey)
         defaults.removeObject(forKey: parentReviewedKey)
+        defaults.removeObject(forKey: permissionsSkippedKey)
     }
 }
