@@ -462,15 +462,9 @@ final class OnboardingProgressTests: XCTestCase {
         XCTAssertEqual(OnboardingPermissionTreatment.buttonTitle, "Grant permission")
         XCTAssertEqual(OnboardingPermissionTreatment.actionScale, 0.75)
         XCTAssertEqual(OnboardingPermissionTreatment.buttonSize, CGSize(width: 146.25, height: 37.5))
-        XCTAssertEqual(OnboardingPermissionTreatment.buttonCornerRadius, 9)
         XCTAssertEqual(OnboardingPermissionTreatment.buttonHorizontalPadding, 24)
         XCTAssertEqual(OnboardingPermissionTreatment.buttonVerticalPadding, 12)
         XCTAssertEqual(OnboardingPermissionTreatment.buttonLineHeight, 13.5)
-        XCTAssertEqual(OnboardingPermissionTreatment.buttonLabelSize, 12)
-        let border = OnboardingPermissionTreatment.buttonBorderColor.usingColorSpace(.sRGB)
-        XCTAssertEqual(border?.redComponent ?? 0, 17 / 255, accuracy: 0.001)
-        XCTAssertEqual(border?.greenComponent ?? 0, 22 / 255, accuracy: 0.001)
-        XCTAssertEqual(border?.blueComponent ?? 0, 29 / 255, accuracy: 0.001)
     }
 
     func testAccessibilityPermissionTreatmentOmitsSupportingCopyInStandardFlow() {

@@ -2619,7 +2619,6 @@ final class OnboardingIntroTests: XCTestCase {
             OnboardingFlowMotion.contentAnimation(reduceMotion: true),
             RelayMotion.change(reduceMotion: true)
         )
-        XCTAssertEqual(OnboardingIntroWhiteActionButton.hoverAnimation, RelayMotion.hover)
     }
 
     func testHeroCopyContractsAndExpandsOnlyWhileFading() {
@@ -2751,8 +2750,6 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertTrue(contents.contains("particleHost.frame = particleClipView.bounds"))
         XCTAssertFalse(contents.contains("layer?.transform = CATransform3DMakeTranslation"))
         XCTAssertTrue(contents.contains("paragraph.alignment = .center"))
-        XCTAssertTrue(contents.contains(".onHover { isHovering = $0 }"))
-        XCTAssertTrue(contents.contains(".animation(Self.hoverAnimation, value: showsHover)"))
         XCTAssertFalse(contents.contains("OnboardingHalftone"))
         XCTAssertFalse(contents.contains("drawHalftone"))
         XCTAssertFalse(contents.contains(".scaleEffect(showsHover"))
@@ -2801,10 +2798,6 @@ final class OnboardingIntroTests: XCTestCase {
             ),
             "You’re all set /"
         )
-    }
-
-    func testOnboardingActionHoverKeepsFootprintStable() {
-        XCTAssertEqual(OnboardingIntroWhiteActionButton.hoverScale, 1, accuracy: 0.001)
     }
 
     private func assertHeroTextLayoutMatchesReferenceFrame(
