@@ -3465,12 +3465,15 @@ final class OnboardingIntroTests: XCTestCase {
         XCTAssertEqual(OnboardingSkipButton.title, "Skip")
         let source = try onboardingIntroSource()
         let start = try XCTUnwrap(source.range(of: "struct OnboardingSkipButton: View"))
-        let body = String(source[start.upperBound...].prefix(1400))
+        let body = String(source[start.upperBound...].prefix(2400))
         let label = try XCTUnwrap(body.range(of: "Text(Self.title)"))
         let arrow = try XCTUnwrap(body.range(of: "LucideImage(.arrowRight"))
         XCTAssertLessThan(label.lowerBound, arrow.lowerBound)
         XCTAssertTrue(body.contains(".buttonStyle(.graphicalPress)"))
         XCTAssertTrue(body.contains("alignment: .bottomTrailing"))
+        // Hover matches the Workspace tabs.
+        XCTAssertTrue(body.contains("FluxDotsBackground("))
+        XCTAssertTrue(body.contains(".onHover { isHovered = $0 }"))
     }
 
     func testSkippingPermissionsMovesPastThemAndSurvivesRelaunch() throws {

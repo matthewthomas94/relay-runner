@@ -2370,6 +2370,7 @@ struct OnboardingSkipButton: View {
     static let hostSize = CGSize(width: 160, height: 64)
     static let cornerInset: CGFloat = 32
     let model: OnboardingSkipButtonModel
+    @State private var isHovered = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -2380,8 +2381,22 @@ struct OnboardingSkipButton: View {
                         Text(Self.title)
                         LucideImage(.arrowRight, size: GraphicalTheme.textS)
                     }
-                    .contentShape(Rectangle())
+                    .padding(.horizontal, WorkspaceNavigationStyle.horizontalPadding)
+                    .padding(.vertical, WorkspaceNavigationStyle.verticalPadding)
+                    // The Workspace tabs' hover: the skeleton loader's dots.
+                    .background {
+                        FluxDotsBackground(
+                            cornerRadius: WorkspaceNavigationStyle.cornerRadius,
+                            style: .standard,
+                            isVisible: isHovered
+                        )
+                    }
+                    .contentShape(
+                        RoundedRectangle(cornerRadius: WorkspaceNavigationStyle.cornerRadius, style: .continuous)
+                    )
+                    .animation(RelayMotion.hover, value: isHovered)
                 }
+                .onHover { isHovered = $0 }
                 .buttonStyle(.graphicalPress)
                 .font(AppTypography.font(.body))
                 .foregroundStyle(.white.opacity(0.72))

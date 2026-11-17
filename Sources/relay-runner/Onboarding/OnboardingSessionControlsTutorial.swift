@@ -245,20 +245,20 @@ struct OnboardingTutorialView: View {
         }
     }
 
-    /// The click fallback, plus the reason and fix when Caps Lock isn't working.
+    /// When Caps Lock isn't working: the reason, its fix and the click
+    /// fallback. A working step shows none of it, since the step's own title
+    /// already says what is happening.
     @ViewBuilder
     private func recordingControls(toggleTitle: String) -> some View {
-        if let recordingActions {
+        if let recordingActions, let help = presentation.recordingHelp {
             VStack(spacing: 18) {
-                if let help = presentation.recordingHelp {
-                    supportingText(help.message)
-                    if let fix = help.fix, let fixAction = recordingActions.fix {
-                        OnboardingIntroWhiteActionButton(
-                            title: fix.title,
-                            accessibilityLabel: fix.title,
-                            action: fixAction
-                        )
-                    }
+                supportingText(help.message)
+                if let fix = help.fix, let fixAction = recordingActions.fix {
+                    OnboardingIntroWhiteActionButton(
+                        title: fix.title,
+                        accessibilityLabel: fix.title,
+                        action: fixAction
+                    )
                 }
                 Button(toggleTitle, action: recordingActions.toggleRecording)
                     .buttonStyle(.graphicalPress)
