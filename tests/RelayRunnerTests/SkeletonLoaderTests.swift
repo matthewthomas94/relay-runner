@@ -139,10 +139,14 @@ final class SkeletonLoaderTests: XCTestCase {
             view.frame = CGRect(origin: .zero, size: size)
             view.layoutSubtreeIfNeeded()
             XCTAssertFalse(view.bones.isEmpty, "\(layout)")
-            XCTAssertTrue(view.subviews.isEmpty, "\(layout) has no label view")
+            XCTAssertFalse(containsTextView(view), "\(layout) has no label view")
             XCTAssertFalse(containsText(view.layer), "\(layout) draws no text")
             XCTAssertEqual(view.accessibilityLabel(), BoardUpdateStatus.workingLabel, "VoiceOver still hears the status")
         }
+    }
+
+    private func containsTextView(_ view: NSView) -> Bool {
+        view is NSTextField || view.subviews.contains { containsTextView($0) }
     }
 
     private func containsText(_ layer: CALayer?) -> Bool {
@@ -159,7 +163,8 @@ final class SkeletonLoaderTests: XCTestCase {
         XCTAssertNil(view.hitTest(CGPoint(x: 450, y: 333)))
         XCTAssertEqual(view.accessibilityLabel(), "Starting Claude")
 
-        let sublayers = try XCTUnwrap(view.layer?.sublayers)
+        // The skeleton draws in an overlay above each panel's glass.
+        let sublayers = try XCTUnwrap(view.subviews.last?.layer?.sublayers)
         let bones = try XCTUnwrap(sublayers.first { $0.sublayers?.count == DotPresence.cohorts })
         XCTAssertEqual(bones.opacity, FluxDotStyle.standard.opacity, "The dots look like the Workspace tabs' hover")
         let cohorts = try XCTUnwrap(bones.sublayers, "A layer per presence cohort")

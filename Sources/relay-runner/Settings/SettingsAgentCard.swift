@@ -51,10 +51,13 @@ enum SettingsAgentCardLayout {
 struct SettingsAgentCard: View {
     let presentation: SettingsAgentPresentation
     var theme: ParticleFieldRenderer.Theme = .idle
+    /// In the Workspace the card is a panel on the shell, frosted like one.
+    var panelGlass = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack(alignment: .top) {
+            if panelGlass { PanelGlassUnderlay() }
             BoardDarkSurfaceStyle.panelFill
             SettingsAgentParticleView(
                 theme: theme,

@@ -67,6 +67,9 @@ final class SkeletonLoaderView: NSView {
 
     let skeleton: SkeletonLoaderLayout
 
+    /// Each panel's frosted glass, under the overlay that draws the rest.
+    private var panelGlassViews: [PanelGlassNSView] = []
+    private let overlay = SkeletonOverlayView()
     private let panelsLayer = CAShapeLayer()
     /// The glass edge on each panel, as the real panels carry it.
     private let panelRimsLayer = CALayer()
@@ -81,6 +84,9 @@ final class SkeletonLoaderView: NSView {
         self.skeleton = layout
         super.init(frame: .zero)
         wantsLayer = true
+        overlay.wantsLayer = true
+        addSubview(overlay)
+        let layer = overlay.layer
 
         panelsLayer.fillColor = BoardDarkSurfaceStyle.panelFillNSColor.cgColor
         panelsLayer.strokeColor = BoardDarkSurfaceStyle.borderNSColor.cgColor
@@ -112,6 +118,8 @@ final class SkeletonLoaderView: NSView {
         super.layout()
         bones = Self.bones(for: skeleton, in: bounds)
 
+        overlay.frame = bounds
+        layoutPanelGlass()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         let panels = CGMutablePath()
@@ -136,6 +144,30 @@ final class SkeletonLoaderView: NSView {
         CATransaction.commit()
 
         dots.fill(bones.filter { $0.style == .fill }.map { ($0.rect, $0.radius) }, in: self)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        needsLayout = true
+    }
+
+    /// The panels frost the desktop as the real ones do. The shell spans the
+    /// top of the window, so a panel's place in it is its distance from there.
+    private func layoutPanelGlass() {
+        let panels = Self.panels(for: skeleton, in: bounds)
+        while panelGlassViews.count > panels.count { panelGlassViews.removeLast().removeFromSuperview() }
+        while panelGlassViews.count < panels.count {
+            let view = PanelGlassNSView(cornerRadius: 16)
+            addSubview(view, positioned: .below, relativeTo: overlay)
+            panelGlassViews.append(view)
+        }
+        let windowTop = window?.contentView?.bounds.height
+        for (view, panel) in zip(panelGlassViews, panels) {
+            view.frame = panel
+            if let windowTop {
+                view.shellTop = windowTop - convert(panel, to: nil).maxY
+            }
+        }
     }
 
     override func viewDidChangeBackingProperties() {
@@ -829,4 +861,10 @@ struct SkeletonLoader: NSViewRepresentable {
         view.setLabel(label)
         view.setPresence(presence)
     }
+}
+
+/// The skeleton's layers sit in this view so the panel glass can go under them.
+private final class SkeletonOverlayView: NSView {
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

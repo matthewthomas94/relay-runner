@@ -178,6 +178,63 @@ final class ShellGlassEffectView: NSVisualEffectView {
 /// A panel on the shell (a column, the terminal) frosts the desktop more
 /// than the shell does, then lays the shell's black gradient over it at the
 /// panel's own position, so it reads as the same glass, only blurrier.
+/// `PanelGlassUnderlay` for AppKit views: the skeleton loader's panels.
+/// `shellTop` is the panel's top edge measured from the shell's top.
+final class PanelGlassNSView: NSView {
+    private let glass = ShellGlassEffectView(blurRadius: ShellGlassEffectView.panelBlurRadius)
+    private let tint = FlippedTintView()
+    private let gradient = CAGradientLayer()
+    private let belowShell = CALayer()
+    var shellTop: CGFloat = 0 { didSet { needsLayout = true } }
+
+    override var isFlipped: Bool { true }
+
+    init(cornerRadius: CGFloat) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = cornerRadius
+        layer?.masksToBounds = true
+        glass.material = .hudWindow
+        glass.blendingMode = .behindWindow
+        glass.state = .active
+        glass.appearance = NSAppearance(named: .darkAqua)
+        addSubview(glass)
+        tint.wantsLayer = true
+        gradient.colors = [
+            GraphicalTheme.neutral1NSColor.cgColor,
+            GraphicalTheme.neutral1NSColor.cgColor,
+            GraphicalTheme.neutral1NSColor.withAlphaComponent(BoardDarkSurfaceStyle.actionOpacity).cgColor,
+        ]
+        gradient.locations = [0, 0.096, 1]
+        belowShell.backgroundColor = GraphicalTheme.neutral1NSColor
+            .withAlphaComponent(BoardDarkSurfaceStyle.actionOpacity).cgColor
+        tint.layer?.addSublayer(gradient)
+        tint.layer?.addSublayer(belowShell)
+        addSubview(tint)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func layout() {
+        super.layout()
+        glass.frame = bounds
+        tint.frame = bounds
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        // The tint view's layer is flipped with this view, so y grows downward.
+        let shellHeight = ProgramBoardBackdropStyle.backdropHeight
+        gradient.frame = CGRect(x: 0, y: -shellTop, width: bounds.width, height: shellHeight)
+        let below = shellHeight - shellTop
+        belowShell.frame = CGRect(x: 0, y: below, width: bounds.width, height: max(0, bounds.height - below))
+        CATransaction.commit()
+    }
+}
+
+private final class FlippedTintView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 struct PanelGlassUnderlay: View {
     static let coordinateSpace = "programBoard"
 

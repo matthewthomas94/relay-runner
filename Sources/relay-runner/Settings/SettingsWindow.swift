@@ -222,7 +222,8 @@ private struct SettingsContent: View {
                                 hasWorkingProgress: appState.stateMachine.currentWorkingProgress(now: context.date) != nil
                             )
                         ),
-                        theme: appState.stateMachine.state.particleTheme ?? .idle
+                        theme: appState.stateMachine.state.particleTheme ?? .idle,
+                        panelGlass: style != .window
                     )
                 }
                 .frame(width: style == .window ? 280 : SettingsAgentCardLayout.width(availableWidth: geometry.size.width))
@@ -532,6 +533,9 @@ private extension View {
     /// Workspace and square in the standalone window.
     func settingsPanelChrome(style: SettingsContentStyle) -> some View {
         background(BoardDarkSurfaceStyle.panelFill)
+            .background {
+                if !style.usesStandaloneChrome { PanelGlassUnderlay() }
+            }
             .clipShape(RoundedRectangle(cornerRadius: style.embeddedCornerRadius, style: .continuous))
             .overlay {
                 if style.showsEmbeddedHairline {
