@@ -484,7 +484,7 @@ private final class BoardRevealSurfaceView: NSView {
     /// Workspace sits on: the blurred desktop under a black that thins to
     /// 75% at the foot. All of it scales
     /// with how far the surface has opened, so the notch pill stays black.
-    private let glassBackdropView = NSVisualEffectView()
+    private let glassBackdropView = ShellGlassEffectView()
     /// Holds the tint in a view of its own, above the blur: bare
     /// sublayers of this view end up underneath a subview's layer.
     private let glassTintView = BoardRevealGlassTintView()

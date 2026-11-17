@@ -772,13 +772,13 @@ struct ProgramBoardOverlayView: View {
     }
 }
 
-/// The glass background level: the blurred desktop under a black that is
+/// The glass background level: Figma's lightly blurred desktop under a black that is
 /// solid at the notch and eases to 75% at the foot, so the glass shows
 /// through more toward the bottom.
 private struct ProgramBoardGlassShell: View {
     var body: some View {
         let shape = ProgramBoardBackdropShape(cornerRadius: ProgramBoardBackdropStyle.bottomCornerRadius)
-        LiquidGlassBackdrop()
+        LiquidGlassBackdrop(shellGlass: true)
             .overlay(BoardDarkSurfaceStyle.shellFill)
             .clipShape(shape)
     }

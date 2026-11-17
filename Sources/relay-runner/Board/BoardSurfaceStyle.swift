@@ -96,9 +96,14 @@ enum BoardDarkSurfaceStyle {
 }
 
 /// The desktop behind the window, blurred: what every glass level sits on.
+/// `shellGlass` gives the Workspace shell Figma's glass instead: a light
+/// blur with no tint of its own, so the shell's gradient alone sets how
+/// much of the desktop shows through.
 struct LiquidGlassBackdrop: NSViewRepresentable {
+    var shellGlass = false
+
     func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
+        let view = shellGlass ? ShellGlassEffectView() : NSVisualEffectView()
         view.material = .hudWindow
         view.blendingMode = .behindWindow
         view.state = .active
@@ -107,6 +112,53 @@ struct LiquidGlassBackdrop: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+}
+
+/// Figma's shell glass: an 8pt blur of the desktop without the material's
+/// own fill, tone and tint, which darken it well past the design. AppKit has
+/// no API for blur strength, so this adjusts the effect view's private layers
+/// by name each time AppKit rebuilds them. If a macOS release renames them,
+/// nothing matches and the stock material shows instead.
+final class ShellGlassEffectView: NSVisualEffectView {
+    static let blurRadius: CGFloat = 8
+    private static let tintLayerNames: Set<String> = ["fill", "tone", "desktop tint"]
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        applyShellGlass()
+        // AppKit builds the material's layers after joining the window.
+        DispatchQueue.main.async { [weak self] in self?.applyShellGlass() }
+    }
+
+    override func updateLayer() {
+        super.updateLayer()
+        applyShellGlass()
+    }
+
+    override func layout() {
+        super.layout()
+        applyShellGlass()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsLayout = true
+    }
+
+    private func applyShellGlass() {
+        guard let layer else { return }
+        Self.apply(to: layer)
+    }
+
+    static func apply(to layer: CALayer) {
+        if layer.name == "backdrop", layer.filters?.isEmpty == false {
+            layer.setValue(blurRadius, forKeyPath: "filters.gaussianBlur.inputRadius")
+        }
+        if let name = layer.name, tintLayerNames.contains(name) {
+            layer.isHidden = true
+        }
+        layer.sublayers?.forEach(apply(to:))
+    }
 }
 
 struct BoardDarkSurfaceBackground: View {
