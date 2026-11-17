@@ -773,20 +773,13 @@ struct ProgramBoardOverlayView: View {
 }
 
 /// The glass background level: the blurred desktop under a black that is
-/// solid at the notch and 75% at the foot, where the edge catches a glow.
+/// solid at the notch and eases to 75% at the foot, so the glass shows
+/// through more toward the bottom.
 private struct ProgramBoardGlassShell: View {
     var body: some View {
         let shape = ProgramBoardBackdropShape(cornerRadius: ProgramBoardBackdropStyle.bottomCornerRadius)
         LiquidGlassBackdrop()
             .overlay(BoardDarkSurfaceStyle.shellFill)
-            .overlay(alignment: .bottom) {
-                LinearGradient(
-                    colors: [.clear, GraphicalTheme.neutral5.opacity(0.35)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: 40)
-            }
             .clipShape(shape)
     }
 }
