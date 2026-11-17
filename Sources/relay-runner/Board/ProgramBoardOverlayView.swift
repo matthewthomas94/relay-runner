@@ -308,7 +308,7 @@ struct ProgramBoardOverlayView: View {
                     .font(AppTypography.font(.programEmptyState))
                     .foregroundStyle(ProgramBoardStyle.mutedText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
+                .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius, panelGlass: true))
                 .transition(.relayReplacing(.surface))
             }
         }
@@ -347,11 +347,11 @@ struct ProgramBoardOverlayView: View {
                 notesListPanel
                     .frame(width: BoardSurfaceLayout.boardColumnWidth(rowWidth: geometry.size.width))
                     .frame(maxHeight: .infinity)
-                    .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
+                    .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius, panelGlass: true))
                     .clipShape(RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
                 notesDetailPanel
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
+                    .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius, panelGlass: true))
                     .clipShape(RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
             }
         }
@@ -778,7 +778,7 @@ struct ProgramBoardOverlayView: View {
 private struct ProgramBoardGlassShell: View {
     var body: some View {
         let shape = ProgramBoardBackdropShape(cornerRadius: ProgramBoardBackdropStyle.bottomCornerRadius)
-        LiquidGlassBackdrop(shellGlass: true)
+        LiquidGlassBackdrop(blurRadius: ShellGlassEffectView.shellBlurRadius)
             .overlay(BoardDarkSurfaceStyle.shellFill)
             .clipShape(shape)
     }
@@ -4759,7 +4759,8 @@ private struct ProgramBoardDarkSurfaceBackground: View {
     var body: some View {
         BoardDarkSurfaceBackground(
             cornerRadius: cornerRadius,
-            fill: BoardDarkSurfaceStyle.panelFill
+            fill: BoardDarkSurfaceStyle.panelFill,
+            panelGlass: true
         )
     }
 }

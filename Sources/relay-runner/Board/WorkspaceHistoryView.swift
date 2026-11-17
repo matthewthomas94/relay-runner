@@ -124,7 +124,7 @@ struct WorkspaceHistoryView: View {
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.errorMessage)
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.notice)
         .frame(width: 940, height: 640)
-        .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
+        .background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius, panelGlass: true))
         .clipShape(RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius, style: .continuous))
         .task { await model.refresh() }
     }
@@ -438,7 +438,7 @@ struct WorkspaceHistoryView: View {
 
 private extension View {
     func historyPanelChrome() -> some View {
-        background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius))
+        background(BoardDarkSurfaceBackground(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius, panelGlass: true))
             .clipShape(RoundedRectangle(cornerRadius: BoardDarkSurfaceStyle.floatingPanelCornerRadius, style: .continuous))
     }
 }

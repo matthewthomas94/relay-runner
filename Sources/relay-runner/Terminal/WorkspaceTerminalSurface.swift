@@ -62,6 +62,10 @@ struct WorkspaceTerminalSurface<Content: View>: View {
                             .stroke(BoardDarkSurfaceStyle.glassRim, lineWidth: 1)
                     }
                     .shadow(color: .black.opacity(0.18), radius: 18, x: 0, y: 10)
+                    .background {
+                        PanelGlassUnderlay()
+                            .clipShape(WorkspaceTerminalOutline(tabFrame: frame, contentTop: contentTop))
+                    }
                     .animation(reduceMotion ? nil : RelayMotion.change, value: frame)
             }
             .allowsHitTesting(false)

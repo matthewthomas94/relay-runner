@@ -96,14 +96,15 @@ enum BoardDarkSurfaceStyle {
 }
 
 /// The desktop behind the window, blurred: what every glass level sits on.
-/// `shellGlass` gives the Workspace shell Figma's glass instead: a light
+/// A `blurRadius` gives Figma's glass instead: a set
 /// blur with no tint of its own, so the shell's gradient alone sets how
 /// much of the desktop shows through.
 struct LiquidGlassBackdrop: NSViewRepresentable {
-    var shellGlass = false
+    /// Figma's untinted glass at this blur; nil keeps the stock material.
+    var blurRadius: CGFloat?
 
     func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = shellGlass ? ShellGlassEffectView() : NSVisualEffectView()
+        let view = blurRadius.map { ShellGlassEffectView(blurRadius: $0) } ?? NSVisualEffectView()
         view.material = .hudWindow
         view.blendingMode = .behindWindow
         view.state = .active
@@ -120,8 +121,21 @@ struct LiquidGlassBackdrop: NSViewRepresentable {
 /// by name each time AppKit rebuilds them. If a macOS release renames them,
 /// nothing matches and the stock material shows instead.
 final class ShellGlassEffectView: NSVisualEffectView {
-    static let blurRadius: CGFloat = 8
+    /// Figma's glass depths: each layer stacked on the shell frosts more.
+    static let shellBlurRadius: CGFloat = 8
+    static let panelBlurRadius: CGFloat = 48
+    static let floatingBlurRadius: CGFloat = 64
     private static let tintLayerNames: Set<String> = ["fill", "tone", "desktop tint"]
+
+    let blurRadius: CGFloat
+
+    init(blurRadius: CGFloat = shellBlurRadius) {
+        self.blurRadius = blurRadius
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -147,17 +161,40 @@ final class ShellGlassEffectView: NSVisualEffectView {
 
     private func applyShellGlass() {
         guard let layer else { return }
-        Self.apply(to: layer)
+        Self.apply(to: layer, blurRadius: blurRadius)
     }
 
-    static func apply(to layer: CALayer) {
+    static func apply(to layer: CALayer, blurRadius: CGFloat = shellBlurRadius) {
         if layer.name == "backdrop", layer.filters?.isEmpty == false {
             layer.setValue(blurRadius, forKeyPath: "filters.gaussianBlur.inputRadius")
         }
         if let name = layer.name, tintLayerNames.contains(name) {
             layer.isHidden = true
         }
-        layer.sublayers?.forEach(apply(to:))
+        layer.sublayers?.forEach { apply(to: $0, blurRadius: blurRadius) }
+    }
+}
+
+/// A panel on the shell (a column, the terminal) frosts the desktop more
+/// than the shell does, then lays the shell's black gradient over it at the
+/// panel's own position, so it reads as the same glass, only blurrier.
+struct PanelGlassUnderlay: View {
+    static let coordinateSpace = "programBoard"
+
+    var body: some View {
+        LiquidGlassBackdrop(blurRadius: ShellGlassEffectView.panelBlurRadius)
+            .overlay(alignment: .topLeading) {
+                GeometryReader { proxy in
+                    let top = proxy.frame(in: .named(Self.coordinateSpace)).minY
+                    VStack(spacing: 0) {
+                        BoardDarkSurfaceStyle.shellFill
+                            .frame(height: ProgramBoardBackdropStyle.backdropHeight)
+                        GraphicalTheme.neutral1.opacity(BoardDarkSurfaceStyle.actionOpacity)
+                    }
+                    .frame(height: ProgramBoardBackdropStyle.backdropHeight + max(0, top) + proxy.size.height)
+                    .offset(y: -top)
+                }
+            }
     }
 }
 
@@ -168,14 +205,19 @@ struct BoardDarkSurfaceBackground: View {
     /// own blur and the shell's black under its fill, so it matches the same
     /// fill drawn on the board: the panel fill for a dialog, by default.
     var floating = false
+    /// A panel sitting on the shell, frosted one step past it.
+    var panelGlass = false
 
     var body: some View {
         RoundedRectangle(cornerRadius: cornerRadius)
             .fill(fill)
             .background {
                 if floating {
-                    LiquidGlassBackdrop()
+                    LiquidGlassBackdrop(blurRadius: ShellGlassEffectView.floatingBlurRadius)
                         .overlay(BoardDarkSurfaceStyle.floatingBaseFill)
+                        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+                } else if panelGlass {
+                    PanelGlassUnderlay()
                         .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
                 }
             }
