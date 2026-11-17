@@ -149,6 +149,11 @@ final class ProgramBoardOverlayController {
     private var boardChangeRefreshTask: Task<Void, Never>?
     private var boardRouteResolver: () -> ProjectResolver.BoardRoute
     private var spaceChangeObserver: NSObjectProtocol?
+    /// A three-finger swipe up into Mission Control (or App Exposé / Show
+    /// Desktop) dismisses the Workspace too.
+    private lazy var missionControlObserver = MissionControlObserver(onShow: { [weak self] in
+        self?.hide()
+    })
 
     init(
         boardRouteResolver: @escaping () -> ProjectResolver.BoardRoute = ProjectResolver.resolveBoardRoute,
@@ -910,6 +915,7 @@ final class ProgramBoardOverlayController {
         revealContainer = container
         dismissInFlight = false
         isVisible = true
+        missionControlObserver.start()
         updatePanelKeyEligibility()
         DispatchQueue.main.async { [weak container] in
             container?.animateReveal(
@@ -1042,6 +1048,7 @@ final class ProgramBoardOverlayController {
         stopThemePoll()
         stopStatusPoll()
         isVisible = false
+        missionControlObserver.stop()
         isSuspendedForExternalWindow = true
 
         let panelToDismiss = panel
@@ -1084,6 +1091,7 @@ final class ProgramBoardOverlayController {
             container.prepareForOpening(startsLoading: contentLoadBlocked)
         }
         isVisible = true
+        missionControlObserver.start()
         panel.orderFrontRegardless()
         updatePanelKeyEligibility()
         startThemePoll()
@@ -1145,6 +1153,7 @@ final class ProgramBoardOverlayController {
         stopThemePoll()
         stopStatusPoll()
         isVisible = false
+        missionControlObserver.stop()
         dismissInFlight = true
         let panelToDismiss = panel
         let container = revealContainer ?? panelToDismiss?.contentView as? BoardRevealContainerView
