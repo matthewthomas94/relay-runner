@@ -46,16 +46,19 @@ final class SessionAgentTests: XCTestCase {
 
     func testStartPathsFollowTheInterimRules() throws {
         let source = try appStateSource()
-        // Add controls ("+", the wheel's Add, Command-T) use the Add rule.
+        // Add controls ("+", Command-T) use the Add rule.
         let open = try body(source, "    func openPMTab(agent: SessionAgent? = nil, showsTerminal: Bool = true) -> Bool {")
         XCTAssertTrue(open.contains("guard let agent = agent ?? agentToAdd else {"))
         XCTAssertTrue(source.contains("SessionAgent.toAdd(running: runningAgents)"))
-        XCTAssertTrue(source.contains("case .control(.add):\n            return openPMTab(showsTerminal: false)"))
         let shortcut = try String(contentsOf: root.appendingPathComponent("Sources/relay-runner/Board/PMTabShortcut.swift"), encoding: .utf8)
         XCTAssertTrue(shortcut.contains("case .openTab:\n            openPMTab()"))
         // Every other start names no agent, so it starts the most recently active one.
         XCTAssertTrue(source.contains("programBoardOverlay.setStartSessionHandler { [weak self] in self?.newSession() }"))
-        XCTAssertTrue(source.contains("sessionWheel.startSession = { [weak self] in self?.newSession(showsWorkspaceOnLaunch: false) ?? false }"))
+        // RR-521: the wheel starts the agent the user picked, never the top segment.
+        let wheel = try body(source, "    private func performAgentWheelAction(_ action: SessionWheelAgentAction) -> Bool {")
+        XCTAssertTrue(wheel.contains("? openPMTab(agent: agent, showsTerminal: false)"))
+        XCTAssertTrue(wheel.contains(": newSession(showsWorkspaceOnLaunch: false, agent: agent)"))
+        XCTAssertFalse(source.contains("sessionWheel.startSession"))
         XCTAssertTrue(source.contains("self?.newSession(workingDirectory: path, showsWorkspaceOnLaunch: false) ?? false"),
                       "Relay Remote and start_session")
         let note = try body(source, "    private func transitionFromNoteToSession(")

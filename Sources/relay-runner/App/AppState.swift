@@ -1069,14 +1069,14 @@ final class AppState {
             return true
         }
         keepAwake.onStateChange = { [weak self] previous, next in self?.keepAwakeStateChanged(from: previous, to: next) }
-        // RR-469: the session slot opens the active tab's terminal; its
-        // submenu switches, adds and closes PM tabs.
-        sessionWheel.focusSession = { [weak self] _ in
-            guard let self else { return }
-            self.switchSessionFromWheel(contextID: self.activeContext.id)
+        // RR-521: the session slot only opens Workspace on the Terminal tab;
+        // its submenu starts, switches to and stops the four agents.
+        sessionWheel.openTerminal = { [weak self] in
+            guard let self, self.allowsAppShellAccess else { return }
+            if self.overlayController == nil { self.startOverlay() }
+            self.programBoardOverlay.showTerminal()
         }
-        sessionWheel.startSession = { [weak self] in self?.newSession(showsWorkspaceOnLaunch: false) ?? false }
-        sessionWheel.tabAction = { [weak self] in self?.performTabWheelAction($0) ?? false }
+        sessionWheel.agentAction = { [weak self] in self?.performAgentWheelAction($0) ?? false }
         self.updateRelaunchObserver = NotificationCenter.default.addObserver(
             forName: .relayRunnerWillRelaunchForUpdate,
             object: nil,
@@ -1377,14 +1377,9 @@ final class AppState {
         sessionRegistry.liveContextIDs.compactMap { assistantSessionStore.document.bindings[$0]?.context.repositoryPath }
     }
 
-    /// The live sessions, labelled as their PM tabs are.
-    private var liveSessions: [(id: String, name: String)] {
-        sessionRegistry.liveContextIDs.map { id in (id, sessionLabel(contextID: id)) }
-    }
-
     // MARK: - Agent tabs (RR-469, RR-519)
 
-    /// One agent's tab in the Workspace terminal's tab strip and the wheel.
+    /// One agent's tab in the Workspace terminal's tab strip.
     struct PMTab: Identifiable, Equatable {
         let id: String
         let agent: SessionAgent
@@ -1509,38 +1504,6 @@ final class AppState {
     private func clearPMTabs() {
         pmTabIDs = []
         publishConversationState()
-    }
-
-    /// Focus that context's live session, which also routes voice there.
-    private func focusLiveSession(contextID: String, showsTerminal: Bool) {
-        guard contextID != activeContext.id,
-              let context = assistantSessionStore.document.bindings[contextID]?.context else { return }
-        if context.tab != nil || pmTabIDs.contains(contextID) {
-            // RR-469: a PM tab is focused by its own context id.
-            _ = selectPMTab(contextID, showsTerminal: showsTerminal)
-        } else if context.isGeneral {
-            selectGeneralContext(showsTerminal: showsTerminal)
-        } else if let path = context.repositoryPath {
-            selectProjectContext(repositoryPath: path, showsTerminal: showsTerminal)
-        }
-    }
-
-    /// Selecting the focused session opens its terminal. Switching sessions
-    /// retargets voice without raising Workspace; the notch reports the result.
-    private func switchSessionFromWheel(contextID: String) {
-        guard let name = liveSessions.first(where: { $0.id == contextID })?.name else { return }
-        if contextID == activeContext.id {
-            programBoardOverlay.showTerminal()
-            return
-        }
-        let recording = sttEngine?.isRecording == true
-        focusLiveSession(contextID: contextID, showsTerminal: false)
-        showSessionSwitchNotice(SessionSwitchNotice(
-            switchingTo: name,
-            focused: activeContext.id == contextID,
-            pending: pendingContextSelection?.id == contextID,
-            recording: recording
-        ))
     }
 
     /// RR-508: start one daemon leftover cleanup pass and return at once;
@@ -3474,19 +3437,16 @@ final class AppState {
         model.particleFieldEnabled = config.awareness.screen_glow
         if !model.isAdjustingIntensity { model.particleIntensity = config.awareness.glow_intensity }
         if pendingSessionLaunchID != nil {
-            model.startUnavailableReason = "Session starting"
+            model.startUnavailableReason = "Agent starting"
         } else if meetingNoteSnapshot.phase.ownsForeground {
             model.startUnavailableReason = "Finish notes first"
         } else {
             model.startUnavailableReason = nil
         }
-        // RR-469: one session slot for every tab, so switching tabs keeps the
-        // submenu open; its segments are the tabs.
-        let tabs = pmTabs
-        model.tabs = tabs.map {
-            SessionWheelTab(id: $0.id, name: $0.name, isActive: $0.isActive, isLive: $0.isLive)
-        }
-        model.addTabUnavailableReason = pmTabUnavailableReason
+        // RR-521: the submenu always shows the four agents, running or not.
+        let statuses = agentStatuses
+        model.runningAgents = Set(statuses.filter(\.isRunning).map(\.agent))
+        model.activeAgent = statuses.first(where: \.isActive)?.agent
         model.refresh(sessions: sessionRegistry.hasLiveSessions
             ? [SessionWheelSession(id: Self.wheelSessionID, name: sessionLabel(contextID: activeContext.id),
                                    isFocused: true)]
@@ -3495,26 +3455,39 @@ final class AppState {
 
     static let wheelSessionID = "pm-session"
 
-    private func performTabWheelAction(_ item: SessionWheelSessionItem) -> Bool {
-        guard allowsAppShellAccess, sessionRegistry.hasLiveSessions else { return false }
-        switch item {
-        case .tab(let tab):
-            guard tab.id != activeContext.id || !tab.isLive else { return true }
-            let name = tab.name
+    /// RR-521: the wheel's only start, switch and stop paths. A start resumes
+    /// the agent's conversation and makes it active without opening
+    /// Workspace; with no session running it starts the session.
+    private func performAgentWheelAction(_ action: SessionWheelAgentAction) -> Bool {
+        guard allowsAppShellAccess else { return false }
+        switch action {
+        case .start(let agent):
+            return sessionRegistry.hasLiveSessions
+                ? openPMTab(agent: agent, showsTerminal: false)
+                : newSession(showsWorkspaceOnLaunch: false, agent: agent)
+        case .switchTo(let agent):
+            guard let contextID = liveContextID(of: agent) else { return false }
+            guard contextID != activeContext.id else { return true }
+            let name = sessionLabel(contextID: contextID)
             let recording = sttEngine?.isRecording == true
-            guard selectPMTab(tab.id, showsTerminal: false) else { return false }
+            guard selectPMTab(contextID, showsTerminal: false) else { return false }
             showSessionSwitchNotice(SessionSwitchNotice(
-                switchingTo: name, focused: activeContext.id == tab.id,
-                pending: pendingContextSelection?.id == tab.id || pendingSessionLaunchID != nil,
+                switchingTo: name, focused: activeContext.id == contextID,
+                pending: pendingContextSelection?.id == contextID || pendingSessionLaunchID != nil,
                 recording: recording
             ))
             return true
-        case .close(let tab):
-            stopPMTab(tab.id)
+        case .stop(let agent):
+            guard let contextID = liveContextID(of: agent) else { return false }
+            stopPMTab(contextID)
             return true
-        case .control(.add):
-            return openPMTab(showsTerminal: false)
         }
+    }
+
+    /// The agent's live session, preferring the active context's project.
+    private func liveContextID(of agent: SessionAgent) -> String? {
+        let live = sessionRegistry.liveContextIDs.filter { SessionAgent(contextID: $0) == agent }
+        return live.first { $0 == activeContext.inTab(agent.tab).id } ?? live.first
     }
 
     private func performNoteWheelAction(_ action: SessionWheelNoteAction) -> Bool {

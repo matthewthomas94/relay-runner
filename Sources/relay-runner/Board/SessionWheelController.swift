@@ -5,11 +5,10 @@ final class SessionWheelController {
     let model = SessionWheelModel()
     let haptics: SessionWheelHaptics
     var refresh: ((SessionWheelModel) -> Void)?
-    var focusSession: ((String) -> Void)?
-    /// RR-445: starts the one general session.
-    var startSession: (() -> Bool)?
-    /// RR-469: a session submenu segment: a tab to make active, or a tab control.
-    var tabAction: ((SessionWheelSessionItem) -> Bool)?
+    /// RR-521: the session slot opens Workspace on the Terminal tab and never starts a session.
+    var openTerminal: (() -> Void)?
+    /// RR-521: a session submenu click: start, switch to or stop an agent.
+    var agentAction: ((SessionWheelAgentAction) -> Bool)?
     var openShortcut: ((SessionWheelShortcut) -> Void)?
     var noteAction: ((SessionWheelNoteAction) -> Bool)?
     /// Live particle preview while dragging; `commitIntensity` persists the final value.
@@ -52,7 +51,7 @@ final class SessionWheelController {
             SessionWheelView(
                 model: model,
                 selectSlot: { [weak self] index, fromPointer in self?.selectSlot(index, fromPointer: fromPointer) },
-                performTabItem: { [weak self] in self?.performTabItem($0) },
+                performAgentAction: { [weak self] in self?.performAgentAction($0) },
                 selectCenter: { [weak self] in self?.selectCenter() },
                 dismiss: { [weak self] in self?.dismiss() },
                 performNoteAction: { [weak self] in self?.performNoteAction($0) },
@@ -164,28 +163,20 @@ final class SessionWheelController {
             panel?.orderFrontRegardless()
             return
         }
-        if let session = model.slots[index] {
-            if let focusSession {
-                focusSession(session.id)
-                haptics.activate()
-            }
-            refresh?(model)
-            panel?.orderFrontRegardless()
-        } else if model.isStartSlot(index), model.canStartSession {
-            if startSession?() == true {
-                haptics.activate()
-                model.reset(at: pointerLocation)
-                refresh?(model)
-            }
-            else { model.notice = "Couldn't start session" }
+        guard SessionWheelGeometry.sessionSlots.contains(index) else { return }
+        if let openTerminal {
+            openTerminal()
+            haptics.activate()
         }
+        refresh?(model)
+        panel?.orderFrontRegardless()
     }
 
-    /// The wheel stays open, so several tabs can be added or switched in a row.
-    func performTabItem(_ item: SessionWheelSessionItem) {
-        guard isVisible, model.slots.contains(where: { $0 != nil }), model.isEnabled(item) else { return }
-        guard tabAction?(item) == true else {
-            model.notice = item == .control(.add) ? model.addTabUnavailableReason ?? "Couldn't start an agent" : "Agent action unavailable"
+    /// The wheel stays open, so several agents can be started, switched or stopped in a row.
+    func performAgentAction(_ action: SessionWheelAgentAction) {
+        guard isVisible, model.isEnabled(action) else { return }
+        guard agentAction?(action) == true else {
+            model.notice = action.failureNotice
             return
         }
         model.notice = nil

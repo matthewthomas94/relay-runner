@@ -67,27 +67,11 @@ struct SessionWheelSubmenuAnimation<Content: View>: View, Animatable {
     var body: some View { content(progress) }
 }
 
-/// Interpolates an added tab's growth so the arc, backdrop and labels move together.
-struct SessionWheelTabEntryAnimation<Content: View>: View, Animatable {
-    var progress: Double
-    @ViewBuilder var content: (Double) -> Content
-
-    var animatableData: Double {
-        get { progress }
-        set { progress = newValue }
-    }
-
-    var body: some View { content(progress) }
-}
-
 /// Native equivalent of liquid-gooey's shared silhouette, kept separate from interactive content.
 /// Reference: Libraries.dev d243bdd3, packages/liquid-gooey/src/filter.tsx (blur + alpha threshold).
 struct SessionWheelLiquidBackdrop: View {
     let progress: SessionWheelSubmenuProgress
     let reduceMotion: Bool
-    /// RR-469: the session submenu's segment count; it can span three cells.
-    /// Fractional while an added tab grows in.
-    var sessionItems: CGFloat = 0
 
     var body: some View {
         Canvas { context, size in
@@ -109,13 +93,10 @@ struct SessionWheelLiquidBackdrop: View {
                                                         width: radius * 2, height: radius * 2)), with: .color(.black))
                     for slot in 0..<geometry.slotCount where frames[slot].progress > 0 {
                         let frame = frames[slot]
-                        let span = slot == geometry.sessionSlots[0] && sessionItems > 0
-                            ? geometry.sessionSubmenuSpan(weight: sessionItems) * geometry.sliceAngle : nil
                         let shape = SessionWheelSector(slot: slot, innerRadius: geometry.actionInnerRadius,
                                                        outerRadius: geometry.actionOuterRadius,
                                                        cornerRadius: SessionWheelGeometry.actionCornerRadius,
-                                                       padding: geometry.segmentGap,
-                                                       arcStart: span.map { -$0 / 2 }, arcWidth: span)
+                                                       padding: geometry.segmentGap)
                         let transform = CGAffineTransform(translationX: rect.midX, y: rect.midY)
                             .scaledBy(x: frame.scale, y: frame.scale)
                             .translatedBy(x: -rect.midX, y: -rect.midY)

@@ -3,7 +3,7 @@ import SwiftUI
 struct SessionWheelView: View {
     @Bindable var model: SessionWheelModel
     let selectSlot: (Int, Bool) -> Void
-    let performTabItem: (SessionWheelSessionItem) -> Void
+    let performAgentAction: (SessionWheelAgentAction) -> Void
     let selectCenter: () -> Void
     let dismiss: () -> Void
     var performNoteAction: (SessionWheelNoteAction) -> Void = { _ in }
@@ -19,9 +19,6 @@ struct SessionWheelView: View {
     @State private var hubHovered = false
     @State private var hintOwner = UUID()
     @State var menuMotion = SessionWheelMenuMotion()
-    /// The tab just added from the submenu, while its segment grows in.
-    @State private var enteringTab: String?
-    @State private var tabEntryProgress: Double = 1
 
     private let geometry = SessionWheelGeometry.self
     static let coordinateSpace = "session-wheel"
@@ -34,55 +31,28 @@ struct SessionWheelView: View {
         TimelineView(.animation(paused: !menuMotion.motion.isAnimating)) { _ in
             let menuProgress = menuMotion.motion.progress(at: ProcessInfo.processInfo.systemUptime)
             let progress = reduceMotion ? menuProgress : min(presentation.progress, menuProgress)
-            SessionWheelTabEntryAnimation(progress: tabEntryProgress) { tabEntry in
-                SessionWheelSubmenuAnimation(progress: .init(slot: submenuSlot)) { submenus in
-                    wheel(menu: menuMotion.displayed ?? requestedMenu,
-                          tiles: SessionWheelPresentation(progress: progress, reduceMotion: reduceMotion),
-                          submenus: submenus, tabEntry: tabEntry)
-                }
-                .animation(SessionWheelSubmenuPresentation.animation(reduceMotion: reduceMotion), value: submenuSlot)
+            SessionWheelSubmenuAnimation(progress: .init(slot: submenuSlot)) { submenus in
+                wheel(menu: menuMotion.displayed ?? requestedMenu,
+                      tiles: SessionWheelPresentation(progress: progress, reduceMotion: reduceMotion),
+                      submenus: submenus)
             }
+            .animation(SessionWheelSubmenuPresentation.animation(reduceMotion: reduceMotion), value: submenuSlot)
         }
         .task(id: requestedMenu) {
             await menuMotion.update(to: requestedMenu, reduceMotion: reduceMotion)
         }
-        .onChange(of: model.tabs.map(\.id)) { old, new in
-            // One tab added: grow its segment in while the others make room.
-            let added = new.filter { !old.contains($0) }
-            guard !reduceMotion, new.count == old.count + 1, added.count == 1 else { return }
-            enteringTab = added[0]
-            tabEntryProgress = 0
-            withAnimation(SessionWheelSubmenuPresentation.animation(reduceMotion: false)) {
-                tabEntryProgress = 1
-            } completion: {
-                if enteringTab == added[0] { enteringTab = nil }
-            }
-        }
-    }
-
-    /// The entering tab's index in `sessionItems` and how far it has grown.
-    private func sessionTabEntry(_ progress: Double) -> SessionWheelGeometry.SessionTabEntry? {
-        guard let enteringTab, progress < 1,
-              let index = model.sessionItems.firstIndex(where: { $0.tab?.id == enteringTab }) else { return nil }
-        return (index, CGFloat(max(progress, 0)))
     }
 
     func wheel(menu: SessionWheelMenu, tiles: SessionWheelPresentation,
-               submenus: SessionWheelSubmenuProgress? = nil, tabEntry: Double = 1) -> some View {
+               submenus: SessionWheelSubmenuProgress? = nil) -> some View {
         let submenus = submenus ?? .init(slot: submenuSlot)
-        let entering = sessionTabEntry(tabEntry)
-        let sessionWeight = model.slots[geometry.sessionSlots[0]] != nil
-            ? geometry.sessionWeight(items: model.sessionItems.count, entering: entering) : 0
         return ZStack {
             Color.clear.contentShape(Rectangle()).onTapGesture { point in
-                let sessionSlot = geometry.sessionSlots[0]
-                let slot = submenus[sessionSlot] > 0 && model.slots[sessionSlot] != nil
-                    ? sessionSlot : geometry.slot(at: point)
-                if !geometry.contains(point, submenuSlot: submenus[slot] > 0 ? slot : nil,
-                                      sessionItems: model.sessionItems.count) { dismiss() }
+                let slot = geometry.slot(at: point)
+                if !geometry.contains(point, submenuSlot: submenus[slot] > 0 ? slot : nil) { dismiss() }
             }
             // Pure black, like the notch and the recording pill; the glass is on the tiles.
-            SessionWheelLiquidBackdrop(progress: submenus, reduceMotion: reduceMotion, sessionItems: sessionWeight)
+            SessionWheelLiquidBackdrop(progress: submenus, reduceMotion: reduceMotion)
                 .shadow(color: .black.opacity(0.45), radius: 16, y: 6)
                 .scaleEffect(presentation.discScale)
                 .opacity(presentation.discScale == 0 ? 0 : 1)
@@ -135,24 +105,22 @@ struct SessionWheelView: View {
                         .accessibilityHidden(!model.isHoveringSettings)
                         .transition(.identity)
                         .transaction { $0.animation = nil }
-                    } else if let session = model.slots[index] ?? menu.sessions[index], frame.progress > 0 {
+                    } else if index == geometry.sessionSlots[0], frame.progress > 0 {
                         let items = model.sessionItems
                         ZStack {
-                            ForEach(Array(items.enumerated()), id: \.offset) { position, item in
-                                tabItemButton(item, index: position, count: items.count, slot: index, entering: entering)
+                            ForEach(Array(items.enumerated()), id: \.element.id) { position, item in
+                                agentItemButton(item, index: position, slot: index)
                             }
-                            // Above the segments, so a click on the x closes the tab instead of selecting it.
-                            ForEach(Array(items.enumerated()), id: \.offset) { position, item in
-                                if let tab = item.tab {
-                                    tabCloseButton(tab, index: position, count: items.count, slot: index, entering: entering)
-                                }
+                            // Above the segments, so a click on the glyph takes its own action.
+                            ForEach(Array(items.enumerated()), id: \.element.id) { position, item in
+                                agentGlyphButton(item, index: position)
                             }
                         }
                         .compositingGroup()
                         .scaleEffect(frame.scale)
                         .opacity(frame.controlsOpacity)
-                        .allowsHitTesting(model.hoveredSession?.id == session.id && (reduceMotion || frame.progress >= 0.95))
-                        .accessibilityHidden(model.hoveredSession?.id != session.id)
+                        .allowsHitTesting(model.isHoveringSession && (reduceMotion || frame.progress >= 0.95))
+                        .accessibilityHidden(!model.isHoveringSession)
                         .transition(.identity)
                         .transaction { $0.animation = nil }
                     }
@@ -215,15 +183,13 @@ struct SessionWheelView: View {
     private func slot(_ index: Int, menu: SessionWheelMenu) -> some View {
         let session = menu.sessions[index]
         let shortcut = menu.shortcut(at: index)
-        let startSlot = model.isStartSlot(index)
-        let empty = session == nil && shortcut == nil
         // Tiles show only their icon; the title names the tile to VoiceOver and
-        // the notch names the action a click takes.
-        let title = shortcut?.title ?? (session != nil ? SessionWheelSessionSlot.title : startSlot ? "Start session" : "")
-        let sessionHint = "Open the active agent's terminal in Workspace. Move outward for the agents and Add."
-        let enabled = !empty || (startSlot && menu.canStartSession)
+        // the notch names the action a click takes. RR-521: the session tile
+        // always reads Terminal and never starts a session.
+        let title = shortcut?.title ?? SessionWheelSessionSlot.title
+        let sessionHint = "Open Workspace on the Terminal tab. Move outward to start, switch to or stop an agent."
         let presentation = ProgramBoardInteractionPresentation.resolve(
-            surface: .projectCard, isEnabled: enabled,
+            surface: .projectCard,
             isSelected: (session?.isFocused == true
                 || (shortcut == .noteTaker && model.notePhase.ownsForeground)),
             isHovered: !menuMotion.motion.isAnimating && model.hoveredSlot == index, reduceMotion: reduceMotion
@@ -234,24 +200,19 @@ struct SessionWheelView: View {
             selectSlot(index, true)
         } label: {
             ZStack {
-                controlBackground(shape, presentation: presentation, disabled: !enabled)
-                // The start tile and a running session share the terminal glyph.
+                controlBackground(shape, presentation: presentation)
                 LucideImage(shortcut?.symbol ?? SessionWheelSessionSlot.symbol, size: 20)
                     .position(geometry.position(slot: index, radius: 119))
-                .opacity(empty && !startSlot ? 0 : 1)
             }
             .contentShape(shape)
         }
         .buttonStyle(.plain)
-        .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.55)
         .animation(presentation.animation, value: presentation)
-        .accessibilityLabel(session.map { "\(title), \($0.name)" } ?? (title.isEmpty ? "Empty slot" : title))
+        .accessibilityLabel(session.map { "\(title), \($0.name)" } ?? title)
         .accessibilityHint(shortcut == .noteTaker
             ? "Open Notetaker. Move outward for recording controls."
             : shortcut == .settings ? "Open Settings. Move outward for particle intensity, Keep Awake and voice auto-play."
-            : shortcut != nil ? "Open \(title)" : session == nil ? "Start the general session" : sessionHint)
-        .accessibilityHint(!enabled && startSlot ? model.startUnavailableReason ?? title : title)
+            : shortcut != nil ? "Open \(title)" : sessionHint)
         .accessibilityAction {
             selectSlot(index, false)
         }
@@ -269,57 +230,66 @@ struct SessionWheelView: View {
                 }
                 Button(model.autoPlayActionTitle) { performAutoPlay() }
             }
-            if session != nil {
-                ForEach(Array(model.sessionItems.enumerated()), id: \.offset) { _, item in
-                    if model.isEnabled(item), !(item.tab?.isActive ?? false) {
-                        Button(item.title) { performTabItem(item) }
+            if shortcut == nil {
+                // RR-521: each agent's label and glyph, named as the notch names
+                // them. A stopped agent's label and plus both start it, so it
+                // has one action; the active agent has nothing to switch to.
+                ForEach(model.sessionItems) { item in
+                    if !item.isActive, model.isEnabled(item.labelAction) {
+                        Button(item.labelAction.title) { performAgentAction(item.labelAction) }
                     }
-                }
-                ForEach(model.tabs) { tab in
-                    Button(tab.closeTitle) { performTabItem(.close(tab)) }
+                    if item.glyphAction != item.labelAction {
+                        Button(item.glyphAction.title) { performAgentAction(item.glyphAction) }
+                    }
                 }
             }
         }
     }
 
-    /// RR-469/RR-519: a tab segment shows its agent's name and close x spaced
-    /// apart. The active one is selected; an off tab is dimmed. Add follows the tabs.
-    private func tabItemButton(_ item: SessionWheelSessionItem, index: Int, count: Int, slot: Int,
-                               entering: SessionWheelGeometry.SessionTabEntry? = nil) -> some View {
-        let arc = geometry.sessionItemArc(index, items: count, entering: entering)
-        let enabled = model.isEnabled(item)
-        let hovered = model.hoveredSessionItem == item
-        let help = item.tab?.caption ?? model.addTabUnavailableReason ?? item.control?.caption ?? ""
-        return submenuButton(index: index, slot: slot, title: item.title, help: help,
-                             symbol: item.control?.symbol, enabled: enabled, hovered: hovered,
-                             destructive: false,
-                             labelGlyphs: item.tab == nil ? nil
-                                 : geometry.sessionTabLayout(index, items: count, label: item.tab?.name ?? "",
-                                                             entering: entering).glyphs,
-                             selected: item.tab?.isActive ?? false,
-                             dimmed: item.tab.map { !$0.isLive } ?? false,
-                             arc: arc) {
-            guard model.hoveredSession != nil else { return }
-            performTabItem(item)
-        }
-        .opacity(entering.map { $0.index == index ? Double($0.progress) : 1 } ?? 1)
-        .accessibilityAddTraits(item.tab?.isActive == true ? .isSelected : [])
+    /// RR-521, from the user's mockup: labels use the primary text colour and
+    /// the active agent's is orange. A stopped agent keeps full colour: its plus,
+    /// in the primary text colour, marks it. A running agent's X is the
+    /// secondary text colour, brightening while hovered.
+    static func agentLabelColor(_ item: SessionWheelAgent) -> Color {
+        item.isActive ? ProgramBoardStyle.activeTrayOrange : ProgramBoardStyle.primaryText
     }
 
-    /// The x inside a tab's segment: stops that agent, as the tab strip's x does.
-    /// It is the size of Add's plus, and hovering it fills a circle behind it.
-    private func tabCloseButton(_ tab: SessionWheelTab, index: Int, count: Int, slot: Int,
-                                entering: SessionWheelGeometry.SessionTabEntry? = nil) -> some View {
-        let placement = geometry.sessionTabLayout(index, items: count, label: tab.name, entering: entering).close
-        let hovered = model.hoveredTabClose?.id == tab.id
-        let size = geometry.tabCloseDiameter
+    static func agentGlyphColor(_ item: SessionWheelAgent, hovered: Bool) -> Color {
+        item.isRunning && !hovered ? ProgramBoardStyle.mutedText : ProgramBoardStyle.primaryText
+    }
+
+    /// RR-521: an agent segment shows its two-letter label then its plus or X.
+    private func agentItemButton(_ item: SessionWheelAgent, index: Int, slot: Int) -> some View {
+        let action = item.labelAction
+        return submenuButton(index: index, slot: slot, title: action.title, help: model.caption(for: action),
+                             symbol: nil, enabled: true,
+                             hovered: model.hoveredSessionItem == item && model.hoveredGlyph == nil,
+                             destructive: false,
+                             labelGlyphs: geometry.sessionAgentLayout(index, label: item.label).glyphs,
+                             selected: item.isActive, labelColor: Self.agentLabelColor(item),
+                             arc: geometry.sessionItemArc(index)) {
+            guard model.isHoveringSession else { return }
+            performAgentAction(action)
+        }
+        .accessibilityAddTraits(item.isActive ? .isSelected : [])
+    }
+
+    /// The plus that starts a stopped agent, or the X that stops a running
+    /// one. The plus is in the primary text colour and the X in the
+    /// secondary; the glyph swaps in place, and hovering fills a circle behind it.
+    private func agentGlyphButton(_ item: SessionWheelAgent, index: Int) -> some View {
+        let placement = geometry.sessionAgentLayout(index, label: item.label).glyph
+        let hovered = model.hoveredGlyph == item
+        let size = geometry.agentGlyphDiameter
+        let action = item.glyphAction
         return Button {
-            guard model.hoveredSession != nil else { return }
-            performTabItem(.close(tab))
+            guard model.isHoveringSession else { return }
+            performAgentAction(action)
         } label: {
-            LucideImage(.x, size: Self.submenuIconSize)
-                .foregroundStyle(hovered ? ProgramBoardStyle.primaryText : ProgramBoardStyle.mutedText)
-                .opacity(tab.isLive ? 1 : 0.45)
+            LucideImage(item.glyph, size: Self.submenuIconSize)
+                .contentTransition(.opacity)
+                .foregroundStyle(Self.agentGlyphColor(item, hovered: hovered))
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: item.isRunning)
                 .frame(width: size, height: size)
                 .background(Circle().fill(GraphicalTheme.neutral5).opacity(hovered ? 1 : 0))
                 .animation(RelayMotion.change(reduceMotion: reduceMotion), value: hovered)
@@ -328,8 +298,7 @@ struct SessionWheelView: View {
         }
         .buttonStyle(SessionWheelActionButtonStyle())
         .position(placement.point)
-        .opacity(entering.map { $0.index == index ? Double($0.progress) : 1 } ?? 1)
-        .accessibilityLabel(tab.closeTitle)
+        .accessibilityLabel(action.title)
     }
 
     private func noteActionButton(_ action: SessionWheelNoteAction) -> some View {
@@ -452,14 +421,14 @@ struct SessionWheelView: View {
         .accessibilityValue(model.autoPlay ? "On" : "Off")
     }
 
-    /// A tab segment passes `labelGlyphs` (its agent's name set along the arc
-    /// beside its close x) and no symbol.
+    /// An agent segment passes `labelGlyphs` (its label set along the arc
+    /// beside its glyph) and no symbol.
     private func submenuButton(index: Int, slot: Int, title: String, help: String, symbol: LucideIcon?,
                                enabled: Bool, hovered: Bool, destructive: Bool,
                                keepAwake: KeepAwakeState? = nil,
                                isOn: Bool? = nil, subdivisions: Int = 3,
                                labelGlyphs: [SessionWheelGeometry.Glyph]? = nil,
-                               selected: Bool = false, dimmed: Bool = false,
+                               selected: Bool = false, labelColor: Color? = nil,
                                arc: (start: CGFloat, width: CGFloat)? = nil,
                                perform: @escaping () -> Void) -> some View {
         let presentation = ProgramBoardInteractionPresentation.resolve(
@@ -484,8 +453,7 @@ struct SessionWheelView: View {
                     // The label curves with its cell: one shape of its letters'
                     // outlines, so no letter snaps to the pixel grid off the arc.
                     Path { path in labelGlyphs.forEach { path.addPath(Path($0.outline)) } }
-                        .fill(foreground)
-                        .opacity(dimmed ? 0.45 : 1)
+                        .fill(labelColor ?? foreground)
                 } else {
                     Group {
                         if let keepAwake {
@@ -531,14 +499,13 @@ struct SessionWheelView: View {
     }
 
     private func controlBackground<S: Shape>(
-        _ shape: S, presentation: ProgramBoardInteractionPresentation, disabled: Bool = false
+        _ shape: S, presentation: ProgramBoardInteractionPresentation
     ) -> some View {
         // Glass tiles: the tile fill, lighter on hover or when selected, with
         // the rim drawn inside the tile's edge.
         shape
             .fill(presentation.usesHoverFill
                 ? BoardDarkSurfaceStyle.wheelTileActiveFill : BoardDarkSurfaceStyle.wheelTileFill)
-            .opacity(disabled ? 0.55 : 1)
             .overlay(SessionWheelGlassRim(shape: shape, stops: BoardDarkSurfaceStyle.glassRimStops))
         .overlay {
             if contrast == .increased { shape.stroke(.white.opacity(0.55), lineWidth: 1) }
@@ -590,7 +557,7 @@ struct SessionWheelSector: Shape {
     var span = 1
     var subdivisions = 3
     /// RR-469: an explicit arc relative to the slot's centre, for the session
-    /// submenu that grows past its own cell. Overrides the subdivision.
+    /// submenu's agent segments. Overrides the subdivision.
     var arcStart: CGFloat? = nil
     var arcWidth: CGFloat? = nil
 

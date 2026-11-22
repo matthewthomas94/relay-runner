@@ -19,6 +19,17 @@ enum SessionAgent: String, CaseIterable, Codable, Identifiable {
         }
     }
 
+    /// RR-521: the two-letter label on the session wheel's agent segments.
+    /// The full name is used everywhere else, VoiceOver included.
+    var shortLabel: String {
+        switch self {
+        case .puck: return "PK"
+        case .isabella: return "IS"
+        case .george: return "GE"
+        case .sky: return "SK"
+        }
+    }
+
     /// The agent's Kokoro voice. Recorded here; speech does not use it yet.
     var voiceID: String {
         switch self {
@@ -64,7 +75,7 @@ enum SessionAgent: String, CaseIterable, Codable, Identifiable {
         "You are \(name) in this session; the user may address you by that name. Relay Runner runs up to four named agents (Puck, Isabella, George and Sky), each with its own conversation."
     }
 
-    /// Interim rule for an Add control ("+", the wheel's Add, Command-T): the
+    /// Interim rule for an Add control ("+", Command-T): the
     /// first agent in table order that is not running; nil when all four are.
     static func toAdd(running: Set<SessionAgent>) -> SessionAgent? {
         allCases.first { !running.contains($0) }
