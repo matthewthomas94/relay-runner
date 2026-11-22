@@ -215,7 +215,7 @@ private struct SettingsContent: View {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     SettingsAgentCard(
                         presentation: SettingsAgentPresentation(
-                            name: SettingsAgentPresentation.voiceName(appState.config.tts),
+                            name: SettingsAgentPresentation.agentName(appState.agentStatuses),
                             subtitle: SettingsAgentPresentation.subtitle(
                                 state: appState.stateMachine.state,
                                 hasActiveSession: appState.hasActiveSession,
@@ -311,7 +311,7 @@ private struct SettingsContent: View {
                 onTrueWhisperTemplatesChanged: { appState.trueWhisperTemplatesChanged() }
             )
         case .textToSpeech:
-            TTSSettingsTab(config: autoSave.binding(\.tts), appState: appState)
+            TTSSettingsTab(config: autoSave.binding(\.tts))
         case .general:
             GeneralSettingsTab(
                 config: autoSave.binding(\.general),

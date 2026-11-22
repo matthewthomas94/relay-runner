@@ -74,7 +74,6 @@ final class ConfigManager {
         // TTS
         if let tts = table["tts"]?.tomlValue.table {
             if let v = tomlString(tts, "engine") { config.tts.engine = v }
-            if let v = tomlString(tts, "voice") { config.tts.voice = v }
             if let v = tomlDouble(tts, "rate") { config.tts.rate = v }
             if let v = tomlBool(tts, "auto_play") { config.tts.auto_play = v }
             if let v = tomlString(tts, "chime") { config.tts.chime = v }
@@ -154,7 +153,6 @@ final class ConfigManager {
 
         lines.append("[tts]")
         lines.append("engine = \"\(c.tts.engine)\"")
-        lines.append("voice = \"\(c.tts.voice)\"")
         lines.append("rate = \(String(format: "%.1f", c.tts.rate))")
         lines.append("auto_play = \(c.tts.auto_play)")
         lines.append("chime = \"\(c.tts.chime)\"")
@@ -208,11 +206,6 @@ final class ConfigManager {
         // say/piper -> kokoro
         if config.tts.engine == "say" || config.tts.engine == "piper" {
             config.tts.engine = "kokoro"
-        }
-
-        // Voices outside the standard set (including old Piper names) -> Puck
-        if !TtsConfig.standardVoices.contains(config.tts.voice) {
-            config.tts.voice = "am_puck"
         }
 
         // WPM rate (int > 10) -> speed multiplier (0.5-2.0)

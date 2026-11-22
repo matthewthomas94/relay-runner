@@ -424,7 +424,7 @@ class SessionRequestTests(SpeechCase):
         self.assertEqual((again["text"], again["rate"]), (LONG_SENTENCES[0], 2.0))
 
     def test_reload_config_without_a_change_leaves_the_reply_playing(self):
-        """`reload_config`: only "A changed voice or rate stops the current playback"."""
+        """`reload_config`: only "A changed rate stops the current playback"."""
         utterance_id = self.speak(LONG)
         self.conn.request("play")
         self.wait_phase(utterance_id, "started")

@@ -296,14 +296,6 @@ final class AppState {
     }
     @ObservationIgnored private var lastContextReconciliation = Date.distantPast
 
-    var settingsAudioBusy: Bool {
-        if meetingNoteSnapshot.phase.ownsForeground { return true }
-        if sttEngine?.isRecording == true { return true }
-        switch stateMachine.state {
-        case .preparing, .speaking, .recording: return true
-        default: return false
-        }
-    }
     // @ObservationIgnored: @Observable's macro expansion doesn't compose with
     // `lazy`. The controller is stateless from the UI's perspective — views
     // observe PermissionsManager directly — so hiding it from observation

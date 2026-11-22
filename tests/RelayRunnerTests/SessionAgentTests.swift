@@ -12,6 +12,16 @@ final class SessionAgentTests: XCTestCase {
         XCTAssertEqual(SessionAgent.allCases.map(\.order), [1, 2, 3, 4])
     }
 
+    /// RR-520: relay-speech's agent-to-voice map is pinned to this table by
+    /// the same fixture (`agents::tests::the_map_matches_the_swift_agent_table`).
+    func testTheSharedFixturePinsEachAgentsVoice() throws {
+        let data = try Data(contentsOf: root.appendingPathComponent("tests/fixtures/session_agent_voices.json"))
+        let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let agents = try XCTUnwrap(fixture["agents"] as? [[String: String]])
+        XCTAssertEqual(agents.map { $0["slug"] }, SessionAgent.allCases.map(\.slug))
+        XCTAssertEqual(agents.map { $0["voice"] }, SessionAgent.allCases.map(\.voiceID))
+    }
+
     func testEachAgentHasAStableTabAndPuckOwnsTheFirstTab() {
         XCTAssertEqual(SessionAgent.allCases.map(\.tab), [nil, "isabella", "george", "sky"])
         XCTAssertEqual(general.inTab(SessionAgent.puck.tab).id, "project:built-in", "Today's first-tab conversation is Puck's")

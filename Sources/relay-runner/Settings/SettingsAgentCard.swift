@@ -5,10 +5,9 @@ struct SettingsAgentPresentation: Equatable {
     let name: String
     let subtitle: String
 
-    static func voiceName(_ config: TtsConfig) -> String {
-        let parts = config.voice.split(separator: "_", maxSplits: 1)
-        let name = parts.count == 2 ? String(parts[1]) : config.voice
-        return name.isEmpty ? "Agent" : name.prefix(1).uppercased() + name.dropFirst()
+    /// The active agent's name, or Puck's when no session runs (RR-520).
+    static func agentName(_ statuses: [SessionAgent.Status]) -> String {
+        (statuses.first(where: \.isActive)?.agent ?? .puck).name
     }
 
     static func subtitle(

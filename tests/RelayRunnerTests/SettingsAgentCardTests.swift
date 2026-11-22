@@ -5,11 +5,15 @@ import XCTest
 @testable import relay_runner
 
 final class SettingsAgentCardTests: XCTestCase {
-    func testNameFollowsStandardVoiceSelection() {
-        var voice = TtsConfig()
-        XCTAssertEqual(SettingsAgentPresentation.voiceName(voice), "Puck")
-        voice.voice = "af_bella"
-        XCTAssertEqual(SettingsAgentPresentation.voiceName(voice), "Bella")
+    /// RR-520: the card names the active agent, or Puck when no session runs.
+    func testNameIsTheActiveAgentOrPuck() {
+        XCTAssertEqual(SettingsAgentPresentation.agentName(
+            SessionAgent.statuses(liveContextIDs: [], activeContextID: "project:built-in")), "Puck")
+        XCTAssertEqual(SettingsAgentPresentation.agentName(SessionAgent.statuses(
+            liveContextIDs: ["project:built-in", "project:built-in#tab-george"],
+            activeContextID: "project:built-in#tab-george")), "George")
+        XCTAssertEqual(SettingsAgentPresentation.agentName(SessionAgent.statuses(
+            liveContextIDs: ["project:relay#tab-sky"], activeContextID: "project:relay#tab-sky")), "Sky")
     }
 
     func testSubtitleDescribesForegroundStateWithoutWorkerActivity() {

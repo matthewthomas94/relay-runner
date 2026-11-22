@@ -487,6 +487,123 @@ mod tests {
         assert_ne!(sensitive, "I'll take care of that issue.");
     }
 
+    /// Records what the bridge hands the speech service.
+    #[derive(Default)]
+    struct Recorded(std::sync::Mutex<Vec<SpeechText>>);
+
+    impl Speech for Recorded {
+        fn submit_text(&self, request: SpeechText) -> bool {
+            self.0.lock().unwrap().push(request);
+            true
+        }
+        fn stop_playback(&self, _: &str) {}
+        fn skip(&self, _: &str) {}
+        fn playing(&self) -> bool {
+            false
+        }
+        fn play_or_replay(&self) -> bool {
+            false
+        }
+        fn note_play_control(&self, _: Option<f64>, _: f64) {}
+        fn note_visual_acknowledgement(&self, _: f64, _: f64) {}
+        fn replay(&self) -> bool {
+            false
+        }
+        fn new_turn(&self, _: i64, _: &str) {}
+        fn reload_config(&self) {}
+        fn control_session(&self, _: &str, _: &str, _: &str) -> bool {
+            false
+        }
+        fn session_playback_states(&self, _: &str) -> Dict {
+            Dict::new()
+        }
+        fn queue_depth(&self) -> i64 {
+            0
+        }
+        fn record_messenger_stage(
+            &self,
+            _: &str,
+            _: i64,
+            _: &str,
+            _: Option<f64>,
+            _: Option<&str>,
+            _: &str,
+        ) {
+        }
+        fn record_missing_outcome(&self, _: i64, _: &str, _: &str, _: &[String]) -> bool {
+            false
+        }
+        fn shutdown(&self) {}
+        fn played_coverage(&self, _: i64, _: &str) -> Vec<Dict> {
+            Vec::new()
+        }
+        fn record_realization(&self, _: i64, _: &str, _: &str, _: &str, _: &str) {}
+        fn attach_remote_sink(
+            &self,
+            _: std::sync::Arc<dyn super::super::speech_client::RemoteDevice>,
+        ) {
+        }
+        fn detach_remote_sink(&self, _: &str, _: &str) {}
+        fn attach_remote_mirror(
+            &self,
+            _: std::sync::Arc<dyn super::super::speech_client::RemoteDevice>,
+        ) {
+        }
+        fn detach_remote_mirror(&self, _: &str) {}
+        fn remote_ack(&self, _: &str, _: i64, _: bool) -> bool {
+            false
+        }
+    }
+
+    /// RR-520: messenger and lifecycle speech carry only a command seq/id; the
+    /// bridge finds the session in the ledger and sends its key, which the
+    /// speech service turns into that session's agent voice
+    /// (`relay-speech/src/agents.rs`).
+    #[test]
+    fn speech_with_only_a_command_names_its_ledger_session() {
+        let folder =
+            std::env::temp_dir().join(format!("relay-rs-speech-ledger-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        let state_path = folder.join("voice_command_state.json");
+        std::fs::write(
+            &state_path,
+            r#"{"relay_command_seq": 8, "relay_command_id": "cmd-8", "session_commands": {
+                "transport-george": {"relay_command_seq": 7, "relay_command_id": "cmd-7"},
+                "transport-sky": {"relay_command_seq": 8, "relay_command_id": "cmd-8"}}}"#,
+        )
+        .unwrap();
+        let speech = Recorded::default();
+        for (source, kind) in [("messenger", "handoff"), ("lifecycle", "progress")] {
+            assert!(queue_tts_text(
+                &speech,
+                &tagged_payload("On it.", None, 8, "cmd-8"),
+                TtsOptions {
+                    command_path: folder
+                        .join("voice_cmd_ready")
+                        .to_string_lossy()
+                        .into_owned(),
+                    state_path: state_path.to_string_lossy().into_owned(),
+                    source: source.to_string(),
+                    kind: kind.to_string(),
+                    ..TtsOptions::default()
+                },
+            ));
+        }
+        let sent = speech.0.lock().unwrap().clone();
+        assert_eq!(sent.len(), 2);
+        for request in &sent {
+            assert_eq!(request.session_key, "transport-sky");
+            assert_eq!(
+                (request.command_seq, request.command_id.as_deref()),
+                (Some(8), Some("cmd-8"))
+            );
+        }
+        assert_eq!(sent[0].source, "messenger");
+        assert_eq!(sent[1].source, "lifecycle");
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
     #[test]
     fn acknowledgement_dismissal_grows_with_length() {
         assert_eq!(acknowledgement_auto_dismiss_seconds("ok"), 3.0);

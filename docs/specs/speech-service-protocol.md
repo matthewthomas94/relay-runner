@@ -36,7 +36,7 @@ speech_service --socket <path> [--config <path>]
 ```
 
 - `--socket` is the Unix stream socket the service listens on. It defaults to `RELAY_SPEECH_SERVICE_SOCK`, then `/tmp/relay_speech_service.sock`. The service removes a leftover file at that path, creates the socket readable and writable by its owner only, and listens before it loads the voice, so a client can connect at once and wait for the answer to `hello`.
-- `--config` is the `config.toml` to read. The service uses `[tts]` `voice`, `rate`, `chime` and `auto_play`, with Relay Runner's `config.toml` defaults.
+- `--config` is the `config.toml` to read. The service uses `[tts]` `rate`, `chime` and `auto_play`, with Relay Runner's `config.toml` defaults. A saved `voice` is ignored: each utterance speaks in its session's agent voice (see `session_key`).
 - The service accepts **one** connection for its whole life. After accepting it, the service closes the listening socket and removes its path. The client refuses a socket whose other end belongs to another user.
 - The service exits with status 0 after a `shutdown` request, when its client's connection ends, when its parent process exits, and on `SIGTERM` or `SIGINT`. In each case it first stops speech and releases its sockets. It exits with status 1 when it cannot listen on the socket path.
 - stderr carries free-form diagnostics. stdout is unused.
@@ -48,6 +48,7 @@ speech_service --socket <path> [--config <path>]
 | `VOICE_COMMAND_STATE_FILE` | `/tmp/voice_command_state.json` | The newest Relay command, written by the bridge (input). See [Freshness](#freshness). |
 | `SPEECH_EVENT_LOG` | `/tmp/relay_speech_events.jsonl` | The speech event log (output). |
 | `TTS_CONTROL_SOCK` | `/tmp/tts_control.sock` | The datagram socket for play controls (bound by the service). |
+| `RELAY_BRIDGE_RUNTIME_DIR` | `/tmp` | Its `relay-sessions/` holds the session spools whose `session_agent` names each session's agent (input). |
 | `VOICE_STATE_SOCK` | `/tmp/voice_state.sock` | The overlay's datagram socket that state updates are sent to. |
 | `VOICE_MODELS_DIR` | unset | A folder whose `kokoro/` holds the voice model, searched before `~/.local/share/kokoro`. |
 | `HOME` | | Locates `~/Library/Application Support/relay-runner/voice-audio.lock` and the default `config.toml`. |
@@ -91,7 +92,7 @@ Every request except `hello` fails with `hello_required` until `hello` succeeded
 | --- | --- | --- | --- |
 | `hello` | `protocol` (must be `1`), optional `client`, `pid` | `protocol`, `service`, `instance_id`, `pid`, `test_mode` | Opens the session once the voice is loaded. `instance_id` is new for every service process. |
 | `status` | | The `state` snapshot | Reads the queue. |
-| `reload_config` | | | Re-reads `config.toml`. A changed voice or rate stops the current playback; the reply returns to the head of the queue. |
+| `reload_config` | | | Re-reads `config.toml`. A changed rate stops the current playback; the reply returns to the head of the queue. |
 | `shutdown` | | | Stops speech, answers, then exits 0. |
 
 ### Speaking
@@ -123,7 +124,7 @@ Intent fields of `speak`. Only `text` is required; `null` and absent mean the de
 | `covered_facts` | the `semantic_brief`, else `text` | List of strings returned by `played_coverage`. |
 | `realization_decision`, `suppression_reason` | `full`, `""` | `full`, `delta` or `suppress`, and why. Recorded in the event log. |
 | `semantic_brief` | `display_text` | A short description used for `covered_facts` and the derived `dedup_key`. |
-| `session_key` | `""` | The app session the speech belongs to. |
+| `session_key` | `""` | The app session the speech belongs to. Its spool's `session_agent` (`puck`, `isabella`, `george` or `sky`) picks the voice, `am_puck`, `bf_isabella`, `bm_george` or `af_sky`, for the Mac and for Relay Remote audio; no session, or no such file, is `am_puck`. A reply keeps the voice it started with. |
 | `waiting_playback_kind` | none | See `arm_waiting_playback`. |
 
 A value outside a field's list is treated as that field's default.
@@ -264,9 +265,9 @@ These existed before the split and are unchanged.
 - **`TTS_CONTROL_SOCK`** receives datagrams: `play` and `toggle` act as `play`, `replay` as `replay`, `skip` and `cancel` as `skip`, `pause` and `stop` as `pause`.
 - **State datagrams** to `VOICE_STATE_SOCK` are JSON objects with `source: "tts"` and `state` of `message_waiting`, `preparing`, `speaking`, `idle` or `failed`, the utterance's identity, and the display text where there is one. A datagram is at most 2048 bytes; longer text is shortened. A reply stopped while it plays should end with `idle` carrying its `stop_reason`. The Python worker often sends no `idle` at all in that case, because its playback thread finishes while the stop is still fading the audio; this was so before the split, and the suite does not check it.
 - **`SPEECH_EVENT_LOG`** gets one JSON object per line for every proposal, decision and playback stage. It never holds reply text.
-- **`voice-audio.lock`** is held with `flock` while audio plays, so a Settings voice preview and a reply never overlap.
+- **`voice-audio.lock`** is held with `flock` while audio plays, so two speech processes never play over each other.
 
-`/tmp/tts_in.fifo` and `/tmp/voice_bridge.sock` stay with the bridge, which turns their input into the requests above. The tutorial's standalone mode (`relay-speech tutorial`) and the Settings voice preview (`relay-speech preview --voice <v> --text <t> --output <wav>`) are separate processes and do not use the service.
+`/tmp/tts_in.fifo` and `/tmp/voice_bridge.sock` stay with the bridge, which turns their input into the requests above. The tutorial's standalone mode (`relay-speech tutorial`) is a separate process and does not use the service; it speaks as Puck.
 
 ## Restarts
 
