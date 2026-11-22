@@ -94,9 +94,11 @@ registered project.
     on the detached black backdrop, with the usual submenu corners and spacing.
   - Every agent action keeps the wheel open, and starting, switching or stopping
     agents does not close or replay the submenu.
-  - Every other start (Start Session, `start_session`, Relay Remote, the Notetaker
-    hand-off) starts the most recently active agent, or Puck if none has run. The
-    conversation saved before agents existed is Puck's.
+  - Every other start names its agent too (RR-523): Start Session and the tab
+    strip's "+" open an agent menu, and `start_session` requires `agent`. Only a
+    Relay Remote start without `agent`, the double-tap session prompt and the
+    Notetaker hand-off they lead to start the most recently active agent, or Puck
+    if none has run. The conversation saved before agents existed is Puck's.
 - Click **Terminal** to open Workspace on the Terminal tab, whether or not a session
   is running; with none running it shows its normal empty state. Its VoiceOver label
   names the active agent. The wheel stays open.

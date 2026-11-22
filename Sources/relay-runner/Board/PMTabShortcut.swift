@@ -9,9 +9,9 @@ enum PMTabShortcut: Equatable {
     enum Action: Equatable {
         /// Not ours: the key behaves as it does today.
         case passThrough
-        /// Same path as "+": starts the first agent that is not running; with
-        /// all four running that path shows the limit message.
-        case openTab
+        /// RR-523: opens the "+" agent menu and starts nothing itself; with
+        /// all four running it shows the limit message.
+        case openAgentMenu
         case closeTab
         /// Stopping the last live agent ends the session, so ask first.
         case confirmEndSession
@@ -37,7 +37,7 @@ enum PMTabShortcut: Equatable {
     ) -> Action {
         guard terminalTabShowing, sessionRunning else { return .passThrough }
         switch shortcut {
-        case .open: return .openTab
+        case .open: return .openAgentMenu
         case .close: return liveTabCount <= 1 ? .confirmEndSession : .closeTab
         }
     }
@@ -56,8 +56,8 @@ extension AppState {
         switch action {
         case .passThrough:
             return false
-        case .openTab:
-            openPMTab()
+        case .openAgentMenu:
+            requestAgentAddMenu()
         case .closeTab:
             stopPMTab(activeContext.id)
         case .confirmEndSession:

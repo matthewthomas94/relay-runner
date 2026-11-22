@@ -38,6 +38,8 @@ final class FakeMac: @unchecked Sendable {
         ProjectSummary(projectId: "p-old", displayName: "old", availability: "missing"),
     ]
     private(set) var sessionCommands: [SessionCommand] = []
+    /// The agent the last start asked for; the Mac's default is Puck.
+    private var startedAgent = "puck"
 
     var isConnected: Bool { lock.withLock { connection != nil } }
 
@@ -69,7 +71,9 @@ final class FakeMac: @unchecked Sendable {
         SessionState(appRunning: true, session: phase,
                      projectId: phase == .noSession ? nil : "p-relay",
                      projectName: phase == .noSession ? nil : "relay-runner",
-                     projects: includingProjects ? projects : nil)
+                     projects: includingProjects ? projects : nil,
+                     activeAgent: phase == .noSession ? nil : startedAgent,
+                     runningAgents: phase == .noSession ? nil : [startedAgent])
     }
 
     func receive(_ frame: Frame, on connection: FakeConnection) {
@@ -79,7 +83,9 @@ final class FakeMac: @unchecked Sendable {
             // The app answers, on a control link or through the helper beside a bridge.
             sessionCommands.append(command)
             switch command.action {
-            case .start where phase == .noSession || phase == .failed: phase = .starting
+            case .start where phase == .noSession || phase == .failed:
+                phase = .starting
+                startedAgent = command.agent ?? "puck"
             case .stop: phase = .noSession
             default: break
             }

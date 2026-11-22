@@ -78,6 +78,41 @@ final class RelayRemoteProtocolTests: XCTestCase {
         XCTAssertEqual(command.direction, .phoneToMac)
     }
 
+    /// RR-523: a start names its agent; one without it, from an older phone
+    /// build, still decodes, and the state reports the active and running agents.
+    func testSessionCommandAgentRoundTripsAndStateCarriesAgents() throws {
+        let id = "3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10"
+        for agent in ["george", nil] {
+            let frame = Frame.sessionCommand(SessionCommand(clientId: id, action: .start, projectId: "p", agent: agent))
+            let line = try FrameCodec.encode(frame)
+            XCTAssertEqual(String(decoding: line, as: UTF8.self).contains("\"agent\""), agent != nil)
+            XCTAssertEqual(try FrameCodec.decode(line), frame)
+        }
+        let frames = try objects("frames")
+        func line(_ name: String) throws -> Data {
+            Data(try XCTUnwrap(frames.first { $0["name"] as? String == name }?["line"] as? String).utf8)
+        }
+        guard case .sessionCommand(let older) = try FrameCodec.decode(line("session_command_start")) else {
+            return XCTFail("expected session_command")
+        }
+        XCTAssertNil(older.agent)
+        XCTAssertEqual(older.projectId, "6d23b5b1-6da7-4056-b328-7ea8167388c0")
+        guard case .sessionCommand(let named) = try FrameCodec.decode(line("session_command_start_agent")) else {
+            return XCTFail("expected session_command")
+        }
+        XCTAssertEqual(named.agent, "george")
+        guard case .sessionState(let state) = try FrameCodec.decode(line("session_state_ready_agents")) else {
+            return XCTFail("expected session_state")
+        }
+        XCTAssertEqual(state.activeAgent, "george")
+        XCTAssertEqual(state.runningAgents, ["puck", "george"])
+        guard case .sessionState(let plain) = try FrameCodec.decode(line("session_state_ready")) else {
+            return XCTFail("expected session_state")
+        }
+        XCTAssertNil(plain.activeAgent)
+        XCTAssertNil(plain.runningAgents)
+    }
+
     func testAudioDataLimitOnEncodeAndDecode() throws {
         let limits = try XCTUnwrap(vector("limits") as? [String: Any])
         let limit = limits["max_audio_data_bytes"] as! Int

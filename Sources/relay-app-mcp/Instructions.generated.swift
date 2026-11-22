@@ -27,6 +27,7 @@ For anything in Relay Runner itself — its status, the Workspace, Notetaker, Te
 
 - **Read first.** `app_status` reports the version, session, Remote mode, paired devices, permissions and Keep Awake; `get_settings` returns the effective settings.
 - **Settings.** `set_settings` takes only the keys to change (for example `{"tts": {"rate": 1.2}}`) and applies them through the same path Settings saves each change through. Unknown keys, wrong types and values the current provider or model cannot use are refused, not coerced.
+- **Starting an agent.** `start_session` needs `agent`: Puck, Isabella, George or Sky (`puck`, `isabella`, `george`, `sky`). A session never starts without the user choosing which agent it is, so when the user has not said, ask them which agent before calling; `app_status` lists which agents are running. A call without `agent` is refused.
 - **Destructive tools.** `end_session` and `relay_remote_unpair` refuse without `confirm: true`; pass it only when the user asked for that effect.
 - **Pairing.** `relay_remote_begin_pairing` shows the QR code on Settings > Relay Remote for the user to scan; its one-time key and token never leave the code. Poll `relay_remote_pending_approval`, then approve only a device the user expects with `relay_remote_approve` (`restrict_to_network: true` is "Only from my home network and Tailscale") or decline it with `relay_remote_deny`.
 - **App not running.** When a tool reports that Relay Runner is not running, tell the user; do not fall back to screen control to operate the app.
@@ -50,6 +51,7 @@ Relay App (`mcp__relay-app__*`) is first-party control of Relay Runner itself ov
 
 - For Relay Runner's own status, Workspace, Notetaker, Terminal and Settings pages, settings values, projects, sessions, Relay Remote pairing and Keep Awake, use these tools before Relay Desktop, Relay Vision or Relay Actions. They return structured JSON; keep screenshots for what is genuinely visual.
 - Read with `app_status` and `get_settings`. `set_settings` takes only the keys to change and saves through the same path as Settings; unknown keys and invalid values are refused.
+- `start_session` needs `agent` (puck, isabella, george or sky); if the user has not said which agent, ask them first.
 - `end_session` and `relay_remote_unpair` need `confirm: true`; pass it only when the user asked for that effect.
 - Pairing: `relay_remote_begin_pairing` shows the QR code on Settings > Relay Remote (its key and token stay in the code), `relay_remote_pending_approval` reports the phone, then `relay_remote_approve` (`restrict_to_network: true` = home network and Tailscale only) or `relay_remote_deny`. Approve only a device the user expects.
 - If Relay Runner is not running, say so instead of falling back to screen control. Never `mcp__computer-use__*`.

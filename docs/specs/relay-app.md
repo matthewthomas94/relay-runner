@@ -16,7 +16,7 @@ The `relay-app-mcp` server exposes these tools (namespace `mcp__relay-app__*`). 
 | `set_settings` | `settings` (sections mapping setting names to values) | Applies a partial update through `AppState.saveConfig`, the path every Settings control saves through, which writes `config.toml` and hot-reloads running services. |
 | `list_projects` | — | Registered projects (id, name, availability) and the session state. |
 | `select_project` | `project_id` | Opens the project's board as `activate_project` does; never starts, focuses or stops a session. |
-| `start_session` | `project_id` | `AppState.newSession(workingDirectory:)`, the Workspace Start path, through the RR-456 session handlers. |
+| `start_session` | `project_id`, `agent` | `AppState.newSession(workingDirectory:agent:)`, the Workspace Start menu's path, through the RR-456 session handlers. `agent` is `puck`, `isabella`, `george` or `sky` (or the name); without it, or with an unknown one, the call is refused with the four agents and which run (RR-523). An agent already running in the project only reports it; another agent starts beside the running ones. |
 | `end_session` | `confirm: true` | `AppState.endSession()`, through the RR-456 handlers. |
 | `relay_remote_devices` | — | Paired phones (id, name, key fingerprint, network restriction) and Remote Login. |
 | `relay_remote_unpair` | `device_id`, `confirm: true` | `RelayRemoteController.unpair`, as the Settings Unpair button. |

@@ -77,16 +77,47 @@ enum SessionAgent: String, CaseIterable, Codable, Identifiable {
         "You are \(name) in this session; the user may address you by that name. Relay Runner runs up to four named agents (Puck, Isabella, George and Sky), each with its own conversation."
     }
 
-    /// Interim rule for an Add control ("+", Command-T): the
-    /// first agent in table order that is not running; nil when all four are.
-    static func toAdd(running: Set<SessionAgent>) -> SessionAgent? {
-        allCases.first { !running.contains($0) }
+    /// RR-523: an agent named by slug or name, ignoring case and spaces; nil
+    /// for anything else.
+    init?(choice: String) {
+        let value = choice.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let agent = Self.allCases.first(where: { $0.slug == value || $0.name.lowercased() == value }) else {
+            return nil
+        }
+        self = agent
     }
 
-    /// Interim rule for every other start path: the most recently active
+    /// RR-523: a session never starts without the user choosing its agent.
+    /// Only the paths that cannot show a menu use this rule: a Relay Remote
+    /// start without `agent` (an older phone build), the Notetaker hand-off
+    /// and the double-tap session prompt. It is the most recently active
     /// agent, which is the saved active context's, or Puck if none has run.
-    static func toStart(activeContext: AssistantSessionContext) -> SessionAgent {
+    static func mostRecentlyActive(activeContext: AssistantSessionContext) -> SessionAgent {
         SessionAgent(context: activeContext)
+    }
+
+    /// RR-523: the agents a start menu offers: those not running, in table order.
+    static func startable(running: Set<SessionAgent>) -> [SessionAgent] {
+        allCases.filter { !running.contains($0) }
+    }
+
+    /// The "+" reason while all four agents run.
+    static let allRunningReason = "All four agents running"
+
+    /// "Puck, Isabella, George and Sky", or any subset, in table order.
+    static func list(_ agents: [SessionAgent]) -> String {
+        let names = agents.map(\.name)
+        guard names.count > 1 else { return names.first ?? "none" }
+        return names.dropLast().joined(separator: ", ") + " and " + names[names.count - 1]
+    }
+
+    /// `start_session`'s refusal when `agent` is missing or unknown: it names
+    /// the four agents and which of them run.
+    static func choiceRefusal(given: String?, running: Set<SessionAgent>) -> String {
+        let choices = allCases.map { "\($0.slug) (\($0.name))" }.joined(separator: ", ")
+        let lead = given.map { "Unknown agent '\($0)'." } ?? "start_session needs agent."
+        let runningNames = list(allCases.filter(running.contains))
+        return "\(lead) Choose one of the four agents: \(choices). Running: \(runningNames). Ask the user which agent to start when they have not said."
     }
 
     static var limitMessage: String {

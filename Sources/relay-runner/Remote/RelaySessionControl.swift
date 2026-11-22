@@ -15,11 +15,15 @@ struct RelaySessionControlHost {
     struct LiveSession: Equatable {
         let projectID: String?
         let name: String
+        /// RR-523: the agent this session runs.
+        var agent: SessionAgent = .puck
     }
 
     struct Snapshot: Equatable {
         /// Live embedded sessions, the focused one first.
         var live: [LiveSession] = []
+        /// RR-523: the active agent, when its session is live.
+        var activeAgent: SessionAgent?
         /// `newSession` accepted a launch that has not produced a live session yet.
         var launching = false
         /// Why Start is unavailable right now, worded as the session wheel words it.
@@ -29,8 +33,10 @@ struct RelaySessionControlHost {
     /// Registered projects in display order (`ProjectRegistryV2Service.projects()`).
     var projects: () -> [Project]
     var snapshot: () -> Snapshot
-    /// The Workspace Start path, `AppState.newSession(workingDirectory:)`. False when it refused.
-    var start: (_ path: String) -> Bool
+    /// The Workspace Start path, `AppState.newSession(workingDirectory:agent:)`. A nil
+    /// agent, a Remote start from an older phone build, starts the most recently
+    /// active agent, or Puck. False when it refused.
+    var start: (_ path: String, _ agent: SessionAgent?) -> Bool
     /// `AppState.endSession()`.
     var stop: () -> Void
     /// The app's current session message; one that appears during a refused start explains it.
@@ -124,6 +130,11 @@ final class RelaySessionControl {
                 result.error = failure.error
             }
         }
+        if !stopRequested, !snapshot.live.isEmpty {
+            let running = Set(snapshot.live.map(\.agent))
+            result.activeAgent = snapshot.activeAgent?.slug
+            result.runningAgents = SessionAgent.allCases.filter(running.contains).map(\.slug)
+        }
         if let error { result.error = error }
         if includingProjects {
             result.projects = host.projects().map {
@@ -136,16 +147,24 @@ final class RelaySessionControl {
     private func perform(_ command: SessionCommand) -> SessionState {
         // A retry after a reconnect reports the current state instead of acting twice.
         if dedup.isDuplicate(command.clientId) { return state() }
+        if command.action == .start, let name = command.agent {
+            guard let agent = SessionAgent(choice: name) else {
+                return state(error: "Unknown agent '\(name)'. Choose Puck, Isabella, George or Sky.")
+            }
+            return start(projectID: command.projectId, agent: agent)
+        }
         return perform(command.action, projectID: command.projectId)
     }
 
     /// One session action, shared by the phone's `session_command` and Relay App (RR-459).
-    func perform(_ action: SessionAction, projectID: String? = nil) -> SessionState {
+    /// RR-523: a start without `agent` exists only for older phone builds; Relay
+    /// App's `start_session` always names one.
+    func perform(_ action: SessionAction, projectID: String? = nil, agent: SessionAgent? = nil) -> SessionState {
         switch action {
         case .listProjects: return state(includingProjects: true)
         case .state: return state()
         case .stop: return stop()
-        case .start: return start(projectID: projectID)
+        case .start: return start(projectID: projectID, agent: agent)
         }
     }
 
@@ -160,7 +179,7 @@ final class RelaySessionControl {
         return state()
     }
 
-    private func start(projectID: String?) -> SessionState {
+    private func start(projectID: String?, agent: SessionAgent?) -> SessionState {
         guard let projectID, !projectID.isEmpty else { return state(error: "Choose a project to start.") }
         guard let project = host.projects().first(where: { $0.id == projectID }) else {
             return state(includingProjects: true, error: "That project is no longer registered on this Mac.")
@@ -170,9 +189,14 @@ final class RelaySessionControl {
         }
         let snapshot = host.snapshot()
         if let running = snapshot.live.first {
-            // Starting the running project again is an attach; switching is not offered.
-            if snapshot.live.contains(where: { $0.projectID == project.id }) { return state() }
-            return state(error: "\(running.name) is already running on this Mac. Stop it before starting \(project.name).")
+            // Starting the running project again is an attach, as is starting an
+            // agent that already runs there; switching projects is not offered.
+            let here = snapshot.live.filter { $0.projectID == project.id }
+            if !here.isEmpty, agent == nil || here.contains(where: { $0.agent == agent }) { return state() }
+            // RR-523: a named agent starts beside the ones running in this project.
+            if here.isEmpty {
+                return state(error: "\(running.name) is already running on this Mac. Stop it before starting \(project.name).")
+            }
         }
         if let reason = snapshot.startBlockedReason ?? (snapshot.launching ? "A session is already starting on this Mac." : nil) {
             return state(error: reason)
@@ -180,7 +204,7 @@ final class RelaySessionControl {
         failure = nil
         stopRequested = false
         let before = host.message()
-        guard host.start(project.path) else {
+        guard host.start(project.path, agent) else {
             let after = host.message()
             let reason = after != before ? after : nil
             failure = (project.id, project.name, reason ?? "Relay Runner could not start \(project.name) on this Mac.")

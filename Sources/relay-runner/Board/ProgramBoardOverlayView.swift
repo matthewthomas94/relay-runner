@@ -235,7 +235,8 @@ struct ProgramBoardOverlayView: View {
     var onHistoryChanged: () -> Void = {}
     var onAddExistingProject: () -> Void = {}
     var onCreateProject: () -> Void = {}
-    let onStartSession: () -> Void
+    /// RR-523: starts the agent chosen from the Start Session menu.
+    let onStartSession: (SessionAgent) -> Void
     let onEndSession: () -> Void
     var onStartNoteTaker: () -> Void = {}
     var onStopNoteTaker: () -> Void = {}
@@ -612,7 +613,8 @@ struct ProgramBoardOverlayView: View {
                                     selectedProjectPath: workspace.contextPath,
                                     requiresConfirmedProject: ProjectRegistryV2Rollout.isEnabled()
                                 ),
-                                action: model.hasActiveSession ? onEndSession : onStartSession
+                                action: .resolve(hasActiveSession: model.hasActiveSession,
+                                                 end: onEndSession, start: onStartSession)
                             ),
                             onDrop: onDrop
                         )
@@ -4485,7 +4487,7 @@ struct ProgramSessionToolbarPresentation: Equatable {
 struct ProgramSessionControl {
     let presentation: ProgramSessionToolbarPresentation
     let isEnabled: Bool
-    let action: () -> Void
+    let action: ProgramSessionAction
 }
 
 enum ProgramSessionControlPolicy {
@@ -4540,17 +4542,27 @@ enum ProgramNoteStartFailurePresentation {
 }
 
 /// The Start/End session action: a white glass primary button. Each agent's
-/// work style is set on its card in Settings (RR-522).
+/// work style is set on its card in Settings (RR-522). RR-523: with no
+/// session running, a click always opens the agent menu, as the Add project
+/// menu does; choosing an agent starts it.
 struct ProgramSessionPrimaryButton: View {
     let presentation: ProgramSessionToolbarPresentation
     let isEnabled: Bool
-    let action: () -> Void
+    let action: ProgramSessionAction
     @State private var isHovered = false
+    @State private var isChoosingAgent = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private func activate() {
+        switch action {
+        case .end(let end): end()
+        case .chooseAgent: isChoosingAgent.toggle()
+        }
+    }
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: SharedActionButtonMetrics.cornerRadius, style: .continuous)
-        Button(action: action) {
+        Button(action: activate) {
             RelaySwap(presentation.title, style: .text, alignment: .center) { title in
                 Text(title)
                     .font(AppTypography.font(.primaryButton))
@@ -4569,6 +4581,7 @@ struct ProgramSessionPrimaryButton: View {
         .onHover { isHovered = $0 }
         .programButtonCursor(enabled: isEnabled)
         .accessibilityLabel(presentation.title)
+        .accessibilityHint(action.agentOptions.isEmpty ? "" : "Choose Puck, Isabella, George or Sky to start.")
         .notchHint(presentation.help)
         .foregroundStyle(GraphicalTheme.onPrimaryAction)
         .background(shape.fill(BoardDarkSurfaceStyle.primaryActionFill))
@@ -4576,6 +4589,16 @@ struct ProgramSessionPrimaryButton: View {
         .fixedSize()
         .animation(reduceMotion ? nil : RelayMotion.hover, value: isHovered)
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isEnabled)
+        .background {
+            if case .chooseAgent(let agents, let start) = action {
+                SettingsDropdownPresenter(isPresented: $isChoosingAgent, minWidth: 160, alignsTrailing: true) {
+                    SessionAgentMenuOptions(agents: agents, start: start) { isChoosingAgent = false }
+                }
+            }
+        }
+        .onChange(of: action.agentOptions.isEmpty) { _, ending in
+            if ending { isChoosingAgent = false }
+        }
     }
 }
 

@@ -942,8 +942,9 @@ final class AppState {
             return TicketWriter.WorkerSizingDefaults.from(self.config.general)
         }
         // RR-445: the Workspace's one Start/End control runs the general session.
-        // No working directory resolves to the general session.
-        programBoardOverlay.setStartSessionHandler { [weak self] in self?.newSession() }
+        // No working directory resolves to the general session. RR-523: it
+        // starts the agent chosen from its menu.
+        programBoardOverlay.setStartSessionHandler { [weak self] agent in self?.newSession(agent: agent) }
         programBoardOverlay.setEndSessionHandler { [weak self] in self?.endSession() }
         programBoardOverlay.setNoteTakerHandlers(
             start: { [weak self] projectPath in
@@ -1384,8 +1385,17 @@ final class AppState {
     /// tab stays listed while its provider has exited, until it is stopped.
     private(set) var pmTabIDs: [String] = []
 
+    /// RR-523: the strip lists its agents in table order, whatever order they started in.
+    static func stripOrder(_ contextIDs: [String]) -> [String] {
+        contextIDs.enumerated().sorted { lhs, rhs in
+            let left = (SessionAgent(contextID: lhs.element) ?? .puck).order
+            let right = (SessionAgent(contextID: rhs.element) ?? .puck).order
+            return left != right ? left < right : lhs.offset < rhs.offset
+        }.map(\.element)
+    }
+
     var pmTabs: [PMTab] {
-        pmTabIDs.map { id in
+        Self.stripOrder(pmTabIDs).map { id in
             let live = sessionRegistry.isLive(id)
             return PMTab(id: id, agent: SessionAgent(contextID: id) ?? .puck, name: sessionLabel(contextID: id),
                          isLive: live, isActive: live && id == activeContext.id)
@@ -1404,19 +1414,27 @@ final class AppState {
         SessionAgent.statuses(liveContextIDs: sessionRegistry.liveContextIDs, activeContextID: activeContext.id)
     }
 
-    /// The agent an Add control starts now, by `SessionAgent.toAdd`; nil when
-    /// all four run or no slot is free.
-    private var agentToAdd: SessionAgent? {
-        guard sessionRegistry.liveContextIDs.count < EmbeddedSessionRegistry.maxConcurrentSessions,
-              let agent = SessionAgent.toAdd(running: runningAgents) else { return nil }
-        let id = activeContext.inTab(agent.tab).id
-        return pmTabIDs.contains(id) || pmTabIDs.count < EmbeddedSessionRegistry.maxConcurrentSessions ? agent : nil
+    /// RR-523: the agents the "+" menu lists: those with neither a tab in the
+    /// strip nor a live session, in table order. Empty when no slot is free.
+    static func agentsToAdd(tabContextIDs: [String], liveContextIDs: [String]) -> [SessionAgent] {
+        let limit = EmbeddedSessionRegistry.maxConcurrentSessions
+        guard liveContextIDs.count < limit, tabContextIDs.count < limit else { return [] }
+        let running = Set((tabContextIDs + liveContextIDs).compactMap(SessionAgent.init(contextID:)))
+        return SessionAgent.startable(running: running)
     }
 
-    /// Why Add cannot start an agent now; nil when it can.
+    var agentsToAdd: [SessionAgent] {
+        Self.agentsToAdd(tabContextIDs: pmTabIDs, liveContextIDs: sessionRegistry.liveContextIDs)
+    }
+
+    /// RR-523: Command-T asks the "+" to open its agent menu; the button
+    /// clears it when the menu closes.
+    var agentAddMenuRequested = false
+
+    /// Why "+" cannot start an agent now; nil when it can.
     var pmTabUnavailableReason: String? {
         if !sessionRegistry.hasLiveSessions { return "No session" }
-        if agentToAdd == nil { return "All agents running" }
+        if agentsToAdd.isEmpty { return SessionAgent.allRunningReason }
         if pendingSessionLaunchID != nil { return "Agent starting" }
         if meetingNoteSnapshot.phase.ownsForeground { return "Finish notes first" }
         return nil
@@ -1430,25 +1448,30 @@ final class AppState {
         return project == "general" ? agent : "\(agent) · \(project)"
     }
 
-    /// Start an agent beside the running ones, in the active context's
-    /// project. nil is the Add rule: the first agent in table order that is
-    /// not running. It gets the same instructions, MCP servers and scope
+    /// Start the chosen agent beside the running ones, in the active
+    /// context's project. It gets the same instructions, MCP servers and scope
     /// tokens, and its own provider session, resuming its saved conversation.
-    /// Refused, changing nothing, when all four agents run.
     @discardableResult
-    func openPMTab(agent: SessionAgent? = nil, showsTerminal: Bool = true) -> Bool {
+    func openPMTab(agent: SessionAgent, showsTerminal: Bool = true) -> Bool {
         guard allowsAppShellAccess, sessionRegistry.hasLiveSessions else { return false }
-        guard let agent = agent ?? agentToAdd else {
-            refusePMTab()
-            return false
-        }
         return newSession(workingDirectory: activeContext.repositoryPath, showsWorkspaceOnLaunch: showsTerminal,
                           agent: agent)
     }
 
+    /// RR-523: Command-T opens the "+" agent menu and starts nothing itself.
+    /// With all four agents running it shows the limit message instead.
+    func requestAgentAddMenu() {
+        guard allowsAppShellAccess, sessionRegistry.hasLiveSessions else { return }
+        guard pmTabUnavailableReason == nil else {
+            if agentsToAdd.isEmpty { refusePMTab() }
+            return
+        }
+        agentAddMenuRequested = true
+    }
+
     private func refusePMTab() {
         contextSwitchMessage = Self.pmTabLimitMessage
-        stateMachine.showProgramStatus(title: "All agents running", body: Self.pmTabLimitMessage)
+        stateMachine.showProgramStatus(title: SessionAgent.allRunningReason, body: Self.pmTabLimitMessage)
         syncNotchActivitySurface()
     }
 
@@ -2220,6 +2243,7 @@ final class AppState {
                     recoveryGeneration: context.recoveryGeneration,
                     preservesVoiceBridge: true,
                     agent: exitedContext.map(SessionAgent.init(context:))
+                        ?? SessionAgent(context: assistantSessionStore.activeContext)
                 )
                 if !started {
                     stateMachine.showProgramStatus(
@@ -2845,7 +2869,7 @@ final class AppState {
         recoveryGeneration: String? = nil,
         preservesVoiceBridge: Bool = false,
         bypassesNoteTransition: Bool = false,
-        agent: SessionAgent? = nil
+        agent: SessionAgent
     ) -> Bool {
         if !bypassesNoteTransition, meetingNoteSnapshot.phase.ownsForeground {
             return transitionFromNoteToSession(
@@ -2880,9 +2904,8 @@ final class AppState {
         do {
             let preparedContext = try Self.prepareSessionContext(workingDirectory: workingDirectory, registry: projectRegistryV2)
             projectScopeToken = preparedContext.projectScopeToken
-            // RR-519: each agent is the same project in its own context. A
-            // start that names no agent starts the most recently active one.
-            let agent = agent ?? SessionAgent.toStart(activeContext: assistantSessionStore.activeContext)
+            // RR-519: each agent is the same project in its own context.
+            // RR-523: every start names its agent.
             context = preparedContext.context.inTab(agent.tab)
             contextWorkingDirectory = preparedContext.workingDirectory
         } catch {
@@ -3177,7 +3200,7 @@ final class AppState {
         suppressesStartupGreeting: Bool,
         recoveryGeneration: String?,
         preservesVoiceBridge: Bool,
-        agent: SessionAgent?
+        agent: SessionAgent
     ) -> Bool {
         guard let coordinator = meetingNoteCoordinator else { return false }
         // The destination path is captured now. Later Workspace selection
@@ -4785,14 +4808,15 @@ final class AppState {
             if case .sessionPrompt = self.stateMachine.state,
                !self.onboarding.isSessionControlsTutorialActive {
                 if engine.playRequested {
-                    // Double-tap Alt → start new session
+                    // Double-tap Alt → start new session. RR-523: a gesture
+                    // cannot show a menu, so it starts the most recently active agent.
                     engine.playRequested = false
                     engine.playRequestedAt = nil
                     engine.playDetectedAt = nil
                     self.onboarding.noteTutorialPlaybackRequested()
                     self.stateMachine.dismissSessionPrompt()
                     self.newSession(workingDirectory: self.activeContext.workingDirectory,
-                                    agent: SessionAgent(context: self.activeContext))
+                                    agent: self.mostRecentlyActiveAgent)
                 } else if CapsLockGesture.isCapsLockOn() != self.sessionPromptCapsState {
                     // Any Caps Lock toggle → dismiss prompt immediately
                     if engine.isRecording { engine.cancelRecording() }
@@ -5383,8 +5407,12 @@ final class AppState {
                                  availability: $0.availability.rawValue) }
             },
             snapshot: { [weak self] in self?.remoteSessionSnapshot ?? .init() },
-            start: { [weak self] path in
-                self?.newSession(workingDirectory: path, showsWorkspaceOnLaunch: false) ?? false
+            start: { [weak self] path, agent in
+                guard let self else { return false }
+                // RR-523: an older phone build names no agent; that start
+                // gets the most recently active one, or Puck.
+                return self.newSession(workingDirectory: path, showsWorkspaceOnLaunch: false,
+                                       agent: agent ?? self.mostRecentlyActiveAgent)
             },
             stop: { [weak self] in self?.endSession() },
             message: { [weak self] in self?.contextSwitchMessage }
@@ -5423,6 +5451,13 @@ final class AppState {
 
     var relayAppAgents: [SessionAgent.Status] { agentStatuses }
 
+    /// RR-523: the agent a start that cannot show a menu launches (an older
+    /// phone's Remote start, the double-tap session prompt, and through them
+    /// the Notetaker hand-off): the most recently active agent, or Puck.
+    var mostRecentlyActiveAgent: SessionAgent {
+        SessionAgent.mostRecentlyActive(activeContext: assistantSessionStore.activeContext)
+    }
+
     func openRelayAppDestination(_ destination: RelayAppDestination) -> String? {
         guard allowsAppShellAccess else {
             return "Relay Runner is still in first-run setup, so its Workspace and Settings are not available yet."
@@ -5456,10 +5491,13 @@ final class AppState {
         let live = sessionRegistry.liveContextIDs
             .sorted { $0 == focused && $1 != focused }
             .compactMap { assistantSessionStore.document.bindings[$0]?.context }
-            .map { RelaySessionControlHost.LiveSession(projectID: $0.projectID, name: $0.displayName) }
-        // A running session already refuses a start, so the wheel's session
-        // limit cannot apply here; a note in progress can.
-        return .init(live: live, launching: pendingSessionLaunchID != nil || pendingContextSelection != nil,
+            .map { RelaySessionControlHost.LiveSession(projectID: $0.projectID, name: $0.displayName,
+                                                       agent: SessionAgent(context: $0)) }
+        // RR-523: a named agent may start beside the running ones; the
+        // four-agent limit refuses through newSession's message. A note in
+        // progress refuses here.
+        return .init(live: live, activeAgent: agentStatuses.first(where: \.isActive)?.agent,
+                     launching: pendingSessionLaunchID != nil || pendingContextSelection != nil,
                      startBlockedReason: meetingNoteSnapshot.phase.ownsForeground
                         ? "Relay Runner is taking notes on this Mac. Finish the note first." : nil)
     }

@@ -102,7 +102,7 @@ final class AssistantSessionStoreTests: XCTestCase {
         // Simulated relaunch: running bindings come back interrupted.
         let reloaded = AssistantSessionStore(directory: directory)
         XCTAssertEqual(reloaded.activeContext, general.inTab("sky"), "The most recently active agent is kept")
-        XCTAssertEqual(SessionAgent.toStart(activeContext: reloaded.activeContext), .sky)
+        XCTAssertEqual(SessionAgent.mostRecentlyActive(activeContext: reloaded.activeContext), .sky)
         for agent in SessionAgent.allCases {
             XCTAssertEqual(reloaded.binding(for: general.inTab(agent.tab))?.lifecycle, .interrupted)
         }
@@ -129,7 +129,7 @@ final class AssistantSessionStoreTests: XCTestCase {
         XCTAssertNil(reloaded.binding(for: random), "No agent owns a random tab id")
         XCTAssertTrue(reloaded.history(for: random).isEmpty)
         XCTAssertEqual(reloaded.activeContext, firstTab, "An unowned active tab falls back to Puck's")
-        XCTAssertEqual(SessionAgent.toStart(activeContext: reloaded.activeContext), .puck)
+        XCTAssertEqual(SessionAgent.mostRecentlyActive(activeContext: reloaded.activeContext), .puck)
         XCTAssertEqual(try launch(.puck, in: reloaded), native, "Puck resumes the first tab's conversation")
     }
 

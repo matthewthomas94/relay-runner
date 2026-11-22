@@ -180,6 +180,11 @@
   "line": "{\"action\":\"start\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"type\":\"session_command\"}"
  },
  {
+  "name": "session_command_start_agent",
+  "direction": "phone_to_mac",
+  "line": "{\"action\":\"start\",\"agent\":\"george\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"type\":\"session_command\"}"
+ },
+ {
   "name": "session_command_stop",
   "direction": "phone_to_mac",
   "line": "{\"action\":\"stop\",\"client_id\":\"9a1d6e47-2b83-4c55-8e0f-5d3c7b9a1e22\",\"type\":\"session_command\"}"
@@ -208,6 +213,11 @@
   "name": "session_state_starting",
   "direction": "mac_to_phone",
   "line": "{\"app_running\":true,\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"project_name\":\"relay-runner\",\"session\":\"starting\",\"type\":\"session_state\"}"
+ },
+ {
+  "name": "session_state_ready_agents",
+  "direction": "mac_to_phone",
+  "line": "{\"active_agent\":\"george\",\"app_running\":true,\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"project_name\":\"relay-runner\",\"running_agents\":[\"puck\",\"george\"],\"session\":\"ready\",\"type\":\"session_state\"}"
  },
  {
   "name": "session_state_ready",

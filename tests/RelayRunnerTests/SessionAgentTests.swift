@@ -38,41 +38,122 @@ final class SessionAgentTests: XCTestCase {
         XCTAssertEqual(SessionAgent(context: general.inTab("a1b2c3d4")), .puck)
     }
 
-    /// Item 6's interim rules until the wheel and start-menu tickets land.
-    func testAddStartsTheFirstAgentNotRunningAndOtherStartsTheMostRecentlyActive() {
-        XCTAssertEqual(SessionAgent.toAdd(running: []), .puck)
-        XCTAssertEqual(SessionAgent.toAdd(running: [.puck]), .isabella)
-        XCTAssertEqual(SessionAgent.toAdd(running: [.puck, .george]), .isabella)
-        XCTAssertEqual(SessionAgent.toAdd(running: [.isabella]), .puck)
-        XCTAssertEqual(SessionAgent.toAdd(running: [.puck, .isabella, .george]), .sky)
-        XCTAssertNil(SessionAgent.toAdd(running: Set(SessionAgent.allCases)), "All four run: Add is refused")
-
-        XCTAssertEqual(SessionAgent.toStart(activeContext: .general), .puck, "None has run: Puck")
-        XCTAssertEqual(SessionAgent.toStart(activeContext: general), .puck)
-        XCTAssertEqual(SessionAgent.toStart(activeContext: general.inTab("george")), .george)
+    /// RR-523: only the paths that cannot show a menu fall back to the most
+    /// recently active agent, or Puck when none has run.
+    func testTheFallbackIsTheMostRecentlyActiveAgentOrPuck() {
+        XCTAssertEqual(SessionAgent.mostRecentlyActive(activeContext: .general), .puck, "None has run: Puck")
+        XCTAssertEqual(SessionAgent.mostRecentlyActive(activeContext: general), .puck)
+        XCTAssertEqual(SessionAgent.mostRecentlyActive(activeContext: general.inTab("george")), .george)
         let project = AssistantSessionContext(kind: .project, projectID: "relay", repositoryPath: "/repos/relay")
-        XCTAssertEqual(SessionAgent.toStart(activeContext: project.inTab("isabella")), .isabella)
+        XCTAssertEqual(SessionAgent.mostRecentlyActive(activeContext: project.inTab("isabella")), .isabella)
     }
 
-    func testStartPathsFollowTheInterimRules() throws {
+    func testAChoiceNamesAnAgentBySlugOrName() {
+        XCTAssertEqual(SessionAgent(choice: "george"), .george)
+        XCTAssertEqual(SessionAgent(choice: " George "), .george)
+        XCTAssertEqual(SessionAgent(choice: "SKY"), .sky)
+        XCTAssertEqual(SessionAgent(choice: "Isabella"), .isabella)
+        XCTAssertNil(SessionAgent(choice: "bob"))
+        XCTAssertNil(SessionAgent(choice: ""))
+        let refusal = SessionAgent.choiceRefusal(given: nil, running: [.puck, .sky])
+        for name in ["puck (Puck)", "isabella (Isabella)", "george (George)", "sky (Sky)", "Running: Puck and Sky."] {
+            XCTAssertTrue(refusal.contains(name), refusal)
+        }
+        XCTAssertTrue(SessionAgent.choiceRefusal(given: "bob", running: []).hasPrefix("Unknown agent 'bob'."))
+        XCTAssertTrue(SessionAgent.choiceRefusal(given: nil, running: []).contains("Running: none."))
+    }
+
+    /// RR-523: with no session running, Start Session has no direct start; it
+    /// offers the four agents and choosing one starts that agent. While a
+    /// session runs it ends it.
+    func testTheStartSessionControlOnlyOffersTheFourAgents() {
+        var started: [SessionAgent] = []
+        var ended = 0
+        let idle = ProgramSessionAction.resolve(hasActiveSession: false, end: { ended += 1 }, start: { started.append($0) })
+        guard case .chooseAgent(let options, let start) = idle else { return XCTFail("Start must open the agent menu") }
+        XCTAssertEqual(options.map(\.name), ["Puck", "Isabella", "George", "Sky"])
+        XCTAssertEqual(idle.agentOptions, SessionAgent.allCases)
+        XCTAssertTrue(started.isEmpty, "Opening the menu starts nothing")
+        start(.george)
+        XCTAssertEqual(started, [.george])
+        XCTAssertEqual(ended, 0)
+
+        let running = ProgramSessionAction.resolve(hasActiveSession: true, end: { ended += 1 }, start: { started.append($0) })
+        guard case .end(let end) = running else { return XCTFail("End Session keeps its behaviour") }
+        XCTAssertEqual(running.agentOptions, [])
+        end()
+        XCTAssertEqual(ended, 1)
+        XCTAssertEqual(started, [.george])
+    }
+
+    /// The Workspace Done column and the Terminal empty state build the same control.
+    func testBothStartButtonsUseTheAgentMenu() throws {
+        let board = try String(contentsOf: root.appendingPathComponent("Sources/relay-runner/Board/ProgramBoardOverlayView.swift"), encoding: .utf8)
+        XCTAssertTrue(board.contains("action: .resolve(hasActiveSession: model.hasActiveSession,\n                                                 end: onEndSession, start: onStartSession)"))
+        XCTAssertTrue(board.contains("let onStartSession: (SessionAgent) -> Void"))
+        let terminal = try String(contentsOf: root.appendingPathComponent("Sources/relay-runner/Terminal/EmbeddedTerminal.swift"), encoding: .utf8)
+        XCTAssertTrue(terminal.contains("action: .resolve(hasActiveSession: appState.hasActiveSession,"))
+        XCTAssertTrue(terminal.contains("start: { _ = appState.newSession(agent: $0) })"))
+        XCTAssertFalse(terminal.contains("appState.newSession()"))
         let source = try appStateSource()
-        // Add controls ("+", Command-T) use the Add rule.
-        let open = try body(source, "    func openPMTab(agent: SessionAgent? = nil, showsTerminal: Bool = true) -> Bool {")
-        XCTAssertTrue(open.contains("guard let agent = agent ?? agentToAdd else {"))
-        XCTAssertTrue(source.contains("SessionAgent.toAdd(running: runningAgents)"))
-        let shortcut = try String(contentsOf: root.appendingPathComponent("Sources/relay-runner/Board/PMTabShortcut.swift"), encoding: .utf8)
-        XCTAssertTrue(shortcut.contains("case .openTab:\n            openPMTab()"))
-        // Every other start names no agent, so it starts the most recently active one.
-        XCTAssertTrue(source.contains("programBoardOverlay.setStartSessionHandler { [weak self] in self?.newSession() }"))
-        // RR-521: the wheel starts the agent the user picked, never the top segment.
+        XCTAssertTrue(source.contains("programBoardOverlay.setStartSessionHandler { [weak self] agent in self?.newSession(agent: agent) }"))
+    }
+
+    /// RR-523: the strip lists the started agents in table order; "+" lists
+    /// exactly the others and is refused with all four running.
+    func testTheTabStripIsInTableOrderAndPlusOffersTheAgentsNotRunning() throws {
+        let puck = "project:built-in", isabella = "project:built-in#tab-isabella"
+        let george = "project:built-in#tab-george", sky = "project:built-in#tab-sky"
+        XCTAssertEqual(AppState.stripOrder([sky, puck, george]), [puck, george, sky])
+        XCTAssertEqual(AppState.stripOrder([george, isabella]), [isabella, george])
+
+        XCTAssertEqual(AppState.agentsToAdd(tabContextIDs: [george, puck], liveContextIDs: [george, puck]), [.isabella, .sky])
+        XCTAssertEqual(AppState.agentsToAdd(tabContextIDs: [sky], liveContextIDs: [sky]), [.puck, .isabella, .george])
+        XCTAssertEqual(AppState.agentsToAdd(tabContextIDs: [puck, isabella, george, sky],
+                                            liveContextIDs: [puck, isabella, george, sky]), [])
+        XCTAssertEqual(SessionAgent.allRunningReason, "All four agents running")
+        let source = try appStateSource()
+        let reason = try body(source, "    var pmTabUnavailableReason: String? {")
+        XCTAssertTrue(reason.contains("if agentsToAdd.isEmpty { return SessionAgent.allRunningReason }"))
+        let surface = try String(contentsOf: root.appendingPathComponent("Sources/relay-runner/Terminal/WorkspaceTerminalSurface.swift"), encoding: .utf8)
+        XCTAssertTrue(surface.contains("Button { isMenuPresented.toggle() } label: {"), "\"+\" only opens the menu")
+        XCTAssertTrue(surface.contains("SessionAgentMenuOptions(agents: agents, start: add)"))
+        XCTAssertTrue(surface.contains(".disabled(!isAvailable)"))
+        XCTAssertTrue(surface.contains(".notchHint(unavailableReason ?? \"Add agent\")"))
+    }
+
+    /// RR-523: only a Remote start without an agent and the session prompt,
+    /// and through them the Notetaker hand-off, start without a choice.
+    func testOnlyThePathsWithoutAMenuStartTheMostRecentlyActiveAgent() throws {
+        let source = try appStateSource()
+        XCTAssertEqual(source.components(separatedBy: "mostRecentlyActiveAgent").count - 1, 3, "Definition, Remote and session prompt")
+        XCTAssertTrue(source.contains("agent: agent ?? self.mostRecentlyActiveAgent)"), "Relay Remote without agent")
+        XCTAssertTrue(source.contains("agent: self.mostRecentlyActiveAgent)"), "Double-tap session prompt")
+        let note = try body(source, "    private func transitionFromNoteToSession(")
+        XCTAssertTrue(note.contains("        agent: SessionAgent\n    ) -> Bool {"))
+        XCTAssertTrue(note.contains("agent: agent"), "The Notetaker hand-off keeps the start's agent")
+        XCTAssertTrue(source.contains("        bypassesNoteTransition: Bool = false,\n        agent: SessionAgent\n    ) -> Bool {"),
+                      "newSession needs an agent")
+        let open = try body(source, "    func openPMTab(agent: SessionAgent, showsTerminal: Bool = true) -> Bool {")
+        XCTAssertTrue(open.contains("agent: agent)"))
+        // RR-521: the wheel starts the agent the user picked.
         let wheel = try body(source, "    private func performAgentWheelAction(_ action: SessionWheelAgentAction) -> Bool {")
         XCTAssertTrue(wheel.contains("? openPMTab(agent: agent, showsTerminal: false)"))
         XCTAssertTrue(wheel.contains(": newSession(showsWorkspaceOnLaunch: false, agent: agent)"))
-        XCTAssertFalse(source.contains("sessionWheel.startSession"))
-        XCTAssertTrue(source.contains("self?.newSession(workingDirectory: path, showsWorkspaceOnLaunch: false) ?? false"),
-                      "Relay Remote and start_session")
-        let note = try body(source, "    private func transitionFromNoteToSession(")
-        XCTAssertTrue(note.contains("agent: agent"), "The Notetaker hand-off keeps the start's agent")
+    }
+
+    /// No start path picks "the next free agent" any more.
+    func testNoCallerStartsTheNextFreeAgent() throws {
+        let sources = try FileManager.default.subpathsOfDirectory(atPath: root.appendingPathComponent("Sources").path)
+            .filter { $0.hasSuffix(".swift") }
+        XCTAssertFalse(sources.isEmpty)
+        for path in sources {
+            let text = try String(contentsOf: root.appendingPathComponent("Sources").appendingPathComponent(path), encoding: .utf8)
+            for removed in ["SessionAgent.toAdd", "agentToAdd", "toStart(activeContext:", "openPMTab()",
+                            "first agent in table order that is not running", "Starts the first of"] {
+                XCTAssertFalse(text.contains(removed), "\(path): \(removed)")
+            }
+        }
     }
 
     func testNothingDeletesAnAgentsConversation() throws {
