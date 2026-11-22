@@ -121,8 +121,10 @@ class RelayRsCliWrapperTests(unittest.TestCase):
 
     def test_work_style_show_and_set(self):
         repo = self.git_repo()
-        style_file = self.root / "session-work-style.json"
-        environment = {"RELAY_SESSION_WORK_STYLE_FILE": str(style_file)}
+        config = self.home / "Library/Application Support/relay-runner/config.toml"
+        config.parent.mkdir(parents=True)
+        config.write_text('[tts]\nvoice = "am_puck"\n')
+        environment = {"RELAY_SESSION_AGENT": "isabella"}
         process = self.wrapper("relay-work-style", "show", "--repo", repo, environment=environment)
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertEqual(process.stdout,
@@ -136,8 +138,16 @@ class RelayRsCliWrapperTests(unittest.TestCase):
                                environment=environment)
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertEqual(process.stdout,
-                         "project: direct (makes changes now, without tickets), from the session's choice\n")
-        self.assertEqual(json.loads(style_file.read_text()), {"work_style": "direct"})
+                         "project: direct (makes changes now, without tickets), from Isabella's setting\n")
+        self.assertEqual(config.read_text(),
+                         '[tts]\nvoice = "am_puck"\n\n[agents.isabella]\nwork_style = "direct"\n')
+        # Another agent's session is unchanged; without an agent nothing is set.
+        process = self.wrapper("relay-work-style", "show", "--repo", repo,
+                               environment={"RELAY_SESSION_AGENT": "sky"})
+        self.assertIn("from the project's .relay-runner.toml", process.stdout)
+        process = self.wrapper("relay-work-style", "set", "auto", "--repo", repo)
+        self.assertEqual(process.returncode, 1)
+        self.assertIn("RELAY_SESSION_AGENT", process.stderr)
         process = self.wrapper("relay-work-style", "set", "--repo", repo, environment=environment)
         self.assertEqual(process.returncode, 2)
         self.assertIn("relay-work-style: error: set needs a style: auto, direct, orchestrated",

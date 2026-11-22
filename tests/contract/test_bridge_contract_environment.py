@@ -41,14 +41,20 @@ class WorkStyleContract:
         self.assertEqual(command["intent_qualification"]["reason"], "work_style_direct")
         self.assertIn("- work_style: direct", command["agent_prompt"])
 
-    def test_the_session_work_style_file_applies_and_the_variable_wins(self):
-        """Environment: the session choice saved at
-        `RELAY_SESSION_WORK_STYLE_FILE` (`{"work_style": "direct"}`) applies
-        when `RELAY_WORK_STYLE` is unset; `RELAY_WORK_STYLE` overrides it."""
-        saved = self.box.root / "session-work-style.json"
-        saved.write_text(json.dumps({"work_style": "direct"}))
-        self.start_with(RELAY_SESSION_WORK_STYLE_FILE=str(saved))
-        self.assertEqual(self.turn(CHANGE_REQUEST)["action"], "inline_work")
+    def test_the_agents_work_style_applies_and_the_variable_wins(self):
+        """Environment: the work style saved for the target session's agent,
+        named by the `session_agent` file in its spool, as `[agents.<slug>]
+        work_style` in the config applies when `RELAY_WORK_STYLE` is unset,
+        and only to that agent; `RELAY_WORK_STYLE` overrides it."""
+        with self.box.config_path.open("a") as config:
+            config.write('\n[agents.puck]\nwork_style = "direct"\n')
+        agent = self.box.session.spool / "session_agent"
+        agent.parent.mkdir(parents=True, exist_ok=True)
+        agent.write_text("george\n")
+        self.start_with()
+        self.assertEqual(self.turn(CHANGE_REQUEST)["action"], "conversation")
+        agent.write_text("puck\n")
+        self.assertEqual(self.turn("fix the signup button colour")["action"], "inline_work")
         self.box.stop()
         self.start_with(RELAY_WORK_STYLE="orchestrated")
         self.assertEqual(self.turn("fix the logout button colour")["action"], "create_ticket")

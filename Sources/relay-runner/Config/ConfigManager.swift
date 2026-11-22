@@ -119,12 +119,36 @@ final class ConfigManager {
             if let v = tomlDouble(awareness, "glow_intensity") { config.awareness.glow_intensity = v }
         }
 
+        config.agents = Self.agents(from: table)
+
         migrate(
             &config,
             generalProviderWasExplicit: generalProviderWasExplicit,
             generalOrchestratorEffortWasExplicit: generalOrchestratorEffortWasExplicit
         )
         return config
+    }
+
+    /// Only the `[agents.<slug>]` tables, read fresh: voice and
+    /// `relay-work-style` change them while the app runs. Nil when the file
+    /// cannot be read.
+    func loadAgents() -> AgentsConfig? {
+        guard let raw = try? String(contentsOf: configPath, encoding: .utf8),
+              let table = try? TOMLTable(string: raw)
+        else { return nil }
+        return Self.agents(from: table)
+    }
+
+    private static func agents(from table: TOMLTable) -> AgentsConfig {
+        var agents = AgentsConfig()
+        guard let section = table["agents"]?.tomlValue.table else { return agents }
+        for agent in SessionAgent.allCases {
+            guard let settings = section[agent.slug]?.tomlValue.table else { continue }
+            if let raw = tomlString(settings, "work_style") {
+                agents[agent].work_style = ProjectWorkStyle(rawValue: raw.lowercased())
+            }
+        }
+        return agents
     }
 
     // MARK: - Save
@@ -186,6 +210,15 @@ final class ConfigManager {
         lines.append("live_captions = \(c.awareness.live_captions)")
         lines.append("glow_intensity = \(String(format: "%.2f", c.awareness.glow_intensity))")
         lines.append("")
+
+        // An agent without a chosen work style gets no table, so a project's
+        // .relay-runner.toml still applies to it.
+        for agent in SessionAgent.allCases {
+            guard let style = c.agents[agent].work_style else { continue }
+            lines.append("[agents.\(agent.slug)]")
+            lines.append("work_style = \"\(style.rawValue)\"")
+            lines.append("")
+        }
 
         return lines.joined(separator: "\n")
     }

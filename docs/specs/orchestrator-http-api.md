@@ -526,7 +526,6 @@ installed copy. Each is unset by default and the defaults are unchanged.
 | `RELAY_ORCHESTRATOR_PORT_FILE` | `<runtime dir>/relay_orchestrator.port` | the port file alone |
 | `BRIDGE_CONTROL_SOCK` | `<runtime dir>/voice_bridge.sock` | the bridge control socket alone |
 | `RELAY_DIAGNOSTICS_DIR` | the app's diagnostics directory | support diagnostics |
-| `RELAY_SESSION_WORK_STYLE_FILE` | the app's work-style file | the session work style |
 
 `--config <path>` selects the TOML configuration; `[orchestrator]
 workspace_root`, `port`, `agent` and `command` select the worktree root, the

@@ -231,6 +231,21 @@ pub fn lock() -> MutexGuard<'static, Targets> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// RR-522: the agent a target session runs as, from the `session_agent`
+/// file the app writes into its spool. A bridge without a target (a manual
+/// session) uses its own `RELAY_SESSION_AGENT`.
+pub fn session_agent(target: Option<&VoiceTarget>) -> Option<&'static str> {
+    match target {
+        Some(target) if !target.spool_dir.is_empty() => {
+            fs::read_to_string(std::path::Path::new(&target.spool_dir).join("session_agent"))
+                .ok()
+                .as_deref()
+                .and_then(relay_services::command_actions::known_agent)
+        }
+        _ => relay_services::command_actions::current_session_agent(),
+    }
+}
+
 /// `_current_voice_target`.
 pub fn current_voice_target() -> Option<VoiceTarget> {
     lock().focused().cloned()
@@ -694,5 +709,22 @@ mod tests {
         assert!(!valid_session_key("Session-1"));
         assert!(!valid_session_key(""));
         assert!(!valid_session_key(&"a".repeat(65)));
+    }
+
+    #[test]
+    fn a_target_sessions_agent_comes_from_its_spool() {
+        let spool =
+            std::env::temp_dir().join(format!("relay-rs-agent-spool-{}", std::process::id()));
+        fs::create_dir_all(&spool).unwrap();
+        let target = VoiceTarget {
+            spool_dir: spool.to_string_lossy().into_owned(),
+            ..VoiceTarget::default()
+        };
+        assert_eq!(session_agent(Some(&target)), None);
+        fs::write(spool.join("session_agent"), "isabella\n").unwrap();
+        assert_eq!(session_agent(Some(&target)), Some("isabella"));
+        fs::write(spool.join("session_agent"), "oberon\n").unwrap();
+        assert_eq!(session_agent(Some(&target)), None);
+        let _ = fs::remove_dir_all(&spool);
     }
 }

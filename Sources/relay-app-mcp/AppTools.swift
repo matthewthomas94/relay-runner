@@ -112,15 +112,15 @@ enum AppTools {
             ),
             AppTool(
                 name: "get_settings",
-                description: "Read Relay Runner's effective settings (config.toml) as JSON sections stt, tts, general and awareness, plus the keys Relay Runner records itself. Read-only; contains no credentials.",
+                description: "Read Relay Runner's effective settings (config.toml) as JSON sections stt, tts, general, awareness and agents (each named agent's work_style: auto, direct or orchestrated), plus the keys Relay Runner records itself. Read-only; contains no credentials.",
                 properties: [:],
                 client: client
             ),
             AppTool(
                 name: "set_settings",
-                description: "Apply a partial settings update through the same path Settings saves each change through, which also hot-reloads running services. Pass only the keys to change, e.g. {\"tts\": {\"rate\": 1.2}}. Unknown keys, wrong types and values the current provider or model cannot use are refused, never coerced. Idempotent: returns the changed keys (empty when nothing changed) and the effective settings.",
+                description: "Apply a partial settings update through the same path Settings saves each change through, which also hot-reloads running services. Pass only the keys to change, e.g. {\"tts\": {\"rate\": 1.2}} or {\"agents\": {\"puck\": {\"work_style\": \"direct\"}}}. Unknown keys, wrong types and values the current provider or model cannot use are refused, never coerced. Idempotent: returns the changed keys (empty when nothing changed) and the effective settings.",
                 properties: [
-                    "settings": ["type": "object", "description": "Sections (stt, tts, general, awareness) mapping setting names to new values. Call get_settings for the names."],
+                    "settings": ["type": "object", "description": "Sections (stt, tts, general, awareness, agents) mapping setting names to new values. Call get_settings for the names."],
                 ],
                 required: ["settings"],
                 client: client

@@ -5,15 +5,59 @@ import XCTest
 @testable import relay_runner
 
 final class SettingsAgentCardTests: XCTestCase {
-    /// RR-520: the card names the active agent, or Puck when no session runs.
-    func testNameIsTheActiveAgentOrPuck() {
-        XCTAssertEqual(SettingsAgentPresentation.agentName(
-            SessionAgent.statuses(liveContextIDs: [], activeContextID: "project:built-in")), "Puck")
-        XCTAssertEqual(SettingsAgentPresentation.agentName(SessionAgent.statuses(
-            liveContextIDs: ["project:built-in", "project:built-in#tab-george"],
-            activeContextID: "project:built-in#tab-george")), "George")
-        XCTAssertEqual(SettingsAgentPresentation.agentName(SessionAgent.statuses(
-            liveContextIDs: ["project:relay#tab-sky"], activeContextID: "project:relay#tab-sky")), "Sky")
+    /// RR-522: four cards in table order, named from the agent definition,
+    /// whatever voice is selected.
+    func testCardsNameEachAgentFromItsDefinitionInTableOrder() {
+        var agents = AgentsConfig()
+        agents.puck.work_style = .direct
+        agents.george.work_style = .orchestrated
+        let cards = SettingsAgentPresentation.cards(
+            statuses: SessionAgent.statuses(liveContextIDs: [], activeContextID: nil),
+            agents: agents,
+            state: .idle,
+            hasWorkingProgress: false
+        )
+        XCTAssertEqual(cards.map(\.name), ["Puck", "Isabella", "George", "Sky"])
+        XCTAssertEqual(cards.map(\.workStyle), [.direct, .auto, .orchestrated, .auto])
+        let source = try? String(
+            contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+                .deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Sources/relay-runner/Settings/SettingsWindow.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(source?.contains("voiceName") ?? true)
+    }
+
+    func testStatusLinesForStoppedActiveAndBackgroundAgents() {
+        let general = AssistantSessionContext.general
+        let live = [SessionAgent.puck, .george].map { agent -> String in
+            var context = general
+            context.tab = agent.tab
+            return context.id
+        }
+        let statuses = SessionAgent.statuses(liveContextIDs: live, activeContextID: live[1])
+        func status(_ state: OverlayState, working: Bool = false) -> [String] {
+            SettingsAgentPresentation.cards(
+                statuses: statuses, agents: AgentsConfig(), state: state, hasWorkingProgress: working
+            ).map(\.status)
+        }
+        // Puck runs in the background, George is active, Isabella and Sky are stopped.
+        XCTAssertEqual(status(.idle), ["Standing by", "Not running", "Standing by", "Not running"])
+        XCTAssertEqual(status(.idle, working: true), ["Standing by", "Not running", "Working", "Not running"])
+        XCTAssertEqual(status(.speaking), ["Standing by", "Not running", "Responding", "Not running"])
+        XCTAssertEqual(status(.processing)[2], "Thinking")
+        XCTAssertEqual(
+            SettingsAgentPresentation.cards(statuses: statuses, agents: AgentsConfig(), state: .idle, hasWorkingProgress: false)
+                .map(\.isActive),
+            [false, false, true, false]
+        )
+        // Nothing running: every card is stopped, even while the overlay listens.
+        let stopped = SessionAgent.statuses(liveContextIDs: [], activeContextID: nil)
+        XCTAssertEqual(
+            SettingsAgentPresentation.cards(statuses: stopped, agents: AgentsConfig(), state: .listening, hasWorkingProgress: false)
+                .map(\.status),
+            Array(repeating: "Not running", count: 4)
+        )
     }
 
     func testSubtitleDescribesForegroundStateWithoutWorkerActivity() {
@@ -111,6 +155,110 @@ final class SettingsAgentCardTests: XCTestCase {
         let cardWidth = SettingsAgentCardLayout.width(availableWidth: 1000)
         XCTAssertGreaterThanOrEqual(cardWidth, 220)
         XCTAssertGreaterThan(1000 - cardWidth - SettingsAgentCardLayout.spacing - 190, 500)
+        XCTAssertEqual(SettingsAgentCardLayout.frameWidth(inWindow: true, availableWidth: 1000), 280)
+        XCTAssertEqual(SettingsAgentCardLayout.frameWidth(inWindow: false, availableWidth: 1680), 480)
+    }
+
+    /// RR-522: the two-by-two grid fills exactly the frame the single card
+    /// filled at the same available width, in the window and the Workspace.
+    func testTheGridFillsTheSingleCardsFrame() {
+        for (inWindow, available, height, spacing) in [
+            (true, 1000.0, 640.0, SettingsAgentCardLayout.spacing),
+            (false, 1680.0, 900.0, BoardSurfaceLayout.columnSpacing),
+            (false, 1000.0, 700.0, BoardSurfaceLayout.columnSpacing),
+        ] as [(Bool, CGFloat, CGFloat, CGFloat)] {
+            let single = CGRect(
+                x: 0, y: 0,
+                width: SettingsAgentCardLayout.frameWidth(inWindow: inWindow, availableWidth: available),
+                height: height
+            )
+            let frames = SettingsAgentCardLayout.gridFrames(in: single.size, spacing: spacing)
+            XCTAssertEqual(frames.count, 4)
+            XCTAssertEqual(frames.reduce(CGRect.null) { $0.union($1) }, single)
+            // Two columns and two rows of equal cards, `spacing` apart.
+            XCTAssertEqual(frames[0].minY, frames[1].minY)
+            XCTAssertEqual(frames[2].minX, frames[0].minX)
+            XCTAssertEqual(frames[1].minX - frames[0].maxX, spacing, accuracy: 0.001)
+            XCTAssertEqual(frames[2].minY - frames[0].maxY, spacing, accuracy: 0.001)
+            XCTAssertTrue(frames.allSatisfy { $0.size == frames[0].size })
+        }
+    }
+
+    /// RR-522: every card, in either column, puts the name and status at the
+    /// top-left and the picker at the top-right on the same top inset, and
+    /// truncates the text before it reaches the picker.
+    func testCardContentIsTopLeftTextAndTopRightPicker() throws {
+        let inset = SettingsAgentCardLayout.contentInset
+        let frames = SettingsAgentCardLayout.gridFrames(in: CGSize(width: 480, height: 900), spacing: 12)
+        let pickerSize = CGSize(width: 120, height: SharedActionButtonMetrics.controlHeight)
+        var relative: [CGRect] = []
+        for card in frames {
+            for textWidth in [40.0, 400.0] as [CGFloat] {
+                let content = SettingsAgentCardLayout.contentFrames(
+                    cardSize: card.size,
+                    textSize: CGSize(width: textWidth, height: 40),
+                    pickerSize: pickerSize
+                )
+                XCTAssertEqual(content.text.minX, inset)
+                XCTAssertEqual(content.text.minY, inset)
+                XCTAssertEqual(content.picker.minY, content.text.minY)
+                XCTAssertEqual(content.picker.maxX, card.width - inset)
+                XCTAssertEqual(content.picker.size, pickerSize)
+                XCTAssertLessThanOrEqual(content.text.maxX, content.picker.minX - SettingsAgentCardLayout.contentGap)
+                if textWidth == 400 { relative.append(content.text.union(content.picker)) }
+            }
+        }
+        XCTAssertTrue(relative.allSatisfy { $0 == relative[0] }, "the same layout in both columns")
+        // Narrower than the picker, the picker stays inside the card.
+        let narrow = SettingsAgentCardLayout.contentFrames(
+            cardSize: CGSize(width: 100, height: 300), textSize: CGSize(width: 60, height: 40), pickerSize: pickerSize
+        )
+        XCTAssertEqual(narrow.picker.minX, inset)
+        XCTAssertEqual(narrow.text.width, 0)
+
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+                .deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Sources/relay-runner/Settings/SettingsAgentCard.swift"),
+            encoding: .utf8
+        )
+        let card = try XCTUnwrap(source.components(separatedBy: "struct SettingsAgentCard: View {").dropFirst().first)
+            .components(separatedBy: "private struct SettingsAgentCardContentLayout").first ?? ""
+        XCTAssertFalse(card.contains(".center"), "nothing in the card is centred")
+        XCTAssertTrue(card.contains("VStack(alignment: .leading"))
+        XCTAssertTrue(card.contains(".multilineTextAlignment(.leading)"))
+        XCTAssertTrue(card.contains(".accessibilityElement(children: .contain)"))
+        XCTAssertTrue(card.contains(".accessibilityLabel(presentation.name)"))
+        XCTAssertTrue(card.contains(".accessibilityValue(presentation.status)"))
+    }
+
+    /// RR-522: the picker is built like the Workspace's Add project control
+    /// and, unlike it, checks the current style.
+    func testWorkStylePickerIsBuiltLikeAddProject() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("Sources/relay-runner/Settings/SettingsAgentCard.swift"),
+            encoding: .utf8
+        )
+        let picker = try XCTUnwrap(source.components(separatedBy: "struct SettingsAgentWorkStylePicker: View {").dropFirst().first)
+        for part in [
+            "Button { isPresented.toggle() } label:",
+            "Text(title)",
+            ".font(AppTypography.font(.programAction))",
+            "Rectangle()",
+            "LucideImage(.chevronDown, size: 12)",
+            "SharedActionButtonSurface(",
+            "prominence: .secondary",
+            "SettingsDropdownPresenter(isPresented: $isPresented, minWidth: Self.menuMinWidth, alignsTrailing: true)",
+            "SettingsMenuOptions(",
+            "options: ProjectWorkStyle.allCases.map",
+        ] {
+            XCTAssertTrue(picker.contains(part), part)
+        }
+        XCTAssertFalse(picker.contains("showsCheckmarks: false"), "the menu checks the current style")
+        XCTAssertEqual(SettingsAgentWorkStylePicker.accessibilityLabel(.isabella), "Isabella's work style")
+        XCTAssertEqual(ProjectWorkStyle.allCases.map(\.title), ["Auto", "Direct", "Orchestrated"])
     }
 
     func testOverlayMotionReversesContinuouslyAndRetainsItsDepartingTheme() {

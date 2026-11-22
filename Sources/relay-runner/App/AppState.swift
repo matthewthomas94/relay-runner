@@ -2344,6 +2344,29 @@ final class AppState {
         processManager.stopServicesForBundleReplacement()
     }
 
+    /// RR-522: an agent's setting this save did not change keeps what is on
+    /// disk, so a change made by voice or `relay-work-style` since the app
+    /// last read it is not written over.
+    static func agentsToSave(_ saving: AgentsConfig, previous: AgentsConfig, onDisk: AgentsConfig) -> AgentsConfig {
+        var result = saving
+        for agent in SessionAgent.allCases where saving[agent] == previous[agent] {
+            result[agent] = onDisk[agent]
+        }
+        return result
+    }
+
+    /// RR-522: sets one agent's work style through the Settings save path.
+    func setWorkStyle(_ style: ProjectWorkStyle, for agent: SessionAgent) {
+        var next = config
+        next.agents[agent].work_style = style
+        saveConfig(next)
+    }
+
+    /// RR-522: picks up agent settings changed by voice or `relay-work-style`.
+    func reloadAgentSettings() {
+        if let agents = configManager.loadAgents(), agents != config.agents { config.agents = agents }
+    }
+
     /// Saves a user edit (Settings or onboarding). A model change is recorded
     /// against the Phonon migration so relaunch or an OS upgrade never
     /// re-overrides an explicit choice or rollback. Returns the error when
@@ -2415,6 +2438,10 @@ final class AppState {
 
     @discardableResult
     private func persistConfig(_ newConfig: AppConfig, forceWorkspaceDiscovery: Bool = false) -> Error? {
+        var newConfig = newConfig
+        if let onDisk = configManager.loadAgents() {
+            newConfig.agents = Self.agentsToSave(newConfig.agents, previous: config.agents, onDisk: onDisk)
+        }
         let oldConfig = config
         config = newConfig
 
@@ -5371,7 +5398,10 @@ final class AppState {
         RelayAppCommandHost(weaklyHolding: self)
     }
 
-    var relayAppConfig: AppConfig { config }
+    var relayAppConfig: AppConfig {
+        reloadAgentSettings()
+        return config
+    }
     func saveRelayAppConfig(_ config: AppConfig) { saveConfig(config) }
     var relayAppKeepAwakeState: KeepAwakeState { keepAwake.state }
     func toggleRelayAppKeepAwake() -> Bool { keepAwake.toggle() }

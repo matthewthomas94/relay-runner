@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use relay_intents::json::{self, Dict, Value, py_strip};
 use relay_services::authorization::authorization_exists;
-use relay_services::command_actions::resolve_command_action;
+use relay_services::command_actions::resolve_queued_command_action;
 use relay_services::continuity::incidents::Classification;
 use relay_services::continuity::lifecycle::ContinuityLifecycleAdapter;
 use relay_services::continuity::reports::sanitize_proposal;
@@ -769,10 +769,11 @@ impl Daemon {
         if let Some(provider) = command.truthy("provider_key") {
             relay.insert("provider", provider.clone());
         }
-        let action = resolve_command_action(
+        let action = resolve_queued_command_action(
             &command.string("source_text"),
             Some(&repo_path),
             Some(&relay),
+            command.truthy("action").map(Value::py_str).as_deref(),
         );
         let kind = action.kind.as_str();
         if kind == "create_ticket" {

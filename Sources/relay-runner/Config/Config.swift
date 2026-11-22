@@ -7,6 +7,46 @@ struct AppConfig: Codable, Equatable {
     var tts = TtsConfig()
     var general = GeneralConfig()
     var awareness = AwarenessConfig()
+    var agents = AgentsConfig()
+}
+
+/// RR-522: each named agent's own settings, `[agents.<slug>]` in
+/// config.toml. The bridge's router reads them on every request, and
+/// `relay-work-style set` (voice or `/work-style`) writes the addressed
+/// agent's line in place, so `AppState` reloads them from disk.
+struct AgentsConfig: Codable, Equatable {
+    var puck = AgentConfig()
+    var isabella = AgentConfig()
+    var george = AgentConfig()
+    var sky = AgentConfig()
+
+    subscript(agent: SessionAgent) -> AgentConfig {
+        get {
+            switch agent {
+            case .puck: return puck
+            case .isabella: return isabella
+            case .george: return george
+            case .sky: return sky
+            }
+        }
+        set {
+            switch agent {
+            case .puck: puck = newValue
+            case .isabella: isabella = newValue
+            case .george: george = newValue
+            case .sky: sky = newValue
+            }
+        }
+    }
+}
+
+struct AgentConfig: Codable, Equatable {
+    /// How this agent routes change requests. Nil until one is chosen: the
+    /// card shows Auto and a project's `.relay-runner.toml` still applies. A
+    /// saved Auto wins over the project, as the session-wide Auto did.
+    var work_style: ProjectWorkStyle?
+
+    var workStyle: ProjectWorkStyle { work_style ?? .auto }
 }
 
 struct SttConfig: Codable, Equatable {

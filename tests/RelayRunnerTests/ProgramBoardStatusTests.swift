@@ -296,10 +296,19 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertFalse(card.contains("onStartSession"))
         XCTAssertFalse(contents.contains("onStartProjectSession"))
         XCTAssertFalse(contents.contains("ProgramStartSessionMenu"))
-        // Rows keep only Finder; the session's work style is on the Start button.
+        // Rows keep only Finder. RR-522: work style belongs to each agent's
+        // card in Settings, so the Start button has no work-style menu.
         XCTAssertNotNil(card.range(of: "icon: .folder"))
         XCTAssertFalse(contents.contains("ProgramWorkStyleMenu"))
-        XCTAssertTrue(contents.contains("SessionWorkStyleStore"))
+        let button = try XCTUnwrap(contents.range(of: "struct ProgramSessionPrimaryButton: View"))
+        let buttonEnd = try XCTUnwrap(
+            contents.range(of: "private struct ProgramEditCapsuleButton", range: button.upperBound..<contents.endIndex)
+        )
+        let startButton = String(contents[button.lowerBound..<buttonEnd.lowerBound])
+        for removed in ["SessionWorkStyleStore", "ProjectWorkStyle", "chevronDown", "SettingsDropdownPresenter", "Work style"] {
+            XCTAssertFalse(startButton.contains(removed), removed)
+            XCTAssertFalse(terminal.contains(removed), removed)
+        }
         XCTAssertTrue(contents.contains("if lane != .done, canCreate {"))
         // Rows are compact: no per-project board counts, no session dot, a selected trait.
         XCTAssertFalse(contents.contains("ProjectBoardOverview"))

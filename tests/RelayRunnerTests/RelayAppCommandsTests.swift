@@ -328,6 +328,43 @@ final class RelayAppCommandsTests: XCTestCase {
         XCTAssertEqual(app.saves.count, 1, "an unchanged update does not save again")
     }
 
+    /// RR-522: every agent's work style reads as Auto until one is chosen;
+    /// set_settings changes one agent's and refuses invalid values.
+    func testAgentWorkStylesReadAndSetOneAgentAtATime() async throws {
+        func styles(_ result: [String: Any]) -> [String?] {
+            let agents = (result["settings"] as? [String: Any])?["agents"] as? [String: Any]
+            return SessionAgent.allCases.map { (agents?[$0.slug] as? [String: Any])?["work_style"] as? String }
+        }
+        let read = try await ok("get_settings")
+        XCTAssertEqual(styles(read), ["auto", "auto", "auto", "auto"])
+
+        let result = try await ok("set_settings", ["settings": ["agents": ["george": ["work_style": "orchestrated"]]]])
+        XCTAssertEqual(result["changed"] as? [String], ["agents.george"])
+        XCTAssertEqual(styles(result), ["auto", "auto", "orchestrated", "auto"])
+        XCTAssertEqual(app.config.agents.george.work_style, .orchestrated)
+        XCTAssertNil(app.config.agents.puck.work_style, "other agents keep no choice")
+        let toml = try String(contentsOf: root.appendingPathComponent("support/config.toml"), encoding: .utf8)
+        XCTAssertTrue(toml.contains("[agents.george]\nwork_style = \"orchestrated\""), toml)
+        XCTAssertFalse(toml.contains("[agents.puck]"), toml)
+        XCTAssertEqual(ConfigManager(configDir: root.appendingPathComponent("support")).load().agents.george.work_style, .orchestrated)
+
+        // Choosing Auto saves it, which then wins over a project's file.
+        _ = try await ok("set_settings", ["settings": ["agents": ["puck": ["work_style": "auto"]]]])
+        XCTAssertEqual(app.config.agents.puck.work_style, .auto)
+
+        let saves = app.saves.count
+        for (patch, expected) in [
+            (["agents": ["george": ["work_style": "fast"]]], "Invalid value for 'agents.george.work_style'."),
+            (["agents": ["oberon": ["work_style": "direct"]]], "Unknown setting 'agents.oberon'"),
+            (["agents": ["sky": "direct"]], "Invalid value for 'agents.sky': expected an object."),
+            (["agents": ["sky": NSNull()]], "'agents.sky' cannot be cleared."),
+        ] as [([String: Any], String)] {
+            let message = await refused("set_settings", ["settings": patch])
+            XCTAssertTrue(message.contains(expected), "\(patch): \(message)")
+        }
+        XCTAssertEqual(app.saves.count, saves)
+    }
+
     func testSetSettingsRefusesUnknownReadOnlyMistypedAndInvalidValues() async throws {
         let cases: [([String: Any], String)] = [
             (["voice": ["rate": 1]], "Unknown settings section 'voice'"),

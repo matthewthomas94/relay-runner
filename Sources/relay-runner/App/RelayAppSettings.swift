@@ -17,6 +17,7 @@ enum RelayAppSettings {
         "tts": names(TtsConfig()),
         "general": names(GeneralConfig()),
         "awareness": names(AwarenessConfig()),
+        "agents": names(AgentsConfig()),
     ]
 
     private static func names(_ value: Any) -> [String] {
@@ -26,6 +27,20 @@ enum RelayAppSettings {
     static func json(_ config: AppConfig) -> [String: Any] {
         let data = (try? JSONEncoder().encode(config)) ?? Data()
         return ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any]) ?? [:]
+    }
+
+    /// `get_settings`: `json` with every agent's work style, Auto where none
+    /// is chosen. Setting Auto saves it, which `json` keeps apart from none.
+    static func effectiveJSON(_ config: AppConfig) -> [String: Any] {
+        var object = json(config)
+        var agents = object["agents"] as? [String: Any] ?? [:]
+        for agent in SessionAgent.allCases {
+            var settings = agents[agent.slug] as? [String: Any] ?? [:]
+            if settings["work_style"] == nil { settings["work_style"] = config.agents[agent].workStyle.rawValue }
+            agents[agent.slug] = settings
+        }
+        object["agents"] = agents
+        return object
     }
 
     /// The config with `patch` applied, and the `section.key` paths whose value changed.
@@ -127,6 +142,7 @@ enum RelayAppSettings {
         case is Bool.Type: return "true or false"
         case is Double.Type, is Int.Type: return "a number"
         case is String.Type: return "a string"
+        case is [String: Any].Type: return "an object"
         default: return String(describing: type)
         }
     }
