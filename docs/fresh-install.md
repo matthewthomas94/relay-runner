@@ -100,7 +100,7 @@ Tools, macOS offers to install them the first time `git` runs.
 | Binary | Runs |
 | --- | --- |
 | `relay-rs` | The voice bridge (`relay-rs bridge`), the messenger, Relay Remote, the provider hook and reply helper, the Claude subscription gate, Codex model resolution, the harness updater, and the CLIs behind `scripts/relay-ticket-history`, `relay-artifact-*`, `relay-runner-fresh-install` and `relay-work-style` |
-| `relay-speech` | Speech: the voice bridge, the onboarding tutorial voice and the Settings voice preview all start it (RR-481) |
+| `relay-speech` | Speech: the voice bridge and the onboarding tutorial voice start it (RR-481) |
 | `relay-orchestrator` | The orchestrator daemon, run by the `com.relay.orchestrator` LaunchAgent (RR-500) |
 
 First-run setup (onboarding, Start Session, or

@@ -16,10 +16,6 @@ use crate::json::{Dict, Value, py_int_from_str, py_strip};
 use crate::messenger::catalog;
 use crate::support::{Failure, env_optional, env_or};
 
-/// `STANDARD_VOICES`: the Kokoro voices Settings offers; any other saved
-/// voice loads as Puck.
-pub const STANDARD_VOICES: [&str; 4] = ["am_puck", "bm_george", "bf_isabella", "af_sky"];
-
 /// `STT_MODELS`: each persisted `[stt]` model and its minimum macOS major
 /// version, as `STTModelPolicy` in Swift has them.
 const STT_MODELS: [(&str, i64); 3] = [
@@ -244,7 +240,6 @@ fn defaults(stt_model: &str) -> Vec<(&'static str, Vec<(&'static str, Value)>)> 
             "tts",
             vec![
                 ("engine", "kokoro".into()),
-                ("voice", "am_puck".into()),
                 ("rate", 1.3.into()),
                 ("auto_play", false.into()),
                 ("chime", "Tink".into()),
@@ -369,20 +364,15 @@ fn migrate(config: &mut Dict, general_had_provider: bool, general_had_orchestrat
     config.insert("orchestrator", orchestrator);
 
     let mut tts = section(config, "tts");
-    // RR-462 removed custom voices; speech keeps the built-in voice.
+    // RR-462 removed custom voices; RR-520 the global voice, since each agent
+    // speaks in its own.
     tts.remove("custom_voice_id");
+    tts.remove("voice");
     if tts
         .get("engine")
         .is_some_and(|engine| engine.is_str("say") || engine.is_str("piper"))
     {
         tts.insert("engine", "kokoro");
-    }
-    let standard_voice = tts
-        .get("voice")
-        .and_then(Value::as_str)
-        .is_some_and(|voice| STANDARD_VOICES.contains(&voice));
-    if !standard_voice {
-        tts.insert("voice", "am_puck");
     }
     // A WPM rate (an integer above 10) becomes a speed multiplier.
     if let Some(&Value::Int(rate)) = tts.get("rate")
@@ -636,7 +626,7 @@ mod tests {
             dumps(&Value::Dict(missing)),
             concat!(
                 r#"{"stt": {"model": "phonon-2", "input_device": "default", "input_mode": "caps_lock_toggle", "push_to_talk_key": "", "vad_sensitivity": "medium", "phonon_migration": "completed", "phonon_migration_previous_model": ""}, "#,
-                r#""tts": {"engine": "kokoro", "voice": "am_puck", "rate": 1.3, "auto_play": false, "chime": "Tink", "show_notification": true}, "#,
+                r#""tts": {"engine": "kokoro", "rate": 1.3, "auto_play": false, "chime": "Tink", "show_notification": true}, "#,
                 r#""controls": {"play_pause_key": "F5", "skip_key": "Shift+F5"}, "#,
                 r#""general": {"provider": "codex", "command": "codex", "terminal": "warp", "auto_start": false, "working_directory": "", "bypass_permissions": true, "model": "sol", "orchestrator_effort": "medium", "codex_reasoning_effort": "medium", "messenger_enabled": true, "messenger_model": "luna", "messenger_effort": "low", "subagent_sizing_policy": "orchestrator_decides", "prevent_sleep_while_running": false}, "#,
                 r#""orchestrator": {"agent": "", "command": "", "port": 7634, "workspace_root": "", "branch_prefix": "relay/", "default_workflow_path": "", "worker_health_check_seconds": 600}, "#,
@@ -663,7 +653,7 @@ mod tests {
             concat!(
                 r#"{"awareness": {"screen_glow": true}, "#,
                 r#""general": {"command": "/opt/homebrew/bin/claude", "model": "opus", "codex_reasoning_effort": "default", "messenger_model": "haiku", "messenger_effort": "default", "subagent_model": "balanced", "provider": "claude", "terminal": "warp", "auto_start": false, "working_directory": "", "bypass_permissions": true, "orchestrator_effort": "high", "messenger_enabled": true, "subagent_sizing_policy": "orchestrator_decides", "prevent_sleep_while_running": false}, "#,
-                r#""tts": {"engine": "kokoro", "voice": "am_puck", "rate": 1.2, "auto_play": false, "chime": "Tink", "show_notification": true}, "#,
+                r#""tts": {"engine": "kokoro", "rate": 1.2, "auto_play": false, "chime": "Tink", "show_notification": true}, "#,
                 r#""stt": {"model": "parakeet-tdt-v3", "input_device": "default", "input_mode": "caps_lock_toggle", "push_to_talk_key": "", "vad_sensitivity": "medium", "phonon_migration": "", "phonon_migration_previous_model": ""}, "#,
                 r#""orchestrator": {"port": 9000, "agent": "", "command": "", "workspace_root": "", "branch_prefix": "relay/", "default_workflow_path": "", "worker_health_check_seconds": 600}, "#,
                 r#""controls": {"play_pause_key": "F5", "skip_key": "Shift+F5"}, "#,
@@ -751,7 +741,7 @@ mod tests {
     #[test]
     fn load_config_defaults_codex_reasoning_effort() {
         let config = load_with(None, 26, true, &[]).unwrap();
-        assert_eq!(text(&config, "tts", "voice"), "am_puck");
+        assert!(get(&config, "tts", "voice").is_none());
         assert_eq!(number(&config, "tts", "rate"), 1.3);
         assert_eq!(text(&config, "general", "codex_reasoning_effort"), "medium");
         assert_eq!(text(&config, "general", "orchestrator_effort"), "medium");
@@ -775,8 +765,16 @@ mod tests {
     #[test]
     fn legacy_custom_voice_id_loads_and_is_dropped() {
         let config = load("[tts]\nvoice = \"bm_george\"\ncustom_voice_id = \"x\"\n");
-        assert_eq!(text(&config, "tts", "voice"), "bm_george");
         assert!(get(&config, "tts", "custom_voice_id").is_none());
+    }
+
+    /// RR-520: each agent speaks in its own voice, so a saved one is dropped.
+    #[test]
+    fn a_saved_voice_loads_and_is_dropped() {
+        let config = load("[tts]\nvoice = \"bm_george\"\nrate = 1.5\nauto_play = true\n");
+        assert!(get(&config, "tts", "voice").is_none());
+        assert_eq!(number(&config, "tts", "rate"), 1.5);
+        assert!(flag(&config, "tts", "auto_play"));
     }
 
     #[test]
@@ -840,13 +838,9 @@ mod tests {
         let config = load("\n    [general]\n    prevent_sleep_while_running = true\n");
         assert!(flag(&config, "general", "prevent_sleep_while_running"));
 
-        let config = load("\n    [tts]\n    voice = \"bf_isabella\"\n    auto_play = true\n");
-        assert_eq!(text(&config, "tts", "voice"), "bf_isabella");
+        let config = load("\n    [tts]\n    auto_play = true\n");
         assert!(flag(&config, "tts", "auto_play"));
         assert_eq!(number(&config, "tts", "rate"), 1.3);
-
-        let config = load("[tts]\nvoice = \"af_bella\"\n");
-        assert_eq!(text(&config, "tts", "voice"), "am_puck");
 
         let config = load("[tts]\nrate = 1.1\n");
         assert_eq!(number(&config, "tts", "rate"), 1.1);

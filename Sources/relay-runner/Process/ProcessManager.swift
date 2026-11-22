@@ -115,7 +115,7 @@ final class ProcessManager {
     /// `relay-rs`: completion hook, reply helper, bridge and the small CLIs
     /// (subscription gate, Codex model catalogue, harness update).
     static var relayRS: String { bundledBinary("relay-rs") }
-    /// `relay-speech`: the tutorial voice and the Settings voice preview.
+    /// `relay-speech`: the tutorial voice.
     static var relaySpeech: String { bundledBinary("relay-speech") }
 
     static func missingBinaryMessage(_ path: String) -> String {
@@ -2528,24 +2528,6 @@ final class ProcessManager {
 
     static func skillInstallArgument(force: Bool) -> String {
         force ? "--install-skills" : "--refresh-skills"
-    }
-
-    // MARK: - Voice preview
-
-    /// Build an owned preview process. The caller drains stderr, bounds its
-    /// lifetime and plays the output locally; it never enters the response queue.
-    func voicePreviewProcess(name: String, text: String, output: URL) throws -> Process {
-        let binary = Self.relaySpeech
-        guard FileManager.default.isExecutableFile(atPath: binary) else {
-            throw NSError(domain: "ProcessManager.previewVoice", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Voice preview unavailable. \(Self.missingBinaryMessage(binary))"
-            ])
-        }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: binary)
-        proc.arguments = ["preview", "--voice", name, "--text", text, "--output", output.path]
-        proc.standardOutput = FileHandle.nullDevice
-        return proc
     }
 
     // MARK: - Retired custom voices (RR-462)

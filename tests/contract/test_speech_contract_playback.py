@@ -134,6 +134,28 @@ class RateTests(SpeechCase):
         self.assertEqual([record["rate"] for record in self.box.playback("output_started")], [2.0])
 
 
+class AgentVoiceTests(SpeechCase):
+    """`session_key`: its spool's `session_agent` picks the voice (RR-520)."""
+
+    def test_each_session_speaks_in_its_agents_voice(self):
+        """Each agent's session in its own voice; no session or no agent file is Puck."""
+        self.box.name_agent("transport-george", "george")
+        self.box.name_agent("transport-sky", "sky")
+        self.box.name_agent("manual", None)
+        cases = [
+            ("George speaks.", "transport-george", "bm_george"),
+            ("Sky speaks.", "transport-sky", "af_sky"),
+            ("Nobody speaks.", "", "am_puck"),
+            ("A manual session speaks.", "manual", "am_puck"),
+        ]
+        for text, session_key, _ in cases:
+            utterance_id = self.speak(text, session_key=session_key)
+            self.conn.request("play")
+            self.wait_phase(utterance_id, "completed")
+        voices = {record["text"]: record["voice"] for record in self.box.playback("synthesized")}
+        self.assertEqual(voices, {text: voice for text, _, voice in cases})
+
+
 class BargeInTests(SpeechCase):
     """Playback control: `stop_playback` and `pause`."""
 

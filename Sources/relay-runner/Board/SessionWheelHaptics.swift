@@ -78,14 +78,13 @@ final class SessionWheelHaptics {
                                            subdivisions: SessionWheelSettingsControl.subdivisionCount)
             return enabled && shape.path(in: bounds).contains(point) ? .action(slot: slot, index: control.rawValue) : nil
         }
-        if let item = model.hoveredSessionItem {
-            let items = model.sessionItems
-            guard let index = items.firstIndex(of: item) else { return nil }
-            let arc = geometry.sessionItemArc(index, items: items.count)
+        if let item = model.hoveredSessionItem, let action = model.hoveredAgentAction {
+            guard let index = model.sessionItems.firstIndex(of: item) else { return nil }
+            let arc = geometry.sessionItemArc(index)
             let shape = SessionWheelSector(slot: slot, innerRadius: geometry.actionInnerRadius,
                                            outerRadius: geometry.actionOuterRadius,
                                            arcStart: arc.start, arcWidth: arc.width)
-            return model.isEnabled(item) && shape.path(in: bounds).contains(point) ? .action(slot: slot, index: index) : nil
+            return model.isEnabled(action) && shape.path(in: bounds).contains(point) ? .action(slot: slot, index: index) : nil
         }
         if let index = model.hoveredNoteAction?.rawValue {
             let enabled = model.hoveredNoteAction?.isEnabled(for: model.notePhase) == true
@@ -93,10 +92,9 @@ final class SessionWheelHaptics {
                                            outerRadius: geometry.actionOuterRadius, subdivision: index)
             return enabled && shape.path(in: bounds).contains(point) ? .action(slot: slot, index: index) : nil
         }
-        let enabled = model.slots[slot] != nil || model.shortcut(at: slot) != nil
-            || (model.isStartSlot(slot) && model.canStartSession)
+        // Every main segment is enabled: the session opens the terminal, the rest their tabs.
         let shape = SessionWheelSector(slot: slot, innerRadius: geometry.segmentInnerRadius,
                                        outerRadius: geometry.segmentOuterRadius)
-        return enabled && shape.path(in: bounds).contains(point) ? .slot(slot) : nil
+        return shape.path(in: bounds).contains(point) ? .slot(slot) : nil
     }
 }

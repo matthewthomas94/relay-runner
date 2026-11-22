@@ -102,6 +102,8 @@ pub type EmitAudio = Box<dyn Fn(&AudioPart) -> Result<(), CallFailed> + Send>;
 /// A reply to voice for a Relay Remote phone (RR-457).
 pub struct RemoteJob {
     pub text: String,
+    /// The speaking session, whose agent's voice the phone hears (RR-520).
+    pub session_key: String,
     pub cancelled: Arc<AtomicBool>,
     pub emit: EmitAudio,
     pub failed: Box<dyn Fn(&str) + Send>,
@@ -1654,6 +1656,7 @@ impl SpeechCoordinator {
             let failer = (self.me.clone(), intent.clone(), device_id.clone());
             self.worker.synthesize_remote(RemoteJob {
                 text: intent.spoken_text.clone(),
+                session_key: intent.session_key.clone(),
                 cancelled: voice.cancelled.clone(),
                 emit: Box::new(move |part| match emitter.0.upgrade() {
                     Some(coordinator) => coordinator.emit_remote_audio(&emitter.1, part),

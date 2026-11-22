@@ -285,6 +285,8 @@ class Sandbox:
             "VOICE_STATE_SOCK": self.state_socket_path,
             "SPEECH_EVENT_LOG": str(self.event_log),
             "VOICE_COMMAND_STATE_FILE": str(self.command_state),
+            # Session spools, whose `session_agent` picks each session's voice.
+            "RELAY_BRIDGE_RUNTIME_DIR": str(self.root),
         }
         env.update(overrides)
         return env
@@ -313,6 +315,13 @@ class Sandbox:
             f"auto_play = {'true' if auto_play else 'false'}\n"
             f"rate = {rate}\n"
         )
+
+    def name_agent(self, session_key: str, slug: str | None) -> None:
+        """Give a session a spool, naming its agent unless ``slug`` is None."""
+        spool = self.root / "relay-sessions" / session_key
+        spool.mkdir(parents=True, exist_ok=True)
+        if slug is not None:
+            (spool / "session_agent").write_text(slug + "\n")
 
     def stderr(self) -> str:
         return self.stderr_path.read_text(errors="replace")

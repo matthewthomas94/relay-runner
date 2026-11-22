@@ -10,9 +10,9 @@ that cannot act names why (Finish notes first). Nothing is drawn beside the poin
 Near a display edge, the complete wheel and its outer controls move inside the usable
 screen area.
 
-The wheel has five segments. The top segment is the session, drawn with the terminal
-icon: while a session runs it opens the session's terminal, and when none is running it
-starts the general session. Clockwise from the top, the other four are
+The wheel has five segments. The top segment is the session, **Terminal**, drawn with
+the terminal icon: it opens Workspace on the Terminal tab and never starts a session.
+Its submenu is where agents start and stop. Clockwise from the top, the other four are
 **History**, **Settings**, **Notetaker** and **Workspace**, so Workspace and Notetaker
 sit on the left and History and Settings on the right. There is no project picker,
 project page, or **More sessions** slot: the one general session reaches every
@@ -61,49 +61,49 @@ registered project.
   means a change is pending, a raised hand means the helper is waiting for your
   approval (click to cancel), and a warning icon marks a failure.
   See [Keep Awake](#keep-awake).
-- Hover the session (**Terminal**) to reveal its agents (RR-469, RR-519). A session
-  runs up to four fixed, named agents — **Puck**, **Isabella**, **George** and **Sky**,
-  in that order — each with its own conversation. The submenu holds one segment per
-  started agent, labelled with its name as the tab strip is, each with its own **x**,
-  then **Add agent** (plus). The label sits at the start of its segment and the x at
-  the end, in reading order.
-  There are no Play / Replay, Record or Stop session controls on the wheel.
-  - Click an agent's label to make it the **active agent**: voice turns, replies and
-    TTS go to it, and the notch confirms the switch. The active agent's label is
-    orange and selected; an agent whose provider has exited is dimmed, and clicking it
-    starts it again, resuming its conversation, and makes it active.
-  - An agent's **x** stops it, as the tab strip's x and Command-W do: it ends the
-    agent's provider and removes its tab, and keeps its conversation, so starting it
-    again resumes where it left off. Stopping the active agent moves activity to
-    another live one; stopping the last live agent ends the session, as End does,
-    and End keeps every agent's conversation too. The x is the size of Add's plus;
-    hovering it fills a circle behind it and the notch reads *Stop Isabella* (the
-    agent's name).
-  - **Add agent** starts the first agent in table order that is not running, like
-    the tab strip's "+" and Command-T, resuming its conversation if it has one. It is
-    disabled while all four run; the notch then reads *All agents running*.
-    Every other start (Start Session, the wheel's Start session, `start_session`,
-    Relay Remote, the Notetaker hand-off) starts the most recently active agent, or
-    Puck if none has run. The conversation saved before agents existed is Puck's.
-  - With one agent the submenu keeps its standard size over the session's own
-    cell. Agent names are wider than numbers, so each further agent grows it evenly
-    along the arc, past its cell and over the outer edge of **History** and
-    **Workspace**, up to their far ends with all four, so every name shows in full
-    beside its x. Each segment stays at least as wide as a standard one. History
-    and Workspace have no submenus of their own, so nothing overlaps.
-  - All tab actions keep the wheel open, and switching tabs does not close or
-    replay the submenu. Each segment and control is also a VoiceOver action on the
-    session slot.
-- Click **Terminal** to open Workspace directly to the active agent's terminal. Its
-  VoiceOver label names the agent. The wheel stays open.
-- With no session running, click **Start session** in the top slot to start
-  the general session without opening Workspace. Session changes update the tile in
-  place without replaying the whole wheel's transition; navigating between menus
-  retains that transition.
+- Hover the session (**Terminal**) to reveal its agents (RR-521). Relay Runner runs up
+  to four fixed, named agents — **Puck**, **Isabella**, **George** and **Sky** — each
+  with its own conversation. The submenu always holds exactly four segments, in that
+  order, whether or not a session is running. Each shows the agent's two-letter label
+  (**PK**, **IS**, **GE**, **SK**) followed by one glyph, in reading order: a **plus**
+  for a stopped agent and an **X** for a running one. The glyph swaps in place when the
+  agent starts or stops. Full names are used in the notch, VoiceOver and everywhere
+  outside the wheel. There is no Add control, and there are no Play / Replay, Record
+  or Stop session controls on the wheel.
+  - Click a stopped agent's label or plus to **start** it, resuming its last
+    conversation, and make it the active agent. With no session running this is how
+    the wheel starts a session. Starting does not open Workspace. While an agent is
+    still starting, or a note is recording, the notch names why a start must wait
+    (*Agent starting*, *Finish notes first*).
+  - Click a running agent's label to **switch** to it: voice turns, replies and TTS go
+    to it, and the notch confirms the switch.
+  - Click a running agent's **X** to **stop** it, as the tab strip's x and Command-W
+    do: its provider ends and its conversation is kept, so starting it again resumes
+    where it left off. Stopping the active agent moves activity to another running
+    one; stopping the last running agent ends the session, as End does, and End keeps
+    every agent's conversation too.
+  - Labels use the primary text colour, and the active agent's label is orange. A
+    stopped agent's label is not dimmed: its plus, also in the primary text colour,
+    marks it. A running agent's X is the secondary (grey) text colour; hovering it
+    fills a circle behind it.
+  - Hovering names the action in the notch: *Start Puck*, *Switch to Puck* or *Stop
+    Puck*; the active agent's label reads *Puck active*. Each label and glyph is also
+    a VoiceOver action on the session slot with the same wording (a stopped agent's
+    label and plus share one *Start* action, and the active agent has no *Switch*).
+  - The four segments fit the submenu's standard size over the session's own cell,
+    on the detached black backdrop, with the usual submenu corners and spacing.
+  - Every agent action keeps the wheel open, and starting, switching or stopping
+    agents does not close or replay the submenu.
+  - Every other start (Start Session, `start_session`, Relay Remote, the Notetaker
+    hand-off) starts the most recently active agent, or Puck if none has run. The
+    conversation saved before agents existed is Puck's.
+- Click **Terminal** to open Workspace on the Terminal tab, whether or not a session
+  is running; with none running it shows its normal empty state. Its VoiceOver label
+  names the active agent. The wheel stays open.
 
 The UI uses the workspace cards' shared dark fills, hover and selection treatment,
-and subtle borders, with Bai Jamjuree typography, purple session dots, and a red
-Remove tab control. Agent names and control icons use the primary text color. The wheel has
+and subtle borders, with Bai Jamjuree typography and purple session dots. Agent labels
+and control icons use the primary text color. The wheel has
 no outer border. Segments use consistent 8-point spacing between their straight
 edges, around the center and outer perimeter. The 34-point-deep outer
 controls follow the wheel's tangent, keeping their icons upright on
@@ -120,8 +120,7 @@ blur-and-alpha-threshold silhouette beneath the unfiltered controls. One native
 spring drives the surface and controls together, reverses from its current position
 and velocity, and lets an outgoing slot merge back while another opens. Controls
 emerge from behind the disc and become clickable as they settle outside it;
-tab changes do not restart the submenu entrance. The session submenu's backdrop
-follows its whole arc, however many cells it spans.
+agent changes do not restart the submenu entrance.
 Reduce Motion fades the submenu in its final position without merging, travel,
 or blur. Hover stays active across
 the gap so the controls remain reachable.
@@ -280,16 +279,15 @@ checks. `scripts/build-dmg.sh` runs `app_signing.py check-helper` on every build
 and verifies the helper's Developer ID requirement on signed builds.
 
 Set `RELAY_WHEEL_RENDER_DIR` to an output directory to export SwiftUI previews
-from `SessionWheelTests.testWheelRendering`, including the `settings-*` and `tabs-*` states. The motion tests also export each
+from `SessionWheelTests.testWheelRendering`, including the `settings-*` and `agents-*` states (`agents-mockup` matches the RR-521 mockup). The motion tests also export each
 submenu's liquid keyframes and a GIF sampled from the native hover/reversal spring.
 Tests use fake capture and temporary
 spools; they do not open the microphone or send commands to live sessions.
 
 Installed-app checks still require a physical trackpad and live sessions: open
 and dismiss across displays, reject swipes and pinches, navigate to every outer
-control, start all four agents and check the submenu wraps to History and Workspace
-and a fifth is refused, switch agents, stop
-them from their x and start them again to check each resumes its own conversation
+control, start each agent from its plus with and without a session running, switch
+agents, stop them from their X and start them again to check each resumes its own conversation
 with each provider, and repeat after
 sleep or reconnecting a trackpad. Drag the intensity slider past
 both ends while watching the particle field, then reopen Settings.

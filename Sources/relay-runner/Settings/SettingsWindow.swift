@@ -324,7 +324,7 @@ private struct SettingsContent: View {
                 onTrueWhisperTemplatesChanged: { appState.trueWhisperTemplatesChanged() }
             )
         case .textToSpeech:
-            TTSSettingsTab(config: autoSave.binding(\.tts), appState: appState)
+            TTSSettingsTab(config: autoSave.binding(\.tts))
         case .general:
             GeneralSettingsTab(
                 config: autoSave.binding(\.general),

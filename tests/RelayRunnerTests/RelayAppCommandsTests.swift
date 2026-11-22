@@ -375,7 +375,9 @@ final class RelayAppCommandsTests: XCTestCase {
             (["stt": ["phonon_migration": "completed"]], "'stt.phonon_migration' is recorded by Relay Runner"),
             (["tts": ["rate": "fast"]], "Invalid value for 'tts.rate': expected a number."),
             (["awareness": ["screen_glow": 1]], "Invalid value for 'awareness.screen_glow': expected true or false."),
-            (["tts": ["voice": NSNull()]], "'tts.voice' cannot be cleared."),
+            (["tts": ["chime": NSNull()]], "'tts.chime' cannot be cleared."),
+            // RR-520: each agent speaks in its own voice; there is no voice setting.
+            (["tts": ["voice": "bm_george"]], "Unknown setting 'tts.voice'"),
             (["general": ["provider": "gemini"]], "'general.provider' must be one of: codex, claude."),
             (["general": ["model": "gpt-9"]], "'general.model' cannot be 'gpt-9'"),
         ]

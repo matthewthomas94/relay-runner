@@ -69,28 +69,35 @@ final class SessionWheelHapticsTests: XCTestCase {
             model.hover(at: point)
             return SessionWheelHaptics.target(at: point, model: model)
         }
-        // The Start slot and the four shortcuts are all targets.
+        // The session slot and the four shortcuts are all targets.
         for slot in 0..<geometry.slotCount {
             XCTAssertEqual(target(slot: slot), .slot(slot))
         }
         XCTAssertEqual(SessionWheelHaptics.target(at: geometry.center, model: model), .center)
         XCTAssertNil(target(slot: 0, radius: geometry.segmentInnerRadius - 2))
         XCTAssertNil(target(slot: 0, offset: geometry.sliceAngle / 2), "Between wedges")
-        XCTAssertNil(target(slot: 0, radius: geometry.actionRadius), "No submenu for an empty slot")
 
-        // RR-469: one tab and Add; Add is silent while it is unavailable.
-        model.refresh(sessions: [.init(id: "a", name: "A")])
-        model.tabs = [.init(id: "t0", name: "Puck", isActive: true)]
+        // RR-521: the four agents are targets with no session running; a start
+        // is silent while another is starting, and stopping never is.
         _ = target(slot: 0)
-        for index in 0..<2 {
-            let arc = geometry.sessionItemArc(index, items: 2)
-            let resolved = target(slot: 0, radius: geometry.actionRadius, offset: arc.start + arc.width / 2)
-            XCTAssertEqual(resolved, .action(slot: 0, index: index))
+        func agent(_ index: Int) -> SessionWheelHaptics.Target? {
+            let arc = geometry.sessionItemArc(index)
+            return target(slot: 0, radius: geometry.actionRadius, offset: arc.start + arc.width / 2)
         }
-        model.addTabUnavailableReason = "All agents running"
-        let add = geometry.sessionItemArc(1, items: 2)
-        XCTAssertNil(target(slot: 0, radius: geometry.actionRadius, offset: add.start + add.width / 2))
-        model.addTabUnavailableReason = nil
+        for index in 0..<4 {
+            XCTAssertEqual(agent(index), .action(slot: 0, index: index))
+        }
+        model.startUnavailableReason = "Agent starting"
+        XCTAssertNil(agent(0))
+        model.refresh(sessions: [.init(id: "a", name: "A")])
+        model.runningAgents = [.puck]
+        model.activeAgent = .puck
+        let stop = geometry.sessionGlyphPoint(0, label: "PK")
+        model.hover(at: stop)
+        XCTAssertEqual(SessionWheelHaptics.target(at: stop, model: model), .action(slot: 0, index: 0))
+        XCTAssertNil(agent(1))
+        model.startUnavailableReason = nil
+        XCTAssertEqual(agent(1), .action(slot: 0, index: 1))
         XCTAssertNil(target(slot: 0, radius: geometry.wheelRadius + 4), "The radial gap is silent")
 
         for phase in [MeetingNoteCoordinatorPhase.idle, .recording, .paused, .transcribing] {
@@ -118,9 +125,8 @@ final class SessionWheelHapticsTests: XCTestCase {
         XCTAssertEqual(target(slot: 0), .slot(0))
         XCTAssertEqual(target(slot: 1), .slot(1), "History stays a target while a session runs")
         model.refresh(sessions: [])
-        XCTAssertEqual(target(slot: 0), .slot(0))
-        model.startUnavailableReason = "Session starting"
-        XCTAssertNil(target(slot: 0))
+        model.startUnavailableReason = "Agent starting"
+        XCTAssertEqual(target(slot: 0), .slot(0), "The session slot only opens the terminal, so it is always a target")
     }
 
     @MainActor
@@ -130,36 +136,35 @@ final class SessionWheelHapticsTests: XCTestCase {
         let controller = SessionWheelController(haptics: .init(perform: { pulses.append($0) }))
         defer { controller.dismiss() }
         var accepted = false
-        var startAccepted = false
         var live: [SessionWheelSession] = []
-        controller.tabAction = { _ in accepted }
-        controller.noteAction = { _ in accepted }
-        controller.startSession = {
-            if startAccepted { live = [.init(id: "a", name: "A")] }
-            return startAccepted
+        controller.agentAction = { _ in
+            if accepted { live = [.init(id: "a", name: "A")] }
+            return accepted
         }
+        controller.noteAction = { _ in accepted }
         controller.openShortcut = { _ in }
-        controller.focusSession = { _ in }
+        controller.openTerminal = {}
         controller.refresh = { model in
             model.refresh(sessions: live)
-            model.tabs = live.isEmpty ? [] : [.init(id: "t0", name: "Puck", isActive: true)]
+            model.runningAgents = live.isEmpty ? [] : [.puck]
         }
         controller.toggle()
         XCTAssertTrue(pulses.isEmpty)
         controller.refresh?(controller.model)
-        controller.selectSlot(0, fromPointer: false) // Rejected launch.
+        controller.performAgentAction(.start(.puck)) // Rejected launch.
         XCTAssertTrue(pulses.isEmpty)
-        startAccepted = true
-        controller.selectSlot(0, fromPointer: false) // Accepted launch.
+        controller.selectSlot(0, fromPointer: false) // Opens the terminal.
         XCTAssertEqual(pulses, [.generic])
-        controller.performTabItem(.control(.add)) // Rejected.
+        controller.model.startUnavailableReason = "Agent starting"
+        controller.performAgentAction(.start(.puck)) // Disabled.
+        controller.model.startUnavailableReason = nil
         controller.performNoteAction(.pause) // Disabled.
         controller.performNoteAction(.recording) // Rejected.
         XCTAssertEqual(pulses.count, 1)
         accepted = true
-        controller.performTabItem(.control(.add))
+        controller.performAgentAction(.start(.puck)) // Accepted launch.
         controller.performNoteAction(.recording)
-        controller.selectSlot(0, fromPointer: false) // Session selection.
+        controller.selectSlot(0, fromPointer: false) // Opens the terminal.
         controller.selectSlot(3, fromPointer: false) // Notetaker shortcut.
         XCTAssertEqual(pulses, Array(repeating: .generic, count: 5))
         XCTAssertTrue(controller.isVisible)

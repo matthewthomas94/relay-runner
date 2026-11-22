@@ -3,13 +3,13 @@
 //! ```text
 //! relay-speech [--socket <path>] [--config <path>]       the speech service
 //! relay-speech tutorial [--config <path>]                 the onboarding voice, lines on stdin
-//! relay-speech preview --voice <v> --text <t> --output <wav>
 //! ```
 //!
 //! The service speaks docs/specs/speech-service-protocol.md, as
 //! `services/speech_service.py` does. `tutorial` is the standalone mode of
-//! `services/tts_worker.py` and `preview` is `services/preview_voice.py`.
+//! `services/tts_worker.py`.
 
+mod agents;
 mod audioqueue;
 mod config;
 mod coordinator;
@@ -96,7 +96,6 @@ fn usage(error: &str) -> ExitCode {
     eprintln!("relay-speech: {error}");
     eprintln!("usage: relay-speech [--socket PATH] [--config PATH]");
     eprintln!("       relay-speech tutorial [--config PATH]");
-    eprintln!("       relay-speech preview --voice VOICE --text TEXT --output PATH");
     ExitCode::from(2)
 }
 
@@ -151,6 +150,7 @@ fn build_worker(
         tutorial,
         control_socket,
         test_log,
+        sessions_root: agents::sessions_root_from_environment(),
     });
     TtsWorker::install(&worker);
     worker
@@ -254,7 +254,7 @@ fn tutorial(args: &[String]) -> ExitCode {
     let worker = build_worker(false, tutorial, config_path(&parsed), Some(control.clone()));
     eprintln!(
         "[relay_speech] Voice: {}, Rate: {}",
-        worker.voice(),
+        agents::DEFAULT_VOICE,
         worker.rate()
     );
     eprintln!("[relay_speech] Control: {}", control.display());
@@ -266,65 +266,10 @@ fn tutorial(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Render an isolated Settings preview WAV; the app owns cancellable playback.
-fn preview(args: &[String]) -> ExitCode {
-    let parsed = match options(args, &["voice", "text", "output"]) {
-        Ok(parsed) => parsed,
-        Err(error) => return usage(&error),
-    };
-    let (Some(voice), Some(text), Some(output)) = (
-        option(&parsed, "voice"),
-        option(&parsed, "text"),
-        option(&parsed, "output"),
-    ) else {
-        return usage("--voice, --text and --output are required");
-    };
-    // Own a process group so Settings can cancel this process without touching a session.
-    // SAFETY: setsid has no preconditions.
-    unsafe { libc::setsid() };
-    let parent = parent_pid();
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_millis(250));
-            if parent_pid() != parent {
-                std::process::exit(130);
-            }
-        }
-    });
-    match render_preview(voice, text, &PathBuf::from(output)) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("[relay_speech] {error}");
-            ExitCode::from(1)
-        }
-    }
-}
-
-fn render_preview(voice: &str, text: &str, output: &std::path::Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    let (model, voices) = kokoro::find_model().ok_or("Kokoro model not found")?;
-    let kokoro = kokoro::Kokoro::load(&model, &voices)
-        .map_err(|_| "Preview unavailable. Check local speech setup.")?;
-    let samples = kokoro
-        .create(text, voice)
-        .map_err(|_| "Preview unavailable. Check local speech setup.")?;
-    if samples.is_empty() {
-        return Err("Synthesis returned no samples".into());
-    }
-    let audio = synth::Audio {
-        samples: synth::to_pcm16(&samples)?,
-        sample_rate: kokoro::SAMPLE_RATE,
-    };
-    synth::write_wav(output, &audio)
-        .and_then(|()| std::fs::set_permissions(output, std::fs::Permissions::from_mode(0o600)))
-        .map_err(|_| "Preview failed; check local speech setup.".to_string())
-}
-
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("tutorial") => tutorial(&args[1..]),
-        Some("preview") => preview(&args[1..]),
         _ => serve(&args),
     }
 }

@@ -12,6 +12,16 @@ final class SessionAgentTests: XCTestCase {
         XCTAssertEqual(SessionAgent.allCases.map(\.order), [1, 2, 3, 4])
     }
 
+    /// RR-520: relay-speech's agent-to-voice map is pinned to this table by
+    /// the same fixture (`agents::tests::the_map_matches_the_swift_agent_table`).
+    func testTheSharedFixturePinsEachAgentsVoice() throws {
+        let data = try Data(contentsOf: root.appendingPathComponent("tests/fixtures/session_agent_voices.json"))
+        let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let agents = try XCTUnwrap(fixture["agents"] as? [[String: String]])
+        XCTAssertEqual(agents.map { $0["slug"] }, SessionAgent.allCases.map(\.slug))
+        XCTAssertEqual(agents.map { $0["voice"] }, SessionAgent.allCases.map(\.voiceID))
+    }
+
     func testEachAgentHasAStableTabAndPuckOwnsTheFirstTab() {
         XCTAssertEqual(SessionAgent.allCases.map(\.tab), [nil, "isabella", "george", "sky"])
         XCTAssertEqual(general.inTab(SessionAgent.puck.tab).id, "project:built-in", "Today's first-tab conversation is Puck's")
@@ -46,16 +56,19 @@ final class SessionAgentTests: XCTestCase {
 
     func testStartPathsFollowTheInterimRules() throws {
         let source = try appStateSource()
-        // Add controls ("+", the wheel's Add, Command-T) use the Add rule.
+        // Add controls ("+", Command-T) use the Add rule.
         let open = try body(source, "    func openPMTab(agent: SessionAgent? = nil, showsTerminal: Bool = true) -> Bool {")
         XCTAssertTrue(open.contains("guard let agent = agent ?? agentToAdd else {"))
         XCTAssertTrue(source.contains("SessionAgent.toAdd(running: runningAgents)"))
-        XCTAssertTrue(source.contains("case .control(.add):\n            return openPMTab(showsTerminal: false)"))
         let shortcut = try String(contentsOf: root.appendingPathComponent("Sources/relay-runner/Board/PMTabShortcut.swift"), encoding: .utf8)
         XCTAssertTrue(shortcut.contains("case .openTab:\n            openPMTab()"))
         // Every other start names no agent, so it starts the most recently active one.
         XCTAssertTrue(source.contains("programBoardOverlay.setStartSessionHandler { [weak self] in self?.newSession() }"))
-        XCTAssertTrue(source.contains("sessionWheel.startSession = { [weak self] in self?.newSession(showsWorkspaceOnLaunch: false) ?? false }"))
+        // RR-521: the wheel starts the agent the user picked, never the top segment.
+        let wheel = try body(source, "    private func performAgentWheelAction(_ action: SessionWheelAgentAction) -> Bool {")
+        XCTAssertTrue(wheel.contains("? openPMTab(agent: agent, showsTerminal: false)"))
+        XCTAssertTrue(wheel.contains(": newSession(showsWorkspaceOnLaunch: false, agent: agent)"))
+        XCTAssertFalse(source.contains("sessionWheel.startSession"))
         XCTAssertTrue(source.contains("self?.newSession(workingDirectory: path, showsWorkspaceOnLaunch: false) ?? false"),
                       "Relay Remote and start_session")
         let note = try body(source, "    private func transitionFromNoteToSession(")
