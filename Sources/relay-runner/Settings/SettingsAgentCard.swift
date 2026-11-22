@@ -1,14 +1,40 @@
 import AppKit
 import SwiftUI
 
+/// RR-522: one agent's card in Settings: its name, its status and its work style.
 struct SettingsAgentPresentation: Equatable {
-    let name: String
-    let subtitle: String
+    let agent: SessionAgent
+    let status: String
+    let workStyle: ProjectWorkStyle
+    let isActive: Bool
 
-    static func voiceName(_ config: TtsConfig) -> String {
-        let parts = config.voice.split(separator: "_", maxSplits: 1)
-        let name = parts.count == 2 ? String(parts[1]) : config.voice
-        return name.isEmpty ? "Agent" : name.prefix(1).uppercased() + name.dropFirst()
+    /// From the agent definition, not the voice setting.
+    var name: String { agent.name }
+
+    /// The four cards in table order.
+    static func cards(
+        statuses: [SessionAgent.Status],
+        agents: AgentsConfig,
+        state: OverlayState,
+        hasWorkingProgress: Bool
+    ) -> [SettingsAgentPresentation] {
+        statuses.map { agentStatus in
+            SettingsAgentPresentation(
+                agent: agentStatus.agent,
+                status: status(agentStatus, state: state, hasWorkingProgress: hasWorkingProgress),
+                workStyle: agents[agentStatus.agent].workStyle,
+                isActive: agentStatus.isActive
+            )
+        }
+    }
+
+    /// A stopped agent is not running. The active agent describes the voice
+    /// overlay's state; another running agent is standing by, because the app
+    /// does not track whether a session it is not showing is mid-turn.
+    static func status(_ agentStatus: SessionAgent.Status, state: OverlayState, hasWorkingProgress: Bool) -> String {
+        guard agentStatus.isRunning else { return "Not running" }
+        guard agentStatus.isActive else { return "Standing by" }
+        return subtitle(state: state, hasActiveSession: true, hasWorkingProgress: hasWorkingProgress)
     }
 
     static func subtitle(
@@ -42,9 +68,86 @@ enum SettingsAgentCardLayout {
     static let spacing: CGFloat = 8
     /// The Settings panels' radius, so the card's corners line up with theirs.
     static let cornerRadius: CGFloat = BoardDarkSurfaceStyle.columnCornerRadius
+    /// The Settings window's agent column.
+    static let windowWidth: CGFloat = 280
+    /// The same inset from a card's top, leading and trailing edges.
+    static let contentInset: CGFloat = GraphicalTheme.spaceS
+    /// The least room kept between the name and the Work style picker.
+    static let contentGap: CGFloat = GraphicalTheme.spaceXS
+    static let cardsPerRow = 2
 
     static func width(availableWidth: CGFloat) -> CGFloat {
         min(480, max(220, (availableWidth - spacing) * 480 / 1672))
+    }
+
+    /// The agent column's width: fixed in the Settings window, scaled in the Workspace.
+    static func frameWidth(inWindow: Bool, availableWidth: CGFloat) -> CGFloat {
+        inWindow ? windowWidth : width(availableWidth: availableWidth)
+    }
+
+    /// The four cards' frames, in table order row by row, as a two-by-two
+    /// grid that fills `size`: the frame the single agent card used to fill.
+    static func gridFrames(in size: CGSize, spacing: CGFloat) -> [CGRect] {
+        let columns = CGFloat(cardsPerRow)
+        let rows = CGFloat((SessionAgent.allCases.count + cardsPerRow - 1) / cardsPerRow)
+        let width = max(0, (size.width - spacing * (columns - 1)) / columns)
+        let height = max(0, (size.height - spacing * (rows - 1)) / rows)
+        return SessionAgent.allCases.indices.map { index in
+            CGRect(
+                x: CGFloat(index % cardsPerRow) * (width + spacing),
+                y: CGFloat(index / cardsPerRow) * (height + spacing),
+                width: width,
+                height: height
+            )
+        }
+    }
+
+    /// Inside every card, whichever column: the name and status at the
+    /// top-left and the picker at the top-right, on one top inset. The picker
+    /// keeps its width while it fits; the text truncates before reaching it.
+    static func contentFrames(
+        cardSize: CGSize,
+        textSize: CGSize,
+        pickerSize: CGSize
+    ) -> (text: CGRect, picker: CGRect) {
+        let inner = max(0, cardSize.width - contentInset * 2)
+        let pickerWidth = min(pickerSize.width, inner)
+        let picker = CGRect(
+            x: cardSize.width - contentInset - pickerWidth,
+            y: contentInset,
+            width: pickerWidth,
+            height: pickerSize.height
+        )
+        let textWidth = max(0, min(textSize.width, picker.minX - contentGap - contentInset))
+        let text = CGRect(x: contentInset, y: contentInset, width: textWidth, height: textSize.height)
+        return (text, picker)
+    }
+}
+
+/// The four agent cards in the frame the single agent card filled.
+struct SettingsAgentGrid: View {
+    let cards: [SettingsAgentPresentation]
+    /// The live overlay theme, for the active agent's orb.
+    var theme: ParticleFieldRenderer.Theme = .idle
+    let spacing: CGFloat
+    var panelGlass = false
+    let onSelectWorkStyle: (SessionAgent, ProjectWorkStyle) -> Void
+
+    var body: some View {
+        GeometryReader { geometry in
+            let frames = SettingsAgentCardLayout.gridFrames(in: geometry.size, spacing: spacing)
+            ZStack(alignment: .topLeading) {
+                ForEach(Array(zip(cards, frames)), id: \.0.agent) { card, frame in
+                    SettingsAgentCard(
+                        presentation: card,
+                        theme: card.isActive ? theme : .idle,
+                        panelGlass: panelGlass
+                    ) { onSelectWorkStyle(card.agent, $0) }
+                    .frame(width: frame.width, height: frame.height)
+                    .offset(x: frame.minX, y: frame.minY)
+                }
+            }
+        }
     }
 }
 
@@ -53,10 +156,11 @@ struct SettingsAgentCard: View {
     var theme: ParticleFieldRenderer.Theme = .idle
     /// In the Workspace the card is a panel on the shell, frosted like one.
     var panelGlass = false
+    let onSelectWorkStyle: (ProjectWorkStyle) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ZStack(alignment: .top) {
+        ZStack(alignment: .topLeading) {
             if panelGlass { PanelGlassUnderlay() }
             BoardDarkSurfaceStyle.panelFill
             SettingsAgentParticleView(
@@ -66,34 +170,150 @@ struct SettingsAgentCard: View {
             .allowsHitTesting(false)
             .accessibilityHidden(true)
 
-            VStack(spacing: 11) {
-                RelaySwap(presentation.name, style: .text, alignment: .center) { name in
-                    Text(name)
-                        .font(AppTypography.font(.appTitle, size: 24))
-                        .tracking(-0.5)
-                        .foregroundStyle(SettingsSurfaceColor.primaryText)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.center)
+            SettingsAgentCardContentLayout {
+                VStack(alignment: .leading, spacing: GraphicalTheme.spaceXXS) {
+                    RelaySwap(presentation.name, style: .text, alignment: .leading) { name in
+                        Text(name)
+                            .font(AppTypography.font(.appTitle, size: 18))
+                            .tracking(-0.3)
+                            .foregroundStyle(SettingsSurfaceColor.primaryText)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .multilineTextAlignment(.leading)
+                    }
+                    RelaySwap(presentation.status, style: .text, alignment: .leading) { status in
+                        Text(status)
+                            .font(AppTypography.font(.settingsDescription, size: 12))
+                            .foregroundStyle(SettingsSurfaceColor.secondaryText)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .multilineTextAlignment(.leading)
+                    }
                 }
-                RelaySwap(presentation.subtitle, style: .text, alignment: .center) { subtitle in
-                    Text(subtitle)
-                        .font(AppTypography.font(.settingsDescription, size: 12))
-                        .foregroundStyle(SettingsSurfaceColor.secondaryText)
-                        .multilineTextAlignment(.center)
-                }
+                .accessibilityHidden(true)
+
+                SettingsAgentWorkStylePicker(
+                    agent: presentation.agent,
+                    style: presentation.workStyle,
+                    onSelect: onSelectWorkStyle
+                )
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 61)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: SettingsAgentCardLayout.cornerRadius, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: SettingsAgentCardLayout.cornerRadius, style: .continuous)
                 .strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: 1)
+                .allowsHitTesting(false)
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Orchestrator, \(presentation.name)")
-        .accessibilityValue(presentation.subtitle)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(presentation.name)
+        .accessibilityValue(presentation.status)
+    }
+}
+
+/// Places a card's two parts by `SettingsAgentCardLayout.contentFrames`.
+private struct SettingsAgentCardContentLayout: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        proposal.replacingUnspecifiedDimensions()
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard subviews.count == 2 else { return }
+        let frames = SettingsAgentCardLayout.contentFrames(
+            cardSize: bounds.size,
+            textSize: subviews[0].sizeThatFits(.unspecified),
+            pickerSize: subviews[1].sizeThatFits(.unspecified)
+        )
+        for (subview, frame) in zip(subviews, [frames.text, frames.picker]) {
+            subview.place(
+                at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: frame.width, height: frame.height)
+            )
+        }
+    }
+}
+
+/// The agent's Work style, built like the Workspace's Add project control:
+/// the current style, a divider and a chevron, and a click that always opens
+/// the menu at the button's trailing edge. The menu checks the current style.
+struct SettingsAgentWorkStylePicker: View {
+    let agent: SessionAgent
+    let style: ProjectWorkStyle
+    let onSelect: (ProjectWorkStyle) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+    @State private var isPresented = false
+
+    /// The Add project control's divider and chevron segment.
+    static let disclosureWidth: CGFloat = 32
+    static let dividerWidth: CGFloat = 1
+    static let menuMinWidth: CGFloat = 300
+
+    private var palette: SharedActionButtonPalette { .settingsSecondary }
+
+    private var presentation: SettingsActionPresentation {
+        SettingsActionPresentation.resolve(
+            isEnabled: true,
+            isHovered: isHovered,
+            isFocused: false,
+            reduceMotion: reduceMotion
+        )
+    }
+
+    var body: some View {
+        Button { isPresented.toggle() } label: {
+            HStack(alignment: .center, spacing: 0) {
+                RelaySwap(style.title, style: .text, alignment: .center) { title in
+                    Text(title)
+                        .font(AppTypography.font(.programAction))
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, SharedActionButtonMetrics.horizontalPadding)
+                .frame(height: SharedActionButtonMetrics.controlHeight)
+                Rectangle()
+                    .fill(palette.stroke.opacity(presentation.sharedStrokeOpacity(for: .secondary)))
+                    .frame(width: Self.dividerWidth, height: SharedActionButtonMetrics.controlHeight)
+                LucideImage(.chevronDown, size: 12)
+                    .frame(width: Self.disclosureWidth, height: SharedActionButtonMetrics.controlHeight)
+                    .accessibilityHidden(true)
+            }
+            .foregroundStyle(palette.foreground.opacity(presentation.foregroundOpacity))
+            .frame(height: SharedActionButtonMetrics.controlHeight)
+            .background(
+                SharedActionButtonSurface(
+                    prominence: .secondary,
+                    presentation: presentation,
+                    palette: palette
+                )
+            )
+            .contentShape(
+                RoundedRectangle(cornerRadius: SharedActionButtonMetrics.cornerRadius, style: .continuous)
+            )
+        }
+        .buttonStyle(.graphicalPress)
+        .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
+        .onHover { isHovered = $0 }
+        .animation(.easeInOut(duration: presentation.animationDuration), value: presentation)
+        .accessibilityLabel(Self.accessibilityLabel(agent))
+        .accessibilityValue(style.title)
+        .notchHint("Change \(agent.name)'s work style")
+        .background {
+            SettingsDropdownPresenter(isPresented: $isPresented, minWidth: Self.menuMinWidth, alignsTrailing: true) {
+                SettingsMenuOptions(
+                    title: Self.accessibilityLabel(agent),
+                    selection: Binding(get: { style }, set: { onSelect($0) }),
+                    options: ProjectWorkStyle.allCases.map { ($0.title, $0) },
+                    subtitle: { $0.detail }
+                ) { isPresented = false }
+                .environment(\.colorScheme, .dark)
+            }
+        }
+    }
+
+    static func accessibilityLabel(_ agent: SessionAgent) -> String {
+        "\(agent.name)'s work style"
     }
 }
 

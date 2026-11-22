@@ -163,7 +163,7 @@ final class RelayAppCommands {
             return try navigate(a)
         case "get_settings":
             try a.only([])
-            return ["settings": RelayAppSettings.json(host.config()), "read_only": RelayAppSettings.readOnly.sorted()]
+            return ["settings": RelayAppSettings.effectiveJSON(host.config()), "read_only": RelayAppSettings.readOnly.sorted()]
         case "set_settings":
             try a.only(["settings"])
             guard let patch = a.values["settings"] as? [String: Any] else {
@@ -172,7 +172,7 @@ final class RelayAppCommands {
             let current = host.config()
             let (next, changed) = try RelayAppSettings.applying(patch, to: current)
             if next != current { host.saveConfig(next) }
-            return ["changed": changed, "settings": RelayAppSettings.json(host.config())]
+            return ["changed": changed, "settings": RelayAppSettings.effectiveJSON(host.config())]
         case "list_projects":
             try a.only([])
             return Self.json(session.perform(.listProjects))

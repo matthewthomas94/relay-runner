@@ -242,10 +242,14 @@ pub struct ResolvedItem {
 
 /// `_resolve_voice_work_items`: one real turn as provider-neutral ordered
 /// item deliveries.
+///
+/// `session_agent` is the agent of the session the turn is addressed to; its
+/// work style routes the turn's change requests.
 pub fn resolve_voice_work_items(
     source_text: &str,
     relay_command: &Dict,
     repo_path: &str,
+    session_agent: Option<&str>,
     active: &[ActiveWork],
     foreground_active: bool,
 ) -> Vec<ResolvedItem> {
@@ -280,10 +284,11 @@ pub fn resolve_voice_work_items(
         item_command.insert("intent_id", item.intent_id.as_str());
         item_command.insert("within_turn_order", item.within_turn_order);
         item_command.insert("voice_work_item", item.to_dict());
-        let action = command_actions::resolve_command_action(
+        let action = command_actions::resolve_command_action_for_agent(
             &item.source_text,
             Some(repo_path),
             Some(&item_command),
+            session_agent,
         );
         let mut disposition = arbitration::resolve_intent_disposition(&DispositionRequest {
             intent_id: &item.intent_id,

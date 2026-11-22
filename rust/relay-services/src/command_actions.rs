@@ -14,8 +14,8 @@
 //! Each pattern is the Python module's, compiled with the same meaning (see
 //! `relay_intents::pattern::compile`). Legacy ticket authoring
 //! (`create_ticket_for_command` and its worker-sizing helpers) is reached by
-//! neither and is not here. `set_session_work_style` and
-//! `work_style_and_source` are public for `relay-rs work-style`.
+//! neither and is not here. `set_agent_work_style` and
+//! `current_work_style_and_source` are public for `relay-rs work-style`.
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -44,6 +44,10 @@ const CONTROL_COMMANDS: [(&str, &str); 5] = [
 ];
 
 pub const WORK_STYLES: [&str; 3] = ["auto", "direct", "orchestrated"];
+/// The four named agents in table order (`SessionAgent` in the app).
+pub const SESSION_AGENTS: [&str; 4] = ["puck", "isabella", "george", "sky"];
+/// Names the agent a provider session runs as (RR-519).
+pub const AGENT_ENVIRONMENT: &str = "RELAY_SESSION_AGENT";
 const WORK_STYLE_FILE: &str = ".relay-runner.toml";
 
 static TICKET_ID_RE: LazyLock<Regex> =
@@ -491,6 +495,8 @@ pub struct CommandAction {
     /// A change verb with no word about tracking or timing; the project's
     /// work style decides whether that is done now, tracked, or left to the PM.
     pub implicit_route: bool,
+    /// The agent whose session the command was routed for, if any.
+    pub session_agent: Option<&'static str>,
 }
 
 impl CommandAction {
@@ -509,6 +515,7 @@ impl CommandAction {
             relay_command_id: None,
             relay_command_seq: None,
             implicit_route: false,
+            session_agent: None,
         }
     }
 
@@ -540,8 +547,11 @@ impl CommandAction {
 struct Environment {
     /// `RELAY_WORK_STYLE`.
     work_style: String,
-    /// `session_work_style_file()`.
-    session_work_style_file: PathBuf,
+    /// The app's `config.toml`, which holds each agent's work style.
+    config_path: PathBuf,
+    /// The agent whose session the request belongs to: `RELAY_SESSION_AGENT`
+    /// unless the caller names the target session's agent.
+    session_agent: Option<&'static str>,
     /// `RELAY_SESSION_SCOPE`.
     session_scope: Option<String>,
     /// `RELAY_GENERAL_FILES_ROOT`.
@@ -550,18 +560,43 @@ struct Environment {
 
 impl Environment {
     fn current() -> Self {
-        let session_work_style_file = match env_optional("RELAY_SESSION_WORK_STYLE_FILE") {
-            Some(path) if !path.is_empty() => PathBuf::from(expand_user(&path)),
-            _ => Path::new(&expand_user("~"))
-                .join("Library/Application Support/relay-runner/session-work-style.json"),
-        };
         Self {
             work_style: env_optional("RELAY_WORK_STYLE").unwrap_or_default(),
-            session_work_style_file,
+            config_path: app_config_path(),
+            session_agent: env_optional(AGENT_ENVIRONMENT)
+                .as_deref()
+                .and_then(known_agent),
             session_scope: env_optional("RELAY_SESSION_SCOPE"),
             general_files_root: env_optional("RELAY_GENERAL_FILES_ROOT"),
         }
     }
+}
+
+/// The app's `config.toml` as `load_config` finds it: `--config <path>` in
+/// the process arguments, else the default location.
+fn app_config_path() -> PathBuf {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    arguments
+        .iter()
+        .position(|argument| argument == "--config")
+        .and_then(|index| arguments.get(index + 1))
+        .map(PathBuf::from)
+        .unwrap_or_else(relay_artifacts::config::default_config_path)
+}
+
+/// One of `SESSION_AGENTS`, from a slug in any case.
+pub fn known_agent(slug: &str) -> Option<&'static str> {
+    let slug = json::py_strip(slug).to_lowercase();
+    SESSION_AGENTS.iter().copied().find(|known| *known == slug)
+}
+
+/// The agent's display name: its slug with a capital.
+pub fn agent_name(slug: &str) -> String {
+    let mut characters = slug.chars();
+    characters
+        .next()
+        .map(|first| first.to_uppercase().chain(characters).collect())
+        .unwrap_or_default()
 }
 
 fn known_work_style(style: &str) -> Option<&'static str> {
@@ -574,21 +609,33 @@ fn read_text(path: &Path) -> Option<String> {
     Some(text.replace("\r\n", "\n").replace('\r', "\n"))
 }
 
-/// `session_work_style`: the session-wide choice from the Start button's
-/// menu, or `None` when none is saved.
-fn session_work_style(path: &Path) -> Option<&'static str> {
-    let Value::Dict(saved) = json::parse(&read_text(path)?)? else {
-        return None;
-    };
-    known_work_style(&saved.get("work_style")?.as_str()?.to_lowercase())
+/// The work style `agent` has saved in Settings, by voice or with
+/// `relay-work-style`: `[agents.<slug>] work_style` in `config.toml`, or
+/// `None` when that agent has none saved.
+fn agent_work_style(config_path: &Path, agent: &str) -> Option<&'static str> {
+    agent_work_style_in(&read_text(config_path)?, agent)
+}
+
+fn agent_work_style_in(text: &str, agent: &str) -> Option<&'static str> {
+    let config = relay_artifacts::toml::loads(text).ok()?;
+    let style = config
+        .get("agents")?
+        .as_table()?
+        .get(agent)?
+        .as_table()?
+        .get("work_style")?
+        .as_str()?;
+    known_work_style(&style.to_lowercase())
 }
 
 /// `work_style_and_source`: the effective work style and where it came from.
 ///
-/// Precedence: `RELAY_WORK_STYLE` ("env"), then the session-wide choice in
-/// `session-work-style.json` ("session"), then `work_style` in the project's
-/// `.relay-runner.toml` ("project"), then auto ("default"). An unknown
-/// `RELAY_WORK_STYLE` means auto; other unknown values are ignored.
+/// Precedence: `RELAY_WORK_STYLE` ("env"), then the work style saved for the
+/// session's agent ("agent"), then `work_style` in the project's
+/// `.relay-runner.toml` ("project"), then auto ("default"). An agent saved on
+/// auto stops there, as the session-wide choice of Auto did before agents had
+/// their own; an agent with nothing saved falls through to the project. An
+/// unknown `RELAY_WORK_STYLE` means auto; other unknown values are ignored.
 fn work_style_and_source(
     environment: &Environment,
     repo_path: Option<&str>,
@@ -597,8 +644,11 @@ fn work_style_and_source(
     if !style.is_empty() {
         return (known_work_style(&style).unwrap_or("auto"), "env");
     }
-    if let Some(style) = session_work_style(&environment.session_work_style_file) {
-        return (style, "session");
+    if let Some(style) = environment
+        .session_agent
+        .and_then(|agent| agent_work_style(&environment.config_path, agent))
+    {
+        return (style, "agent");
     }
     if let Some(repo_path) = repo_path {
         let file = Path::new(&expand_user(repo_path)).join(WORK_STYLE_FILE);
@@ -613,37 +663,98 @@ fn work_style_and_source(
 }
 
 /// `work_style_and_source(repo_path)` with the process environment: the
-/// effective style and "env", "session", "project" or "default".
-pub fn current_work_style_and_source(repo_path: Option<&str>) -> (&'static str, &'static str) {
-    work_style_and_source(&Environment::current(), repo_path)
+/// effective style and "env", "agent", "project" or "default", and the
+/// agent `RELAY_SESSION_AGENT` names.
+pub fn current_work_style_and_source(
+    repo_path: Option<&str>,
+) -> (&'static str, &'static str, Option<&'static str>) {
+    let environment = Environment::current();
+    let (style, source) = work_style_and_source(&environment, repo_path);
+    (style, source, environment.session_agent)
 }
 
-/// `set_session_work_style`: save the session's work style where the Start
-/// button's menu keeps it, through a temporary file in the same directory.
-/// An unknown style is Python's `ValueError` message.
-pub fn set_session_work_style(style: &str) -> Result<&'static str, String> {
+/// The agent `RELAY_SESSION_AGENT` names, if it is one of the four.
+pub fn current_session_agent() -> Option<&'static str> {
+    Environment::current().session_agent
+}
+
+/// `config.toml` with `[agents.<agent>] work_style` set to `style`, every
+/// other line kept as it was.
+fn with_agent_work_style(text: &str, agent: &str, style: &str) -> String {
+    let header = format!("[agents.{agent}]");
+    let setting = format!("work_style = \"{style}\"");
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    match lines.iter().position(|line| line.trim() == header) {
+        Some(start) => {
+            let end = lines[start + 1..]
+                .iter()
+                .position(|line| line.trim_start().starts_with('['))
+                .map_or(lines.len(), |offset| start + 1 + offset);
+            let existing = lines[start + 1..end].iter().position(|line| {
+                line.trim_start()
+                    .strip_prefix("work_style")
+                    .is_some_and(|rest| rest.trim_start().starts_with('='))
+            });
+            match existing {
+                Some(offset) => lines[start + 1 + offset] = setting,
+                None => lines.insert(start + 1, setting),
+            }
+        }
+        None => {
+            if lines.last().is_some_and(|line| !line.trim().is_empty()) {
+                lines.push(String::new());
+            }
+            lines.push(header);
+            lines.push(setting);
+        }
+    }
+    let mut updated = lines.join("\n");
+    updated.push('\n');
+    updated
+}
+
+/// `set_agent_work_style`: save `agent`'s work style in `config.toml`, the
+/// setting the agent's card in Settings shows, through a temporary file in
+/// the same directory. Only that agent's line changes. An unknown agent or
+/// style is refused, and so is a missing or unreadable `config.toml`.
+pub fn set_agent_work_style(agent: &str, style: &str) -> Result<&'static str, String> {
+    write_agent_work_style(&Environment::current().config_path, agent, style)
+}
+
+fn write_agent_work_style(path: &Path, agent: &str, style: &str) -> Result<&'static str, String> {
     use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+    let Some(agent) = known_agent(agent) else {
+        return Err(format!(
+            "agent must be one of {}",
+            SESSION_AGENTS.join(", ")
+        ));
+    };
     let Some(style) = known_work_style(&json::py_strip(style).to_lowercase()) else {
         return Err(format!(
             "work style must be one of {}",
             WORK_STYLES.join(", ")
         ));
     };
-    let path = Environment::current().session_work_style_file;
+    let failed = |error: std::io::Error| format!("{}: {error}", path.display());
+    let text = fs::read_to_string(path).map_err(failed)?;
+    let updated = with_agent_work_style(&text, agent, style);
+    if agent_work_style_in(&updated, agent) != Some(style) {
+        return Err(format!(
+            "{} is not valid TOML; open Settings in Relay Runner to repair it",
+            path.display()
+        ));
+    }
+    let mode = fs::metadata(path).map_err(failed)?.permissions().mode() & 0o777;
     let parent = path.parent().unwrap_or(Path::new("."));
-    let failed = |error: std::io::Error| error.to_string();
-    fs::create_dir_all(parent).map_err(failed)?;
     let temporary = parent.join(format!("tmp{}.tmp", relay_artifacts::store::random_hex()));
-    let mut document = Dict::new();
-    document.insert("work_style", style);
     let written = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .mode(0o600)
+        .mode(mode)
         .open(&temporary)
-        .and_then(|mut file| file.write_all(json::dumps(&Value::Dict(document)).as_bytes()))
-        .and_then(|()| fs::rename(&temporary, &path));
+        .and_then(|mut file| file.write_all(updated.as_bytes()))
+        .and_then(|()| fs::rename(&temporary, path));
     if let Err(error) = written {
         let _ = fs::remove_file(&temporary);
         return Err(failed(error));
@@ -944,7 +1055,53 @@ pub fn resolve_command_action(
     resolve_in(&Environment::current(), text, repo_path, relay_command)
 }
 
+/// `resolve_command_action` for a command addressed to `agent`'s session,
+/// routed with that agent's work style. The one bridge serves every live
+/// session, so it names the target session's agent instead of its own
+/// `RELAY_SESSION_AGENT`. `None` is a session without an agent.
+pub fn resolve_command_action_for_agent(
+    text: &str,
+    repo_path: Option<&str>,
+    relay_command: Option<&Dict>,
+    agent: Option<&str>,
+) -> CommandAction {
+    let environment = Environment {
+        session_agent: agent.and_then(known_agent),
+        ..Environment::current()
+    };
+    resolve_in(&environment, text, repo_path, relay_command)
+}
+
+/// `resolve_command_action` for a command the bridge queued on the daemon.
+/// The bridge routed it with the work style of the agent it was addressed
+/// to, and queues only ticket work, so a change request it queued as
+/// `create_ticket` stays one: it is re-resolved as orchestrated.
+pub fn resolve_queued_command_action(
+    text: &str,
+    repo_path: Option<&str>,
+    relay_command: Option<&Dict>,
+    queued_action: Option<&str>,
+) -> CommandAction {
+    let mut environment = Environment::current();
+    if queued_action.is_some_and(|action| json::py_strip(action) == "create_ticket") {
+        environment.work_style = "orchestrated".to_string();
+    }
+    resolve_in(&environment, text, repo_path, relay_command)
+}
+
 fn resolve_in(
+    environment: &Environment,
+    text: &str,
+    repo_path: Option<&str>,
+    relay_command: Option<&Dict>,
+) -> CommandAction {
+    CommandAction {
+        session_agent: environment.session_agent,
+        ..route(environment, text, repo_path, relay_command)
+    }
+}
+
+fn route(
     environment: &Environment,
     text: &str,
     repo_path: Option<&str>,
@@ -991,8 +1148,9 @@ fn resolve_in(
         && !project_request
         && project_work_style(environment, None) == "direct"
     {
-        // General keeps its own routing; only a session-wide direct choice
-        // (RELAY_WORK_STYLE or the Start menu) makes its changes inline.
+        // General keeps its own routing; only a direct choice that covers
+        // every project (RELAY_WORK_STYLE or the agent's) makes its changes
+        // inline.
         action = CommandAction::new(InlineWork, &action.source_text, "work_style_direct");
     }
     if action.kind != CreateTicket {
@@ -1109,10 +1267,16 @@ pub fn format_command_for_agent(action: &CommandAction, disposition: Option<&Dic
             let style =
                 requested_work_style(&action.source_text).unwrap_or_else(|| "None".to_string());
             lines.push(format!("- work_style_requested: {style}"));
+            let owner = match action.session_agent {
+                Some(agent) => format!("{}'s", agent_name(agent)),
+                None => "your".to_string(),
+            };
             lines.push(format!(
-                "- Set the session's work style now with `relay-work-style set {style}` (installed at \
+                "- Set {owner} work style now with `relay-work-style set {style}` (installed at \
                  /Applications/Relay Runner.app/Contents/SharedSupport/scripts/relay-work-style), then confirm in one \
-                 sentence what the style now does. It applies to every project from the next request; no ticket."
+                 sentence what the style now does. It is this agent's setting, shown on its card in Settings: it \
+                 applies to every project from the next request and stays when the agent restarts. The other agents \
+                 keep theirs; no ticket."
             ));
         }
         lines.extend(
@@ -1540,12 +1704,17 @@ mod tests {
             fs::write(self.0.join(name), text).unwrap();
         }
 
-        /// What `set_session_work_style` writes.
-        fn save_session_style(&self, style: &str) {
-            self.write(
-                "session-work-style.json",
-                &format!("{{\"work_style\": \"{style}\"}}"),
-            );
+        /// Saves Puck's work style in `config.toml` as `set_agent_work_style` does.
+        fn save_agent_style(&self, style: &str) {
+            self.save_style_for("puck", style);
+        }
+
+        fn save_style_for(&self, agent: &str, style: &str) {
+            let path = self.0.join("config.toml");
+            if !path.exists() {
+                self.write("config.toml", "[tts]\nvoice = \"am_puck\"\n");
+            }
+            write_agent_work_style(&path, agent, style).unwrap();
         }
     }
 
@@ -1556,11 +1725,13 @@ mod tests {
     }
 
     /// The environment the Python tests set up: no work style, no General
-    /// scope, and a session work-style file in `scratch` that is not saved.
+    /// scope, and Puck's session with a `config.toml` in `scratch` that has
+    /// no work style saved.
     fn environment(scratch: &Scratch) -> Environment {
         Environment {
             work_style: String::new(),
-            session_work_style_file: scratch.0.join("session-work-style.json"),
+            config_path: scratch.0.join("config.toml"),
+            session_agent: Some("puck"),
             session_scope: None,
             general_files_root: None,
         }
@@ -2427,15 +2598,16 @@ mod tests {
             ("orchestrated", "project")
         );
         for saved in [
-            r#"{"work_style": "sometimes"}"#,
-            r#"{"work_style": 1}"#,
-            r#"["direct"]"#,
-            "not json",
+            "[agents.puck]\nwork_style = \"sometimes\"\n",
+            "[agents.puck]\nwork_style = 1\n",
+            "[agents]\npuck = \"direct\"\n",
+            "[agents.george]\nwork_style = \"direct\"\n",
+            "not toml = = ",
             "",
         ] {
-            scratch.write("session-work-style.json", saved);
+            scratch.write("config.toml", saved);
             assert_eq!(
-                session_work_style(&environment.session_work_style_file),
+                agent_work_style(&environment.config_path, "puck"),
                 None,
                 "{saved}"
             );
@@ -2445,19 +2617,26 @@ mod tests {
                 "{saved}"
             );
         }
-        scratch.write("session-work-style.json", r#"{"work_style": "Direct"}"#);
+        scratch.write("config.toml", "[agents.puck]\nwork_style = \"Direct\"\n");
         assert_eq!(
-            session_work_style(&environment.session_work_style_file),
+            agent_work_style(&environment.config_path, "puck"),
             Some("direct")
         );
         assert_eq!(
             work_style_and_source(&environment, Some(repo.path())),
-            ("direct", "session")
+            ("direct", "agent")
         );
         assert_eq!(
             resolve_in(&environment, text, Some(repo.path()), None).kind,
             InlineWork
         );
+        // A session without an agent has no agent setting to read.
+        environment.session_agent = None;
+        assert_eq!(
+            work_style_and_source(&environment, Some(repo.path())),
+            ("orchestrated", "project")
+        );
+        environment.session_agent = Some("puck");
         environment.work_style = "auto".to_string();
         assert_eq!(
             work_style_and_source(&environment, Some(repo.path())),
@@ -2468,6 +2647,142 @@ mod tests {
             work_style_and_source(&environment, Some(repo.path())),
             ("auto", "env")
         );
+    }
+
+    #[test]
+    fn each_agent_routes_with_its_own_work_style() {
+        let scratch = Scratch::new("per-agent");
+        let repo = Scratch::new("per-agent-repo");
+        scratch.save_style_for("puck", "direct");
+        scratch.save_style_for("george", "orchestrated");
+        let mut environment = environment(&scratch);
+        let change = "fix the login button colour";
+        let routes = |environment: &Environment| {
+            let action = resolve_in(environment, change, Some(repo.path()), None);
+            let hint = qualify_intent(
+                change,
+                action.kind.as_str(),
+                Some(action.reason),
+                None,
+                None,
+            );
+            (
+                hint.bucket.map_or("", |bucket| bucket.as_str()),
+                action.kind,
+            )
+        };
+        // The same change request: an Action from Puck's session, a Task from George's.
+        assert_eq!(routes(&environment), ("action", InlineWork));
+        environment.session_agent = Some("george");
+        assert_eq!(routes(&environment), ("task", CreateTicket));
+        // Isabella has nothing saved: the default.
+        environment.session_agent = Some("isabella");
+        assert_eq!(routes(&environment), ("undecided", Conversation));
+        // The bridge names the target session's agent.
+        let puck = resolve_command_action_for_agent(change, Some(repo.path()), None, Some("Puck"));
+        assert_eq!(puck.session_agent, Some("puck"));
+        assert_eq!(known_agent(" GEORGE "), Some("george"));
+        assert_eq!(known_agent("oberon"), None);
+    }
+
+    #[test]
+    fn the_variable_overrides_the_agent_and_an_agent_on_auto_overrides_the_project() {
+        let scratch = Scratch::new("agent-auto");
+        let repo = Scratch::new("agent-auto-repo");
+        repo.write(".relay-runner.toml", "work_style = \"direct\"\n");
+        let mut environment = environment(&scratch);
+        let change = "Make the title fade in slower";
+        // Nothing saved for the agent: the project's direct applies.
+        assert_eq!(
+            work_style_and_source(&environment, Some(repo.path())),
+            ("direct", "project")
+        );
+        // An agent saved on Auto stops there, as an explicit session choice
+        // of Auto did: the PM decides, the project's direct is not used.
+        scratch.save_agent_style("auto");
+        assert_eq!(
+            work_style_and_source(&environment, Some(repo.path())),
+            ("auto", "agent")
+        );
+        let action = resolve_in(&environment, change, Some(repo.path()), None);
+        assert_eq!(
+            (action.kind, action.reason),
+            (Conversation, "route_undecided")
+        );
+        // RELAY_WORK_STYLE still wins over the agent's setting.
+        scratch.save_agent_style("direct");
+        environment.work_style = "orchestrated".to_string();
+        assert_eq!(
+            work_style_and_source(&environment, Some(repo.path())),
+            ("orchestrated", "env")
+        );
+        assert_eq!(
+            resolve_in(&environment, change, Some(repo.path()), None).kind,
+            CreateTicket
+        );
+    }
+
+    #[test]
+    fn the_voice_switch_changes_only_the_addressed_agents_style() {
+        let scratch = Scratch::new("voice-switch");
+        let path = scratch.0.join("config.toml");
+        let original = "[stt]\nmodel = \"phonon-2\"\n\n[tts]\nvoice = \"am_puck\"\n\n\
+                        [agents.puck]\nwork_style = \"orchestrated\"\n\n\
+                        [agents.george]\nwork_style = \"auto\"\n";
+        scratch.write("config.toml", original);
+        let mut environment = environment(&scratch);
+        environment.session_agent = Some("isabella");
+        let action = resolve_in(&environment, "switch to direct mode", None, None);
+        assert_eq!(
+            (action.kind, action.reason),
+            (DirectAction, "set_work_style")
+        );
+        let prompt = format_command_for_agent(&action, None);
+        assert!(
+            prompt.contains("Set Isabella's work style now with `relay-work-style set direct`")
+        );
+        // What `relay-work-style set direct` saves from Isabella's session.
+        assert_eq!(
+            write_agent_work_style(&path, "isabella", "direct"),
+            Ok("direct")
+        );
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(saved.starts_with(original), "{saved}");
+        let styles: Vec<Option<&str>> = SESSION_AGENTS
+            .iter()
+            .map(|agent| agent_work_style(&path, agent))
+            .collect();
+        assert_eq!(
+            styles,
+            [Some("orchestrated"), Some("direct"), Some("auto"), None]
+        );
+        // Setting it again rewrites Isabella's line in place.
+        write_agent_work_style(&path, "isabella", "Orchestrated").unwrap();
+        let again = fs::read_to_string(&path).unwrap();
+        assert_eq!(again.matches("[agents.isabella]").count(), 1);
+        assert_eq!(agent_work_style(&path, "isabella"), Some("orchestrated"));
+        assert_eq!(agent_work_style(&path, "puck"), Some("orchestrated"));
+        assert_eq!(agent_work_style(&path, "george"), Some("auto"));
+        assert_eq!(agent_work_style(&path, "sky"), None);
+        assert!(write_agent_work_style(&path, "oberon", "direct").is_err());
+        assert!(write_agent_work_style(&path, "sky", "fast").is_err());
+        assert!(write_agent_work_style(&scratch.0.join("missing.toml"), "sky", "auto").is_err());
+        // A session without an agent is told to set its own.
+        environment.session_agent = None;
+        let prompt = format_command_for_agent(
+            &resolve_in(&environment, "switch to direct mode", None, None),
+            None,
+        );
+        assert!(prompt.contains("Set your work style now"));
+    }
+
+    #[test]
+    fn a_queued_ticket_command_stays_a_ticket() {
+        let change = "fix the login button colour";
+        let repo = Scratch::new("queued-repo");
+        let queued =
+            resolve_queued_command_action(change, Some(repo.path()), None, Some("create_ticket"));
+        assert_eq!(queued.kind, CreateTicket);
     }
 
     #[test]
@@ -2487,13 +2802,13 @@ mod tests {
         let scratch = Scratch::new("routes");
         let repo = Scratch::new("routes-repo");
         let mut environment = environment(&scratch);
-        for source in ["env", "session"] {
+        for source in ["env", "agent"] {
             for style in WORK_STYLES {
                 if source == "env" {
                     environment.work_style = style.to_string();
                 } else {
                     environment.work_style.clear();
-                    scratch.save_session_style(style);
+                    scratch.save_agent_style(style);
                 }
                 for case in cases {
                     let case = case.as_dict().unwrap();
@@ -2550,7 +2865,7 @@ mod tests {
         );
         assert!(format_command_for_agent(&action, None).contains("- work_style: direct"));
         environment.work_style.clear();
-        scratch.save_session_style("direct");
+        scratch.save_agent_style("direct");
         assert_eq!(
             resolve_in(&environment, change, Some(repo.path()), None).kind,
             InlineWork
@@ -2716,7 +3031,7 @@ mod tests {
         root.write(".relay-runner.toml", "work_style = \"direct\"\n");
         for style in [None, Some("auto"), Some("orchestrated")] {
             if let Some(style) = style {
-                scratch.save_session_style(style);
+                scratch.save_agent_style(style);
             }
             let action = resolve_in(&environment, text, Some(root.path()), None);
             assert_eq!(
@@ -2725,11 +3040,11 @@ mod tests {
                 "{style:?}"
             );
         }
-        for source in ["session", "env"] {
-            if source == "session" {
-                scratch.save_session_style("direct");
+        for source in ["agent", "env"] {
+            if source == "agent" {
+                scratch.save_agent_style("direct");
             } else {
-                scratch.save_session_style("auto");
+                scratch.save_agent_style("auto");
                 environment.work_style = "direct".to_string();
             }
             let action = resolve_in(&environment, text, Some(root.path()), None);

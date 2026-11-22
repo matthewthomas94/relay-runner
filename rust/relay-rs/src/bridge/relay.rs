@@ -577,6 +577,7 @@ fn handle_entry(
         &text,
         &relay_command,
         &target_repo,
+        targets::session_agent(voice_target.as_ref()),
         &active,
         foreground_active,
     );

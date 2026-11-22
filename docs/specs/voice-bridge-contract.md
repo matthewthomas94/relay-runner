@@ -125,8 +125,8 @@ The suite sets every variable below in each sandbox unless the Case column names
 | `PM_UPDATE_POLL_SECONDS`, `PM_UPDATE_CADENCE_SECONDS`, `PM_UPDATE_STARTUP_GRACE_SECONDS` | `2`, `8`, `6` | PM update reads after project work. | commands/test_project_work_is_queued_on_the_ticket_path_and_fanned_out |
 | `FOREGROUND_REPLY_FALLBACK_SECONDS` | `120` | Wait before the missing-reply fallback; the suite sets `600`, the fallback cases `0.5`. | replies/test_empty_completion_speaks_the_missing_reply_fallback |
 | `PROVIDER_COMPLETION_ACTIVE_POLL_SECONDS` | `5` | How often an active turn is rechecked before the fallback. | replies/test_the_fallback_waits_while_the_provider_turn_is_active |
-| `RELAY_WORK_STYLE` | unset | `auto`, `direct` or `orchestrated`; overrides the session file. | environment/test_relay_work_style_direct_makes_a_change_request_inline_work |
-| `RELAY_SESSION_WORK_STYLE_FILE` | `~/Library/Application Support/relay-runner/session-work-style.json` | The session's saved work style. | environment/test_the_session_work_style_file_applies_and_the_variable_wins |
+| `RELAY_WORK_STYLE` | unset | `auto`, `direct` or `orchestrated`; overrides the agent's saved style. | environment/test_relay_work_style_direct_makes_a_change_request_inline_work |
+| `RELAY_SESSION_AGENT` | unset | The agent of a bridge with no app session target; with one, the target spool's `session_agent` file names it. That agent's `[agents.<slug>] work_style` in the config routes change requests. | environment/test_the_agents_work_style_applies_and_the_variable_wins |
 | `RELAY_SESSION_SCOPE`, `RELAY_GENERAL_FILES_ROOT` | unset | `general` with the general-tasks folder: ticket work there is general, not project, work. | environment/test_a_general_session_keeps_ticket_work_off_the_project |
 | `VOICE_TERMINAL_<SECTION>_<KEY>` | unset | Value for a config key the file leaves out. | environment/test_a_setting_missing_from_the_config_file_comes_from_the_environment |
 | `HOME`, `PATH` | | Default file locations; the messenger child's search path. | messenger/test_messenger_is_started_tool_free_on_the_configured_provider |

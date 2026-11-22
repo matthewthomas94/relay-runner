@@ -1801,8 +1801,8 @@ private struct ProgramProjectCard: View {
         }
     }
 
-    /// Finder, centred in the row's trailing square. The session's work style
-    /// lives on the Start button, not on each row.
+    /// Finder, centred in the row's trailing square. Work style belongs to
+    /// each agent, on its card in Settings, not to a row.
     @ViewBuilder
     private var actions: some View {
         if let path = item.project?.path {
@@ -4539,100 +4539,43 @@ enum ProgramNoteStartFailurePresentation {
     }
 }
 
-/// The Start/End session action: a white glass primary button with a chevron
-/// segment that picks the session's work style. A change applies from the
-/// session's next request, so the menu stays available while it runs.
+/// The Start/End session action: a white glass primary button. Each agent's
+/// work style is set on its card in Settings (RR-522).
 struct ProgramSessionPrimaryButton: View {
     let presentation: ProgramSessionToolbarPresentation
     let isEnabled: Bool
     let action: () -> Void
-    private var workStyles: SessionWorkStyleStore { .shared }
-    @State private var hovered: Segment?
-    @State private var isMenuPresented = false
+    @State private var isHovered = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private enum Segment { case action, menu }
-
-    /// 12 points either side of the divider, a 16-point chevron, 8 trailing.
-    static let dividerGap: CGFloat = 12
-    static let menuSegmentWidth: CGFloat = 36
-    static let menuMinWidth: CGFloat = 300
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: SharedActionButtonMetrics.cornerRadius, style: .continuous)
-        let style = workStyles.style
-        HStack(spacing: 0) {
-            Button(action: action) {
-                RelaySwap(presentation.title, style: .text, alignment: .center) { title in
-                    Text(title)
-                        .font(AppTypography.font(.primaryButton))
-                        .lineLimit(1)
-                }
-                .padding(.leading, SharedActionButtonMetrics.horizontalPadding)
-                .padding(.trailing, Self.dividerGap)
-                .frame(height: SharedActionButtonMetrics.controlHeight)
-                .background(hoverFill(.action))
-                .contentShape(Rectangle())
+        Button(action: action) {
+            RelaySwap(presentation.title, style: .text, alignment: .center) { title in
+                Text(title)
+                    .font(AppTypography.font(.primaryButton))
+                    .lineLimit(1)
             }
-            .buttonStyle(.graphicalPress)
-            .disabled(!isEnabled)
-            .opacity(isEnabled ? 1 : 0.45)
-            .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
-            .onHover { hover(.action, $0) }
-            .programButtonCursor(enabled: isEnabled)
-            .accessibilityLabel(presentation.title)
-            .notchHint(presentation.help)
-
-            Rectangle()
-                .fill(GraphicalTheme.onPrimaryAction.opacity(0.18))
-                .frame(width: 1, height: 20)
-                .accessibilityHidden(true)
-
-            Button { isMenuPresented.toggle() } label: {
-                LucideImage(.chevronDown, size: 16)
-                    .padding(.leading, Self.dividerGap - 8)
-                    .frame(width: Self.menuSegmentWidth, height: SharedActionButtonMetrics.controlHeight)
-                    .background(hoverFill(.menu))
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.graphicalPress)
-            .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
-            .onHover { hover(.menu, $0) }
-            .programButtonCursor(enabled: true)
-            .accessibilityLabel("Work style, now \(style.title)")
-            .notchHint("Change work style")
+            .padding(.horizontal, SharedActionButtonMetrics.horizontalPadding)
+            .frame(height: SharedActionButtonMetrics.controlHeight)
+            // The button lightens a little under the pointer.
+            .background(Color.white.opacity(isHovered ? 0.2 : 0))
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.graphicalPress)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.45)
+        .focusEffectDisabled(SettingsLayout.systemFocusEffectDisabled)
+        .onHover { isHovered = $0 }
+        .programButtonCursor(enabled: isEnabled)
+        .accessibilityLabel(presentation.title)
+        .notchHint(presentation.help)
         .foregroundStyle(GraphicalTheme.onPrimaryAction)
         .background(shape.fill(BoardDarkSurfaceStyle.primaryActionFill))
         .clipShape(shape)
         .fixedSize()
-        .animation(reduceMotion ? nil : RelayMotion.hover, value: hovered)
+        .animation(reduceMotion ? nil : RelayMotion.hover, value: isHovered)
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isEnabled)
-        .onAppear { workStyles.reload() }
-        .background {
-            SettingsDropdownPresenter(isPresented: $isMenuPresented, minWidth: Self.menuMinWidth, alignsTrailing: true) {
-                SettingsMenuOptions(
-                    title: "Work style",
-                    selection: Binding(get: { workStyles.style }, set: { workStyles.select($0) }),
-                    options: ProjectWorkStyle.allCases.map { ($0.title, $0) },
-                    subtitle: { $0.detail }
-                ) { isMenuPresented = false }
-                .environment(\.colorScheme, .dark)
-            }
-        }
-    }
-
-    /// Each segment lightens a little under the pointer.
-    private func hoverFill(_ segment: Segment) -> Color {
-        Color.white.opacity(hovered == segment ? 0.2 : 0)
-    }
-
-    private func hover(_ segment: Segment, _ isHovering: Bool) {
-        if isHovering {
-            hovered = segment
-        } else if hovered == segment {
-            hovered = nil
-        }
     }
 }
 

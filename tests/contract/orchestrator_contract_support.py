@@ -498,7 +498,6 @@ class Sandbox:
             "RELAY_ORCHESTRATOR_DATA_ROOT": str(self.data_root),
             "RELAY_ORCHESTRATOR_RUNTIME_DIR": str(self.runtime),
             "RELAY_DIAGNOSTICS_DIR": str(self.diagnostics),
-            "RELAY_SESSION_WORK_STYLE_FILE": str(self.state_root / "session-work-style.json"),
             "RELAY_CONTRACT_FAKE_STATE": str(self.fake_state),
             "PYTHONDONTWRITEBYTECODE": "1",
         }

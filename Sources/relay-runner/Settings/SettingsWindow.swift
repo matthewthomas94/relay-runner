@@ -196,7 +196,7 @@ private struct SettingsContent: View {
 
     var body: some View {
         GeometryReader { geometry in
-            HStack(spacing: style == .window ? SettingsAgentCardLayout.spacing : BoardSurfaceLayout.columnSpacing) {
+            HStack(spacing: rowSpacing) {
                 if style == .window {
                     settingsPane
                         .frame(maxWidth: .infinity)
@@ -213,20 +213,28 @@ private struct SettingsContent: View {
                 }
 
                 TimelineView(.periodic(from: .now, by: 1)) { context in
-                    SettingsAgentCard(
-                        presentation: SettingsAgentPresentation(
-                            name: SettingsAgentPresentation.voiceName(appState.config.tts),
-                            subtitle: SettingsAgentPresentation.subtitle(
-                                state: appState.stateMachine.state,
-                                hasActiveSession: appState.hasActiveSession,
-                                hasWorkingProgress: appState.stateMachine.currentWorkingProgress(now: context.date) != nil
-                            )
+                    SettingsAgentGrid(
+                        cards: SettingsAgentPresentation.cards(
+                            statuses: appState.agentStatuses,
+                            agents: appState.config.agents,
+                            state: appState.stateMachine.state,
+                            hasWorkingProgress: appState.stateMachine.currentWorkingProgress(now: context.date) != nil
                         ),
                         theme: appState.stateMachine.state.particleTheme ?? .idle,
+                        spacing: rowSpacing,
                         panelGlass: style != .window
-                    )
+                    ) { agent, workStyle in
+                        appState.setWorkStyle(workStyle, for: agent)
+                    }
                 }
-                .frame(width: style == .window ? 280 : SettingsAgentCardLayout.width(availableWidth: geometry.size.width))
+                // Voice and /work-style change an agent's style while Settings is open.
+                .task {
+                    while !Task.isCancelled {
+                        appState.reloadAgentSettings()
+                        try? await Task.sleep(for: .seconds(1))
+                    }
+                }
+                .frame(width: SettingsAgentCardLayout.frameWidth(inWindow: style == .window, availableWidth: geometry.size.width))
             }
         }
         .foregroundStyle(SettingsSurfaceColor.primaryText)
@@ -238,6 +246,11 @@ private struct SettingsContent: View {
         .onChange(of: selectedCategory) { _, newValue in
             scrollTarget = newValue
         }
+    }
+
+    /// Between the Settings panels, and between the agent cards.
+    private var rowSpacing: CGFloat {
+        style == .window ? SettingsAgentCardLayout.spacing : BoardSurfaceLayout.columnSpacing
     }
 
     private func selectRequestedCategory() {
