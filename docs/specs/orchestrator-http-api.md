@@ -383,7 +383,8 @@ directory and holds a `session_agent` file naming one of the four agents.
 
 - `GET /v1/agent-presence?exclude_agent=` → `{"agents": […], "startup_text"}`.
   Read only. `agents` has one object per agent (`agent`, `name`, `running`,
-  `session_key`, `last_activity`, `repositories`), in the order Puck,
+  `session_key`, `last_activity`, `repositories`, each repository with the
+  `tickets` the agent wrote or dispatched there), in the order Puck,
   Isabella, George, Sky, without `exclude_agent`; `startup_text` describes the
   other running agents for a starting session's instructions.
 - `POST /v1/agent-presence` body `relay_session_key` → `agents` plus the
@@ -392,9 +393,12 @@ directory and holds a `session_agent` file naming one of the four agents.
   400 `invalid relay_session_key`.
 - `POST /v1/agent-presence/declare` body `relay_session_key` (required),
   `repo_path` (required, a directory), `note` (first line kept, 200
-  characters) → `declared` (`entered`, `refreshed`, `ignored`), `agents` and
-  the caller's notices. 400 `relay_session_key is required`, `repo_path is
-  required`, `relay_session_key names no running Relay agent session`.
+  characters), optional `paths` (strings, the first 20 kept, RR-526) →
+  `declared` (`entered`, `refreshed`, `ignored`), `agents` and the caller's
+  notices. The agents sharing the repository get the declaration as a notice.
+  400 `relay_session_key is required`, `repo_path is required`,
+  `relay_session_key names no running Relay agent session`, `paths must be a
+  list of strings`.
 - `POST /v1/agent-notices/claim` body `relay_session_key` → `notices`,
   `omitted_notices`, `notice_block`; each notice is delivered once, the
   newest ten when more are pending.
@@ -405,6 +409,14 @@ Presence is also recorded by `POST /v1/runs` (`dispatcher_session_key`, else
 /v1/orchestrator-actions` and `POST /v1/program/capture`
 (`relay_session_key`). Without a key they record nothing. The general-tasks
 folder is never recorded.
+
+RR-526: while two running agents share a repository, a ticket created or
+edited through `/tickets/write` or `POST /v1/orchestrator-actions`, a new or
+queued dispatch through `POST /v1/runs` or a batch's `request_worker`, and the
+merge or failure of a run whose dispatcher was bound
+(`dispatcher_session_key`) each queue an action notice for the other agents
+sharing it. Replayed writes and already-active dispatches send none. These
+change no response shape.
 
 ## Artifact board, history and retention
 

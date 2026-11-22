@@ -150,6 +150,28 @@ impl MessengerOutcomeStore {
         })
     }
 
+    /// The session that dispatched `ticket_id` in `repo_path`, if one was
+    /// bound (RR-526 reads it to tell the agents sharing the repository).
+    pub fn dispatcher(&self, repo_path: &str, ticket_id: &str) -> Result<Option<String>> {
+        let repo = resolve_path(repo_path);
+        let ticket = json::py_strip(ticket_id).to_uppercase();
+        if ticket.is_empty() {
+            return Ok(None);
+        }
+        self.db.with(|c| {
+            Ok(sql::row(
+                c,
+                "SELECT session_key FROM messenger_dispatchers WHERE repo_path = ? AND ticket_id = ?",
+                &[text(&repo), text(&ticket)],
+            )?
+            .and_then(|row| {
+                row.get("session_key")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            }))
+        })
+    }
+
     /// Queues the outcome a lifecycle payload carries in `trace_event`, once
     /// per event key; `None` when the payload has no kind or message.
     pub fn record(

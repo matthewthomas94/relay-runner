@@ -1,4 +1,5 @@
-"""Agent presence (RR-525): attributed mutations, the presence routes and notices.
+"""Agent presence (RR-525): attributed mutations, the presence routes and notices,
+and the overlap and action notices between agents sharing a repository (RR-526).
 
 A session runs while `<runtime>/relay-sessions/<key>/` holds a `session_agent`
 file, as the app writes it. Each case starts the sessions it needs and stops
@@ -21,6 +22,7 @@ class PresenceCase(DaemonCase):
     def prepare(cls):
         cls.repo = cls.box.make_repo("presence-runs")
         cls.box.write_ticket(cls.repo, "CT-1")
+        cls.box.write_ticket(cls.repo, "CT-2", title="Shared bridge fix")
         cls.board = cls.box.artifact_project(
             "presence-board", tickets=[("CT-1", {"status": "backlog"})], next_id=2,
         )
@@ -51,6 +53,21 @@ class PresenceCase(DaemonCase):
 
     def repositories(self, slug: str) -> list:
         return [(repo["name"], repo["source"], repo["detail"]) for repo in self.presence_of(slug)["repositories"]]
+
+    def declare(self, key: str, repo, note: str, **extra) -> dict:
+        return self.assertStatus(self.box.post("/v1/agent-presence/declare", {
+            "relay_session_key": key, "repo_path": str(repo), "note": note, **extra,
+        }), 200).json
+
+    def claim_until(self, key: str, predicate) -> list:
+        """Claims `key`'s notices until `predicate` holds for all claimed so far."""
+        claimed = []
+
+        def probe():
+            claimed.extend(self.claim(key))
+            return predicate(claimed)
+        self.box.wait_for(probe, message="agent notices for %s" % key)
+        return claimed
 
     def board_body(self, **extra) -> dict:
         body = {"repo_path": str(self.board), "project_scope_token": self.box.scope_token(self.board)}
@@ -182,6 +199,107 @@ class PresenceToolTests(PresenceCase):
         self.assertTrue(text.startswith("Agent presence when this session started"), text)
         self.assertIn("- George is running; no repository recorded.", text)
         self.assertNotIn("Puck", text)
+
+
+class SharedRepositoryTests(PresenceCase):
+    """RR-526: agents overlapping on a repository hear each other's actions."""
+
+    def test_overlap_and_ticket_writes_reach_only_the_overlapping_agent(self):
+        puck = self.start("puck-shared-board", "puck")
+        george = self.start("george-shared-board", "george")
+        isabella = self.start("isabella-shared-board", "isabella")
+        self.declare(puck, self.board, "reviewing the board")
+        self.claim(george)
+        self.claim(isabella)
+
+        claimed = self.assertStatus(self.box.post(
+            "/v1/artifacts/tickets/claim-next-id", self.board_body(relay_session_key=george),
+        ), 201).json
+        ticket_id = claimed["ticket_id"]
+        self.assertEqual(self.claim(puck), [
+            "Agent notice: George started working in presence-board, where you are working too "
+            "(claimed ticket id %s)." % ticket_id,
+        ])
+        self.assertEqual(self.claim(george), [
+            "Agent notice: Puck is also working in presence-board (note: reviewing the board).",
+        ])
+
+        for title in ("Bridge fix", "Bridge fix, refined", "Bridge fix, sized", "Bridge fix, final"):
+            self.assertStatus(self.box.post("/v1/artifacts/tickets/write", self.board_body(
+                ticket_id=ticket_id, markdown_base64=b64(ticket_markdown(ticket_id, title=title)),
+                relay_session_key=george,
+            )), 200)
+        # One created line, and three edits collapsed into one.
+        self.assertEqual(self.claim(puck), [
+            'Agent notice: George created ticket %s "Bridge fix" in presence-board.' % ticket_id,
+            'Agent notice: George edited ticket %s "Bridge fix, final" in presence-board (3 edits).'
+            % ticket_id,
+        ])
+        self.assertEqual(self.claim(george), [])
+        # Isabella runs but is not in presence-board: only the RR-525 notice.
+        self.assertEqual(self.claim(isabella), [
+            "Agent notice: George started working in presence-board (claimed ticket id %s)." % ticket_id,
+        ])
+        george_board = self.presence_of("george")["repositories"][0]
+        self.assertEqual(george_board["tickets"], [ticket_id])
+
+    def test_a_dispatch_and_its_merge_reach_the_overlapping_agent(self):
+        puck = self.start("puck-shared-runs", "puck")
+        george = self.start("george-shared-runs", "george")
+        isabella = self.start("isabella-shared-runs", "isabella")
+        self.declare(george, self.repo, "fixing the bridge")
+        self.declare(puck, self.repo, "reviewing the hook")
+        for key in (puck, george, isabella):
+            self.claim(key)
+
+        response = self.assertStatus(self.box.post("/v1/runs", {
+            "ticket_id": "CT-2", "repo_path": str(self.repo), "dispatcher_session_key": george,
+        }), 202)
+        self.box.wait_for_run(response.json["run"]["id"], "Merged")
+        merged = "Agent notice: George's run of CT-2 in presence-runs merged into the checkout."
+        notices = self.claim_until(puck, lambda claimed: merged in claimed)
+        self.assertEqual(notices, [
+            "Agent notice: George dispatched CT-2 in presence-runs.",
+            merged,
+        ])
+        self.assertEqual(self.claim(isabella), [])
+        self.assertEqual(self.claim(george), [])
+
+    def test_declared_direct_work_carries_paths_and_returns_the_callers_notices(self):
+        puck = self.start("puck-direct", "puck")
+        george = self.start("george-direct", "george")
+        self.declare(puck, self.repo, "editing the hook parser", paths=["rust/relay-rs/src/hook/mod.rs"])
+        self.claim(puck)
+
+        declared = self.declare(george, self.repo, "fixing the bridge prompt",
+                                paths=["rust/relay-rs/src/bridge/relay.rs", "docs/agent-presence.md"])
+        self.assertEqual(declared["declared"], "entered")
+        # George learns of Puck's work at the moment he declares.
+        self.assertEqual([notice["text"] for notice in declared["notices"]], [
+            "Agent notice: Puck started working in presence-runs (editing the hook parser).",
+            "Agent notice: Puck is also working in presence-runs (note: editing the hook parser).",
+        ])
+        self.assertEqual(self.claim(puck), [
+            "Agent notice: George started working in presence-runs, where you are working too "
+            "(note: fixing the bridge prompt).",
+            "Agent notice: George declared direct work in presence-runs: fixing the bridge prompt "
+            "(paths: rust/relay-rs/src/bridge/relay.rs, docs/agent-presence.md).",
+        ])
+        self.assertError(self.box.post("/v1/agent-presence/declare", {
+            "relay_session_key": george, "repo_path": str(self.repo), "note": "x", "paths": "a",
+        }), 400, "paths must be a list of strings")
+
+    def test_the_overlap_ended_notice_follows_a_stop(self):
+        puck = self.start("puck-overlap-stop", "puck")
+        george = self.start("george-overlap-stop", "george")
+        self.declare(george, self.repo, "fixing the bridge")
+        self.declare(puck, self.repo, "reviewing the hook")
+        self.claim(puck)
+        self.stop(george)
+        self.assertEqual(self.claim(puck), [
+            "Agent notice: George stopped and left presence-runs. You no longer share "
+            "presence-runs with George.",
+        ])
 
 
 if __name__ == "__main__":
