@@ -1511,7 +1511,11 @@ pub fn refined_ticket_title(source_text: &str) -> String {
 mod tests {
     use super::ActionKind::*;
     use super::*;
-    use relay_intents::arbitration::{DispositionRequest, resolve_intent_disposition};
+    use relay_intents::arbitration::{
+        ActiveWork, AuthorizationEffect, CancellationScope, DispositionRequest, IntentDisposition,
+        IntentRoute, VoiceWorkItem, WorkItemDisposition, WorkItemLifecycle,
+        normalize_voice_work_items, resolve_intent_disposition,
+    };
     use relay_intents::qualification::qualify_intent;
 
     /// A scratch folder, removed when dropped.
@@ -2114,6 +2118,159 @@ mod tests {
             (action.relay_command_seq, action.relay_command_id.as_deref()),
             (Some(2), Some("cmd-2"))
         );
+    }
+
+    /// Every item of `text`, classified and routed as the bridge does, with
+    /// `active` work already accepted.
+    fn routed_items(
+        text: &str,
+        active: &[ActiveWork],
+    ) -> Vec<(VoiceWorkItem, CommandAction, IntentDisposition)> {
+        normalize_voice_work_items(text, 7, "cmd-7")
+            .into_iter()
+            .map(|item| {
+                let action = classify_command(&item.source_text);
+                let disposition = resolve_intent_disposition(&DispositionRequest {
+                    intent_id: &item.intent_id,
+                    action_kind: action.kind.as_str(),
+                    action_reason: Some(action.reason),
+                    source_text: &item.source_text,
+                    active_work: active,
+                    cancellation_scope: Some(item.cancellation_scope),
+                    target_work_ids: &item.target_intent_ids,
+                    ..DispositionRequest::default()
+                });
+                (item, action, disposition)
+            })
+            .collect()
+    }
+
+    fn active_work() -> Vec<ActiveWork> {
+        vec![ActiveWork {
+            work_id: "w1".into(),
+            resources: vec!["repository".into()],
+            target: Some("session wheel".into()),
+        }]
+    }
+
+    #[test]
+    fn a_described_stop_in_a_long_turn_is_not_a_cancel() {
+        let turn = "Okay so I want to change how sessions start from the wheel. Right now when \
+            you hover over the session wheel you get the list of providers, and the picker is a \
+            bit hidden, so I think we need a proper session menu. There should be a plus button \
+            in the corner of the panel, next to the project name, and when you press it a small \
+            menu opens with the four names of the providers and their models listed underneath. \
+            Each name gets its own row with an icon, and the row shows whether you are signed in. \
+            If there is a session active, that plus will turn into an X and that's how they stop \
+            the session. Uh that's what I'm thinking. The menu should use the same frosted panel \
+            as the board and fade in with the usual motion, and it needs to work with the \
+            keyboard too.";
+        assert!(turn.split_whitespace().count() >= 100);
+        let action = classify_command(turn);
+        assert_ne!((action.kind, action.reason), (Control, "cancel"));
+        assert_ne!(action.kind, Control);
+        for active in [Vec::new(), active_work()] {
+            let disposition = resolve_intent_disposition(&DispositionRequest {
+                intent_id: "cmd-7:item:1",
+                action_kind: action.kind.as_str(),
+                action_reason: Some(action.reason),
+                source_text: turn,
+                active_work: &active,
+                ..DispositionRequest::default()
+            });
+            assert_ne!(disposition.route, IntentRoute::ReplaceCurrent);
+            assert_ne!(
+                disposition.authorization_effect,
+                AuthorizationEffect::RevokeConflicting
+            );
+            assert_eq!(disposition.cancellation_scope, CancellationScope::None);
+            for (item, action, disposition) in routed_items(turn, &active) {
+                let text = &item.source_text;
+                assert_eq!(item.disposition, WorkItemDisposition::Accepted, "{text}");
+                assert_eq!(item.cancellation_scope, CancellationScope::None, "{text}");
+                assert_eq!(
+                    item.lifecycle_state,
+                    WorkItemLifecycle::Recognized,
+                    "{text}"
+                );
+                assert!(item.target_intent_ids.is_empty(), "{text}");
+                assert_ne!(action.reason, "cancel", "{text}");
+                assert_ne!(disposition.route, IntentRoute::ReplaceCurrent, "{text}");
+                assert_ne!(
+                    disposition.authorization_effect,
+                    AuthorizationEffect::RevokeConflicting,
+                    "{text}"
+                );
+                assert_eq!(
+                    disposition.cancellation_scope,
+                    CancellationScope::None,
+                    "{text}"
+                );
+                assert!(!text.to_lowercase().starts_with("stop"), "{text}");
+            }
+        }
+        for text in [
+            "that's how they stop the session",
+            "the X is how the user stops it",
+            "it should stop playing when the lid closes",
+            "tell me how to cancel a run",
+        ] {
+            assert_ne!(classify_command(text).reason, "cancel", "{text}");
+            for (item, _, disposition) in routed_items(text, &active_work()) {
+                assert_eq!(item.cancellation_scope, CancellationScope::None, "{text}");
+                assert_ne!(disposition.route, IntentRoute::ReplaceCurrent, "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_described_click_is_not_a_desktop_action() {
+        let turn = "A session doesn't get started from the wheel unless they go into the submenu \
+            and click one of the four names that appear in that submenu.";
+        let routed = routed_items(turn, &[]);
+        assert_eq!(routed.len(), 1);
+        for (_, action, _) in &routed {
+            assert_ne!(action.reason, "desktop_control");
+        }
+        assert_ne!(classify_command(turn).reason, "desktop_control");
+        let routed = routed_items("open Chrome and click the Add project button", &[]);
+        let reasons: Vec<&str> = routed.iter().map(|(_, action, _)| action.reason).collect();
+        assert_eq!(reasons, vec!["desktop_control", "desktop_control"]);
+    }
+
+    #[test]
+    fn short_cancels_still_cancel_and_speech_stops_stay_speech_only() {
+        for text in [
+            "stop",
+            "cancel that",
+            "okay stop",
+            "please cancel the build",
+            "Cancel RR-400",
+            "uh, actually stop that",
+            "scratch that",
+            "never mind",
+        ] {
+            assert_classified(text, Control, false, None, Some("cancel"));
+        }
+        let routed = routed_items("write the ticket. Stop the build.", &active_work());
+        assert_eq!(routed.len(), 2);
+        assert_ne!(routed[0].1.kind, Control);
+        assert_eq!((routed[1].1.kind, routed[1].1.reason), (Control, "cancel"));
+        assert_eq!(routed[1].2.route, IntentRoute::ReplaceCurrent);
+        for text in ["stop the audio", "stop talking"] {
+            let (_, action, disposition) = routed_items(text, &active_work()).remove(0);
+            assert_eq!((action.kind, action.reason), (Control, "cancel"), "{text}");
+            assert_eq!(disposition.route, IntentRoute::ControlOnly, "{text}");
+            assert_eq!(
+                disposition.public_reason, "Stopped speech without changing accepted work.",
+                "{text}"
+            );
+            assert_eq!(
+                disposition.cancellation_scope,
+                CancellationScope::None,
+                "{text}"
+            );
+        }
     }
 
     #[test]
