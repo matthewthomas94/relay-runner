@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use crate::agents;
 use crate::config::{self, TtsConfig};
 use crate::coordinator::{AudioPart, RemoteJob, SpeechHooks, WorkItem, Worker};
 use crate::intent::SpeechIntent;
@@ -56,14 +57,14 @@ struct State {
     chime: Option<Child>,
     config: TtsConfig,
     selection_epoch: u64,
-    configured_selection: Selection,
     render_selections: HashMap<u64, Selection>,
 }
 
 impl State {
-    fn selection(&self) -> Selection {
+    /// RR-520: the voice is the speaking agent's; rate is global.
+    fn selection(&self, voice: &str) -> Selection {
         Selection {
-            voice: self.config.voice.clone(),
+            voice: voice.to_string(),
             rate: self.config.rate,
             epoch: self.selection_epoch,
         }
@@ -93,12 +94,15 @@ pub struct Options {
     /// coordinator owns it otherwise.
     pub control_socket: Option<PathBuf>,
     pub test_log: Option<Arc<PlaybackLog>>,
+    /// The session spools' parent, where each names its agent (RR-520).
+    pub sessions_root: PathBuf,
 }
 
 pub struct TtsWorker {
     synth: Arc<dyn Synthesizer>,
     player: SpeechPlayer,
     config_path: PathBuf,
+    sessions_root: PathBuf,
     tutorial: bool,
     test_log: Option<Arc<PlaybackLog>>,
     overlay: StateSocket,
@@ -128,15 +132,11 @@ impl TtsWorker {
             Box::new(move || keep_alive.load(Ordering::Acquire)),
         );
         let (remote_jobs, remote_queue) = mpsc::channel();
-        let selection = Selection {
-            voice: config.voice.clone(),
-            rate: config.rate,
-            epoch: 0,
-        };
         let worker = Arc::new(Self {
             synth: options.synth,
             player,
             config_path: options.config_path,
+            sessions_root: options.sessions_root,
             tutorial: options.tutorial,
             test_log: options.test_log,
             overlay: StateSocket::from_environment(options.tutorial),
@@ -159,7 +159,6 @@ impl TtsWorker {
                 chime: None,
                 config,
                 selection_epoch: 0,
-                configured_selection: selection,
                 render_selections: HashMap::new(),
             }),
             generation: Arc::new(AtomicU64::new(0)),
@@ -197,12 +196,15 @@ impl TtsWorker {
         worker
     }
 
-    pub fn voice(&self) -> String {
-        self.lock().config.voice.clone()
-    }
-
     pub fn rate(&self) -> f64 {
         self.lock().config.rate
+    }
+
+    /// The voice of the agent whose session `intent` speaks for; Puck's for
+    /// speech no session owns.
+    fn voice_for(&self, intent: Option<&Arc<SpeechIntent>>) -> &'static str {
+        let session_key = intent.map_or("", |intent| intent.session_key.as_str());
+        agents::voice_for_session(&self.sessions_root, session_key)
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -379,7 +381,8 @@ impl TtsWorker {
             self.notify("message_waiting", Some(&preview), intent.as_deref(), None);
         }
         if !is_playing {
-            self.start_speculation(&full_text, st.selection());
+            let voice = self.voice_for(st.pending_intent.as_ref());
+            self.start_speculation(&full_text, st.selection(voice));
         }
     }
 
@@ -479,7 +482,8 @@ impl TtsWorker {
         st.current_spoken_text = text.to_string();
         st.current_display_text = preview.clone();
         let generation = self.begin_playback_locked(st);
-        let selection = st.selection();
+        // The reply keeps this voice to its end, whatever starts meanwhile.
+        let selection = st.selection(self.voice_for(intent.as_ref()));
         st.render_selections.insert(generation, selection.clone());
         st.current_intent = intent.clone();
         self.notify("preparing", Some(&preview), intent.as_deref(), None);
@@ -1018,7 +1022,7 @@ impl TtsWorker {
     /// never touched, so no Mac audio device opens.
     fn voice_remote(&self, job: RemoteJob) {
         let cancelled = || job.cancelled.load(Ordering::SeqCst);
-        let voice = self.lock().config.voice.clone();
+        let voice = agents::voice_for_session(&self.sessions_root, &job.session_key);
         let chunks = sentence_chunks(&job.text);
         let mut sent = 0i64;
         let outcome = (|| -> Result<(), &'static str> {
@@ -1189,25 +1193,22 @@ impl Worker for TtsWorker {
         self.stop_playback_locked(&mut st, reason);
     }
 
-    /// Re-read config.toml; a changed voice or rate stops the current playback.
+    /// Re-read config.toml; a changed rate stops the current playback. The
+    /// voice is the agent's, so no config change alters it (RR-520).
     fn reload_config(&self) {
         let mut config = config::load(&self.config_path);
         if self.tutorial {
             config.auto_play = false;
         }
         let mut st = self.lock();
-        let previous = st.configured_selection.clone();
+        let rate_changed = st.config.rate != config.rate;
         st.config = config;
-        if previous != st.selection() {
+        if rate_changed {
             st.selection_epoch += 1;
             self.cancel_speculation();
             self.stop_playback_locked(&mut st, "voice_changed");
         }
-        st.configured_selection = st.selection();
-        eprintln!(
-            "[relay_speech] Config reloaded: voice={}, rate={}",
-            st.config.voice, st.config.rate
-        );
+        eprintln!("[relay_speech] Config reloaded: rate={}", st.config.rate);
     }
 
     fn shutdown(&self) {
@@ -1250,4 +1251,164 @@ pub fn queue_tutorial_line(worker: &TtsWorker, line: &str) {
         intent: None,
         control: control.map(str::to_string),
     });
+}
+
+#[cfg(test)]
+mod tests {
+    //! RR-520: the voice each utterance renders with. Playback would take the
+    //! user's audio lease, so these watch what is rendered: the waiting
+    //! reply's speculative first sentence, and Relay Remote's audio.
+
+    use std::sync::LazyLock;
+
+    use super::*;
+    use crate::agents;
+    use crate::intent::IntentSpec;
+    use crate::testmode::NullOutput;
+
+    /// Records every render's text and voice.
+    #[derive(Default)]
+    struct Renders(Mutex<Vec<(String, String)>>);
+
+    impl Synthesizer for Renders {
+        fn loaded(&self) -> bool {
+            true
+        }
+
+        fn render(&self, text: &str, voice: &str) -> Result<Option<Audio>, String> {
+            self.0.lock().unwrap().push((text.into(), voice.into()));
+            Ok(Some(Audio {
+                samples: vec![0; 2400],
+                sample_rate: 24_000,
+            }))
+        }
+    }
+
+    struct Fixture {
+        worker: Arc<TtsWorker>,
+        renders: Arc<Renders>,
+        serial: Mutex<()>,
+    }
+
+    /// One worker per process: `install` is process-wide.
+    static FIXTURE: LazyLock<Fixture> = LazyLock::new(|| {
+        let renders = Arc::new(Renders::default());
+        let log = Arc::new(PlaybackLog::new(None));
+        let output_log = log.clone();
+        let output_factory: Box<dyn FnOnce(Arc<AtomicBool>) -> OutputFactory> =
+            Box::new(move |_| {
+                Box::new(move |format, rate, feed| {
+                    Ok(NullOutput::create(format, rate, feed, output_log.clone()))
+                })
+            });
+        let worker = TtsWorker::new(Options {
+            synth: renders.clone(),
+            output_factory,
+            config_path: std::env::temp_dir().join("relay-speech-worker-tests-missing.toml"),
+            tutorial: false,
+            control_socket: None,
+            test_log: Some(log),
+            sessions_root: agents::tests::sessions_root(&[
+                ("transport-george", Some("george")),
+                ("transport-sky", Some("sky")),
+                ("manual", None),
+            ]),
+        });
+        TtsWorker::install(&worker);
+        Fixture {
+            worker,
+            renders,
+            serial: Mutex::new(()),
+        }
+    });
+
+    fn intent(text: &str, session_key: Option<&str>) -> Arc<SpeechIntent> {
+        Arc::new(crate::intent::build(IntentSpec {
+            spoken_text: text.into(),
+            source: Some("foreground".into()),
+            kind: Some("final".into()),
+            authoritative: true,
+            session_key: session_key.map(str::to_string),
+            ..Default::default()
+        }))
+    }
+
+    /// The voice `text` was rendered with, waiting for the render.
+    fn rendered_voice(text: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let found = FIXTURE
+                .renders
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(rendered, _)| rendered == text)
+                .map(|(_, voice)| voice.clone());
+            if let Some(voice) = found {
+                return voice;
+            }
+            assert!(Instant::now() < deadline, "{text:?} was never rendered");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Queue one reply and return the voice it renders with.
+    fn speak(intent: Arc<SpeechIntent>) -> String {
+        let text = intent.spoken_text.clone();
+        FIXTURE.worker.enqueue(WorkItem::for_intent(intent));
+        let voice = rendered_voice(&text);
+        FIXTURE.worker.skip();
+        voice
+    }
+
+    #[test]
+    fn two_sessions_speak_in_their_own_agents_voices() {
+        let _serial = FIXTURE.serial.lock().unwrap_or_else(|p| p.into_inner());
+        assert_eq!(
+            speak(intent("George answers first.", Some("transport-george"))),
+            "bm_george"
+        );
+        assert_eq!(
+            speak(intent("Sky answers next.", Some("transport-sky"))),
+            "af_sky"
+        );
+        assert_eq!(
+            speak(intent("George answers again.", Some("transport-george"))),
+            "bm_george"
+        );
+    }
+
+    #[test]
+    fn speech_no_agent_owns_is_pucks() {
+        let _serial = FIXTURE.serial.lock().unwrap_or_else(|p| p.into_inner());
+        assert_eq!(speak(intent("Nobody's reply.", None)), "am_puck");
+        assert_eq!(
+            speak(intent("A manual session's reply.", Some("manual"))),
+            "am_puck"
+        );
+        // The tutorial's lines carry no intent at all.
+        queue_tutorial_line(&FIXTURE.worker, "The tutorial speaks.");
+        assert_eq!(rendered_voice("The tutorial speaks."), "am_puck");
+        FIXTURE.worker.skip();
+    }
+
+    #[test]
+    fn relay_remote_audio_uses_the_sessions_agent_voice() {
+        let _serial = FIXTURE.serial.lock().unwrap_or_else(|p| p.into_inner());
+        for (text, session_key, voice) in [
+            ("Remote reply for Sky.", "transport-sky", "af_sky"),
+            ("Remote reply for George.", "transport-george", "bm_george"),
+            ("Remote reply for nobody.", "", "am_puck"),
+        ] {
+            FIXTURE.worker.synthesize_remote(RemoteJob {
+                text: text.into(),
+                session_key: session_key.into(),
+                cancelled: Arc::new(AtomicBool::new(false)),
+                emit: Box::new(|_| Ok(())),
+                failed: Box::new(|_| {}),
+            });
+            assert_eq!(rendered_voice(text), voice);
+        }
+    }
 }

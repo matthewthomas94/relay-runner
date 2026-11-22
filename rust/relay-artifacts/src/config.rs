@@ -10,8 +10,6 @@ use crate::codex::{codex_family_for_model, normalize_codex_family};
 use crate::toml::{Table, Value};
 use crate::{Error, ErrorKind, Result, pystr, toml};
 
-/// Kokoro voices offered in Settings; any other saved voice loads as Puck.
-pub const STANDARD_VOICES: [&str; 4] = ["am_puck", "bm_george", "bf_isabella", "af_sky"];
 /// Persisted `[stt]` model ids and the macOS major version each needs.
 pub const STT_MODELS: [(&str, i32); 3] = [
     ("phonon-2", 15),
@@ -139,7 +137,6 @@ fn defaults(stt_model: &str) -> Vec<(&'static str, Vec<(&'static str, Default)>)
             "tts",
             vec![
                 ("engine", Str("kokoro")),
-                ("voice", Str("am_puck")),
                 ("rate", Float(1.3)),
                 ("auto_play", Bool(false)),
                 ("chime", Str("Tink")),
@@ -367,17 +364,15 @@ fn migrate_config(
     section(config, "orchestrator").remove("worker_timeout_seconds");
 
     let tts = section(config, "tts");
-    // RR-462 removed custom voices.
+    // RR-462 removed custom voices; RR-520 the global voice, since each agent
+    // speaks in its own.
     tts.remove("custom_voice_id");
+    tts.remove("voice");
     if matches!(
         tts.get("engine").and_then(Value::as_str),
         Some("say" | "piper")
     ) {
         tts.insert("engine", Value::String("kokoro".to_string()));
-    }
-    let voice = tts.get("voice").and_then(Value::as_str);
-    if !voice.is_some_and(|voice| STANDARD_VOICES.contains(&voice)) {
-        tts.insert("voice", Value::String("am_puck".to_string()));
     }
     // A words-per-minute rate (an int above 10) becomes a speed multiplier.
     let rate = match tts.get("rate") {
@@ -620,7 +615,7 @@ mod tests {
         assert_eq!(general(&config, "messenger_effort"), "low");
         let tts = config.get("tts").unwrap().as_table().unwrap();
         assert_eq!(tts.get("engine").unwrap().py_str(), "kokoro");
-        assert_eq!(tts.get("voice").unwrap().py_str(), "am_puck");
+        assert!(tts.get("voice").is_none());
         assert_eq!(tts.get("rate"), Some(&Value::Float(1.4)));
         let stt = config.get("stt").unwrap().as_table().unwrap();
         assert_eq!(stt.get("model").unwrap().py_str(), "parakeet-tdt-v3");
@@ -636,6 +631,16 @@ mod tests {
                 "continuity"
             ]
         );
+    }
+
+    /// RR-520: each agent speaks in its own voice, so a saved one is dropped.
+    #[test]
+    fn a_saved_voice_loads_and_is_dropped() {
+        let config = load("[tts]\nvoice = \"bm_george\"\nrate = 1.5\nauto_play = true\n");
+        let tts = config.get("tts").unwrap().as_table().unwrap();
+        assert!(tts.get("voice").is_none());
+        assert_eq!(tts.get("rate"), Some(&Value::Float(1.5)));
+        assert_eq!(tts.get("auto_play"), Some(&Value::Boolean(true)));
     }
 
     #[test]

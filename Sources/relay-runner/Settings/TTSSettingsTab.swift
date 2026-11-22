@@ -2,57 +2,11 @@ import SwiftUI
 
 struct TTSSettingsTab: View {
     @Binding var config: TtsConfig
-    @Bindable var appState: AppState
-
-    private let voices = TtsConfig.standardVoices
 
     @State private var chimes: [String] = []
-    @State private var preview = VoicePreviewController()
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         SettingsStack {
-            SettingsSection("Standard Voices") {
-                SettingsControlRow("Voice") {
-                    HStack(spacing: 8) {
-                        SettingsMenuPicker(
-                            "Voice",
-                            selection: $config.voice,
-                            options: voices.map { (label: formatVoiceName($0), value: $0) }
-                        )
-                        SettingsActionButton(
-                            title: "Preview",
-                            icon: preview.isBusy ? .square : .play,
-                            prominence: .icon,
-                            isEnabled: preview.isBusy || !appState.settingsAudioBusy,
-                            accessibilityLabel: preview.isBusy ? "Stop preview" : "Preview standard voice",
-                            helpText: "Preview voice",
-                            action: previewSelectedVoice
-                        )
-                    }
-                }
-
-                if preview.isBusy || preview.error != nil {
-                    VStack(spacing: 0) {
-                        SettingsDivider()
-                        SettingsRow {
-                            SettingsInlineStatus(
-                                text: previewStatusText,
-                                semanticColor: preview.error == nil ? .neutralAccent : .error,
-                                reservedWidth: 170
-                            )
-                            RelaySwap(preview.error ?? preview.status, style: .text, alignment: .leading) { message in
-                                Text(message)
-                                    .font(AppTypography.font(.settingsDescription))
-                                    .foregroundStyle(preview.error == nil ? SettingsSurfaceColor.secondaryText : SettingsSurfaceColor.error)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                    }
-                    .transition(.relayElement)
-                }
-            }
-
             SettingsSection("Playback") {
                 SettingsControlRow("Playback Mode") {
                     SettingsSegmentedPicker("Playback Mode", selection: $config.auto_play, options: [
@@ -87,13 +41,7 @@ struct TTSSettingsTab: View {
                 }
             }
         }
-        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: preview.isBusy || preview.error != nil)
         .onAppear { loadChimes() }
-        .onDisappear { preview.stop() }
-        .onChange(of: config.voice) { _, _ in preview.stop() }
-        .onChange(of: config.rate) { _, _ in preview.stop() }
-        .onChange(of: appState.settingsAudioBusy) { _, busy in if busy { preview.stop() } }
-        .onChange(of: appState.sttEngine.map(ObjectIdentifier.init)) { _, _ in preview.stop() }
     }
 
     private func loadChimes() {
@@ -108,29 +56,7 @@ struct TTSSettingsTab: View {
             .sorted()
     }
 
-    private func formatVoiceName(_ voice: String) -> String {
-        let parts = voice.split(separator: "_")
-        guard parts.count == 2 else { return voice }
-        let prefix = parts[0]
-        let accent = prefix.first == "a" ? "American" : "British"
-        let gender = prefix.last == "f" ? "Female" : "Male"
-        let name = parts[1].prefix(1).uppercased() + parts[1].dropFirst()
-        return "\(name) (\(accent) \(gender))"
-    }
-
-    private var previewStatusText: String {
-        if preview.error != nil {
-            return "Preview failed"
-        }
-        return "Previewing"
-    }
-
     static func speechSpeedAccessibilityValue(_ rate: Double) -> String {
         "\(String(format: "%.1f", rate)) times"
-    }
-
-    private func previewSelectedVoice() {
-        if preview.isBusy { preview.stop(); return }
-        preview.preview(voice: config.voice, rate: config.rate, appState: appState)
     }
 }

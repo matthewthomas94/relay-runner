@@ -19,7 +19,9 @@ enum SessionAgent: String, CaseIterable, Codable, Identifiable {
         }
     }
 
-    /// The agent's Kokoro voice. Recorded here; speech does not use it yet.
+    /// The agent's Kokoro voice: everything said for its session speaks in it
+    /// (RR-520). relay-speech maps the slug to the same voice in `agents.rs`;
+    /// `tests/fixtures/session_agent_voices.json` pins the two together.
     var voiceID: String {
         switch self {
         case .puck: return "am_puck"
