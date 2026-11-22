@@ -1236,6 +1236,37 @@ enum OrchestratorClient {
         return FileManager.default.fileExists(atPath: plist.path)
     }
 
+    /// RR-525: the other agents' presence, for a starting session's
+    /// instructions. Empty when the daemon does not answer within `timeout`,
+    /// so a session never waits long to start.
+    static func agentPresenceStartupText(excludingAgent agent: String, timeout: TimeInterval = 1) -> String {
+        var components = URLComponents()
+        components.scheme = "http"
+        components.host = "127.0.0.1"
+        components.port = readPort()
+        components.path = "/v1/agent-presence"
+        components.queryItems = [URLQueryItem(name: "exclude_agent", value: agent)]
+        guard let url = components.url else { return "" }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = timeout
+        let result = BlockingHTTPResult()
+        let semaphore = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error {
+                result.set(.failure(error))
+            } else if let data, let response {
+                result.set(.success((data, response)))
+            }
+            semaphore.signal()
+        }.resume()
+        guard semaphore.wait(timeout: .now() + timeout) == .success,
+              case .success(let (data, response))? = result.get(),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let text = object["startup_text"] as? String else { return "" }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private static func readPort() -> Int {
         if let raw = try? String(contentsOfFile: portFile, encoding: .utf8),
            let port = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)),

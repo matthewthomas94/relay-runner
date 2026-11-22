@@ -1010,6 +1010,13 @@ impl Daemon {
             request_id: request.get("request_id").cloned(),
             voice: VoiceFields::from_body(&request.body),
         })?;
+        // RR-525: the session that sent the actions works in this repository.
+        self.note_presence(
+            Self::request_session_key(request).as_deref(),
+            &request.text("repo_path"),
+            crate::presence::Source::OrchestratorAction,
+            "updated the board",
+        );
         reply(202, result)
     }
 

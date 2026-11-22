@@ -6,7 +6,8 @@
 //! voice-correlated final replies back to the bridge. It also records bounded
 //! automatic-compaction diagnostics and the session binding. It never logs
 //! prompt text, final response text, transcript paths, summaries or raw
-//! payloads.
+//! payloads. On a foreground `UserPromptSubmit` it prints the session's
+//! pending agent notices as the provider's prompt context (RR-525).
 
 mod binding;
 mod broker;
@@ -201,13 +202,37 @@ fn handle_hook_payload(settings: &Settings, payload: &Dict) -> Result<(), Failur
     let broker = open_turn_broker(settings)?;
     compaction::record_diagnostic(&event, &name);
     match name.as_str() {
-        "UserPromptSubmit" => turns::bind_prompt_submit(&event, broker.as_ref()),
+        "UserPromptSubmit" => {
+            let bound = turns::bind_prompt_submit(&event, broker.as_ref());
+            deliver_agent_notices(&event);
+            bound
+        }
         // stop_hook_active marks a continuation after another Stop hook
         // blocked. This hook never blocks, so there is no loop to break: a
         // turn still active here completes with this, its real final. A turn
         // an earlier Stop already completed is a duplicate.
         "Stop" | "StopFailure" => turns::complete_turn(&event, &name, broker.as_ref()),
         _ => Ok(()),
+    }
+}
+
+/// RR-525: a foreground prompt's agent notices, as `UserPromptSubmit`
+/// context on stdout. Claude Code and Codex both add a hook's
+/// `hookSpecificOutput.additionalContext` to the turn as model context, never
+/// as a reply. A voice turn's notices were already appended to its prompt
+/// and claimed by the bridge, so this finds none for it. A provider-internal
+/// continuation prompt gets nothing.
+fn deliver_agent_notices(event: &Event) {
+    let payload = event.payload;
+    if payload.truthy("parent_tool_use_id").is_some() || payload.truthy("parentToolUseId").is_some()
+    {
+        return;
+    }
+    let daemon = crate::bridge::notices::LocalDaemon;
+    if let Some(output) =
+        crate::bridge::notices::prompt_submit_context(&event.settings.session_key, &daemon)
+    {
+        println!("{output}");
     }
 }
 

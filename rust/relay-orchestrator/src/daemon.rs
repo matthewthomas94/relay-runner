@@ -653,6 +653,9 @@ pub struct Daemon {
     pub messenger_outcomes: MessengerOutcomeStore,
     pub followup_proposals: FollowupProposalStore,
     pub continuity_reports: ContinuityReportStore,
+    /// RR-525: which repositories each running agent works in, and the
+    /// notices the other agents receive about it.
+    pub presence: crate::presence::Presence,
     pub continuity_incident_path: PathBuf,
     pub continuity_agent_audit_path: PathBuf,
     pub continuity: ContinuityLifecycleAdapter,
@@ -786,6 +789,12 @@ impl Daemon {
             messenger_outcomes: MessengerOutcomeStore::open(&data.join("messenger_outcomes.db"))?,
             followup_proposals: FollowupProposalStore::open(&data.join("followup_proposals.db"))?,
             continuity_reports: ContinuityReportStore::open(&data.join("continuity_reports.db"))?,
+            presence: crate::presence::Presence::open(
+                data.join("agent_presence.json"),
+                paths.session_spool_root.clone(),
+                &paths.state_root.join("general-tasks"),
+                Box::new(crate::queue::now),
+            ),
             continuity_incident_path: data.join("continuity_incidents.jsonl"),
             continuity_agent_audit_path: data.join("continuity_agent_events.jsonl"),
             continuity: crate::sessions::continuity_adapter(data),
