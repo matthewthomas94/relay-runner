@@ -2,7 +2,7 @@
 
 Relay Runner runs up to four named foreground agents at once — Puck, Isabella, George and Sky (see [Named agents](orchestrator.md#named-agents)). All four are general sessions that can reach every registered project, so two of them can end up in the same repository. Agent presence (RR-525) records which repositories each running agent is working in and tells the other agents, one way and silently.
 
-Two later tickets build on this unchanged: action notices between agents that share a repository (RR-526) and an enforced claim on a shared checkout (RR-527). The interfaces they reuse are listed under [Interfaces](#interfaces).
+Two later tickets build on this: overlap and action notices between agents that share a repository (RR-526, [Sharing a repository](#sharing-a-repository)) and an enforced claim on a shared checkout (RR-527). The interfaces they reuse are listed under [Interfaces](#interfaces).
 
 ## What is recorded
 
@@ -69,20 +69,71 @@ Both providers get the same notices, through the same paths:
 
 No live Codex session was available when this shipped, so the Codex hook behaviour rests on the pinned source above; the Claude path was checked the same way against its documentation, and both are covered by the hook's unit and contract tests.
 
+## Sharing a repository
+
+Most work happens in one repository, so two agents in the same one is the normal case. Two running agents **overlap** on a repository while it is in both their presence sets. While they overlap, each hears what the other does there that could collide, so they neither duplicate nor undo each other's work. The notices are tied to actions, never sent on a timer, and stay one-way, silent and delivered at the receiver's next turn like every other agent notice.
+
+### Overlap notices
+
+When a repository enters a second agent's set, each of the two gets one notice naming the other and what is known of its work there: its declared note and the tickets it wrote or dispatched there in this session (else what it was doing). The agents not in the repository get the ordinary started notice.
+
+```text
+Agent notice: George started working in relay-runner, where you are working too (tickets: RR-602).
+Agent notice: Puck is also working in relay-runner (note: reviewing the hook; tickets: RR-600, RR-601).
+```
+
+When the overlap ends the other agent gets one notice:
+
+```text
+Agent notice: George stopped and left relay-runner. You no longer share relay-runner with George.
+Agent notice: George has had no activity in relay-runner for two hours, so you no longer share it.
+```
+
+### Action notices
+
+While they overlap, the daemon tells the other agents sharing the repository about these actions. They come from daemon events and need nothing from the agent that acted; an agent with no overlap in the repository gets none of them, and the acting agent never hears its own.
+
+| Action | Learned from | Notice |
+| --- | --- | --- |
+| Ticket created | `/v1/artifacts/tickets/write` (a new ticket), a `create_ticket` board action | `George created ticket RR-610 "Bridge fix" in relay-runner.` |
+| Ticket edited | `/v1/artifacts/tickets/write` (an existing ticket), `edit_ticket` / `update_dependencies` board actions | `George edited ticket RR-610 "Bridge fix" in relay-runner.` |
+| Ticket dispatched or queued | `POST /v1/runs`, a `request_worker` board action | `George dispatched RR-610 in relay-runner.` / `George queued RR-611 in relay-runner to start when its dependencies are done.` |
+| Run merged or failed | the run's `run-merged`, `run-verification-blocked` or `run-failed` lifecycle event, for a run whose dispatcher was bound by `dispatcher_session_key` | `George's run of RR-610 in relay-runner merged into the checkout.` |
+| Declared direct work | `declare_repository_work` | `George declared direct work in relay-runner: fixing the bridge prompt (paths: rust/relay-rs/src/bridge/relay.rs).` |
+
+A merge matters to the others because it changes the shared branch. A replayed ticket write and a dispatch of an already-active run send nothing. A run's merge notice needs the dispatcher's entry in the repository: once it has expired the agents no longer overlap.
+
+### Declared direct work
+
+`declare_repository_work` takes an optional `paths` list beside its one-line `note`: what the agent is about to change directly in the checkout. The other agents sharing the repository receive it as a notice, and the tool's result returns the caller's own undelivered notices, so an agent learns of a collision at the moment it declares.
+
+### Batching
+
+All of one receiver's notices are delivered together in one block at its next turn. Several edits of the same ticket by the same agent between two deliveries collapse into one line that names the latest title and the count (`… (3 edits).`). RR-525's limits stand: the newest ten notices are delivered with a count of the rest, and at most a hundred wait per receiver.
+
+### What an agent does while sharing a repository
+
+The PM instructions for both providers (the generated instructions and the app-owned startup instructions) add three rules while an agent shares a repository: declare direct work there, with its paths, before starting it; before creating a ticket there, check the other agent's recent tickets (its notices or `agent_presence`, whose repositories list their `tickets`) for the same work; and when a notice shows the same work or the same files, stop that piece of work, tell the user which agent has it and ask what to do. An agent never negotiates with or messages the other agent.
+
+### Providers
+
+Overlap and action notices use RR-525's queue and delivery unchanged, so both providers receive them through the same voice-prompt, prompt-submit-hook and presence-tool paths. No provider lacks a mechanism here. No live Codex session was available for RR-526; its path rests on the shared daemon and hook tests.
+
 ## Tools
 
-- `declare_repository_work` — `repo_path`, `note` (one line). Declares the caller's work in a repository. Returns `declared` (`entered`, `refreshed` or `ignored` for general-tasks), every agent's presence and the caller's notices.
-- `agent_presence` — no arguments. Returns all four agents: `agent`, `name`, `running`, `session_key`, `repositories` (each `repo_path`, `name`, `source`, `detail`, `note`, `first_seen`, `last_seen`, newest first) and `last_activity`, with the caller's notices.
+- `declare_repository_work` — `repo_path`, `note` (one line), optional `paths` (RR-526). Declares the caller's work in a repository; the agents sharing it get the declaration as a notice. Returns `declared` (`entered`, `refreshed` or `ignored` for general-tasks), every agent's presence and the caller's notices.
+- `agent_presence` — no arguments. Returns all four agents: `agent`, `name`, `running`, `session_key`, `repositories` (each `repo_path`, `name`, `source`, `detail`, `note`, `tickets`, `first_seen`, `last_seen`, newest first) and `last_activity`, with the caller's notices.
 
 Both identify the caller by its session key.
 
 ## Interfaces
 
-These are the pieces RR-526 and RR-527 reuse; keep them stable.
+These are the pieces RR-526 and RR-527 build on; keep them stable.
 
 - **Session-to-agent identity:** `Presence::live_sessions` in `rust/relay-orchestrator/src/presence.rs` — key, agent slug and spool generation of every running session.
 - **Presence record:** `Daemon::note_presence(session_key, repo_path, Source, detail)` for any new attributed mutation, and `Presence::record(&Activity)` underneath; `Presence::snapshot` for reads.
-- **Notice queue:** `Presence::queue_notice` (one text to every other running session) and `Presence::claim` (once, newest ten plus a count).
+- **Notice queue:** `Presence::queue_for` (one text to one receiving session, optionally collapsing by key) and `Presence::claim` (once, newest ten plus a count).
+- **Action notices (RR-526):** `Daemon::note_action(session_key, repo_path, Source, detail, &Action)` records presence and tells the overlapping agents; `Presence::notify_action` tells them without recording, for daemon events such as `Daemon::note_run_ended`.
 - **Delivery:** `POST /v1/agent-notices/claim` and its renderer, `relay_services::agent_notices::notice_block`, used by the bridge (`bridge/notices.rs`), the hook and the presence routes.
 
 The HTTP routes are in the [orchestrator HTTP API](specs/orchestrator-http-api.md#agent-presence) and the hook's output in the [hook contract](specs/hook-contract.md).

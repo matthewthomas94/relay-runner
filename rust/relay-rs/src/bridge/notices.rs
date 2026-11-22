@@ -194,6 +194,33 @@ mod tests {
         assert_eq!(prompt_submit_context("puck-1", &DownDaemon), None);
     }
 
+    /// RR-526: overlap and action notices share the queue and delivery, so
+    /// they too ride only on a turn the user started, as one block, once.
+    #[test]
+    fn action_notices_ride_only_on_a_users_turn() {
+        let daemon = QueueDaemon::new(
+            "puck-1",
+            &[
+                "Agent notice: George started working in relay-runner, where you are working too \
+                 (tickets: RR-602).",
+                "Agent notice: George edited ticket RR-602 \"Bridge fix\" in relay-runner (3 \
+                 edits).",
+                "Agent notice: George's run of RR-602 in relay-runner merged into the checkout.",
+            ],
+            0,
+        );
+        // Queued notices alone touch nothing: no claim without a turn.
+        assert!(daemon.calls.lock().unwrap().is_empty());
+        let output = prompt_submit_context("puck-1", &daemon).unwrap();
+        assert_eq!(output.matches("Agent notices (").count(), 1);
+        assert!(output.contains("merged into the checkout"));
+        assert_eq!(
+            prompt_with_agent_notices("next?", "puck-1", &daemon),
+            "next?"
+        );
+        assert_eq!(daemon.calls.lock().unwrap().len(), 2);
+    }
+
     /// No speech, messenger, reply or terminal path names agent notices: a
     /// notice reaches a provider only inside a turn's prompt or the
     /// prompt-submit hook's context.

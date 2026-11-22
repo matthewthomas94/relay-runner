@@ -1011,13 +1011,70 @@ impl Daemon {
             voice: VoiceFields::from_body(&request.body),
         })?;
         // RR-525: the session that sent the actions works in this repository.
+        let session_key = Self::request_session_key(request);
+        let repo_path = request.text("repo_path");
         self.note_presence(
-            Self::request_session_key(request).as_deref(),
-            &request.text("repo_path"),
+            session_key.as_deref(),
+            &repo_path,
             crate::presence::Source::OrchestratorAction,
             "updated the board",
         );
+        if session_key.is_some() {
+            self.notify_applied_actions(session_key.as_deref(), &result);
+        }
         reply(202, result)
+    }
+
+    /// RR-526: the tickets an action batch created, edited and dispatched,
+    /// as action notices for the agents sharing the repository. Marking a
+    /// ticket ready is left to its dispatch notice.
+    fn notify_applied_actions(&self, session_key: Option<&str>, result: &Dict) {
+        let repo = result.text("repo_path");
+        let entries = |key: &str| -> Vec<Dict> {
+            result
+                .get(key)
+                .and_then(Value::as_list)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(Value::as_dict)
+                .cloned()
+                .collect()
+        };
+        let source = crate::presence::Source::OrchestratorAction;
+        for written in entries("tickets_written") {
+            let ticket_id = written.text("ticket_id");
+            let kind = written.text("action");
+            let title = tickets::read(
+                &Path::new(&repo)
+                    .join(".orchestrator")
+                    .join(format!("{ticket_id}.md")),
+            )
+            .map(|ticket| ticket.title)
+            .unwrap_or_default();
+            let action = match kind.as_str() {
+                "create_ticket" => crate::presence::Action::TicketCreated {
+                    ticket_id: &ticket_id,
+                    title: &title,
+                },
+                "edit_ticket" | "update_dependencies" => crate::presence::Action::TicketEdited {
+                    ticket_id: &ticket_id,
+                    title: &title,
+                },
+                _ => continue,
+            };
+            self.note_action(session_key, &repo, source, "updated the board", &action);
+        }
+        for dispatched in entries("dispatches") {
+            if dispatched.get("already_active").is_some_and(Value::truthy) {
+                continue;
+            }
+            let ticket_id = dispatched.text("ticket_id");
+            let action = crate::presence::Action::TicketDispatched {
+                ticket_id: &ticket_id,
+                queued: false,
+            };
+            self.note_action(session_key, &repo, source, "updated the board", &action);
+        }
     }
 
     /// `apply_orchestrator_actions(...)`.
