@@ -130,6 +130,18 @@ fn dispatch(daemon: &Daemon, request: &Request) -> Outcome<Reply> {
     if post && is(&["v1", "agent-notices", "claim"]) {
         return daemon.claim_agent_notices_route(request);
     }
+    if get && is(&["v1", "checkout-claims"]) {
+        return daemon.checkout_claims_route(request);
+    }
+    if post && is(&["v1", "checkout-claims", "write"]) {
+        return daemon.checkout_write_route(request);
+    }
+    if post && is(&["v1", "checkout-claims", "claim"]) {
+        return daemon.claim_checkout_route(request);
+    }
+    if post && is(&["v1", "checkout-claims", "release"]) {
+        return daemon.release_checkout_route(request);
+    }
     if get && is(&["v1", "orchestrator-sessions"]) {
         return daemon.list_orchestrator_sessions_route(request);
     }

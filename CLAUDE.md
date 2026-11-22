@@ -121,6 +121,12 @@ You share a repository with another agent while it is in both your presence sets
 - Before you create a ticket there, check the other agent's recent tickets, from its notices or `agent_presence`, for the same work.
 - When a notice shows the same work or the same files as yours, stop that piece of work, tell the user which agent has it, and ask what to do. Never negotiate with the other agent or message it.
 
+### Checkout claims
+
+One agent at a time may change a registered project's checkout (for example `~/dev/relay-runner`): edit its files, switch, commit, merge, rebase, reset, stash, tag, pull or push its git state, or cut a release from it. Your first such write takes the **checkout claim** and each further write refreshes it. To state a purpose first, for example before a release, call `mcp__relay-orchestrator__claim_checkout`; call `mcp__relay-orchestrator__release_checkout` when you are done. A claim is also released when your session stops and after 30 minutes without a write. `mcp__relay-orchestrator__checkout_claims` and `agent_presence` show who holds which. Reading, searching, tests and builds, writing tickets through the daemon, dispatching, worker worktrees, `.claude/worktrees` and general-tasks never need a claim.
+
+A refused tool call naming another agent means that agent holds the checkout. Do not work around the refusal: do not write through another tool or the shell, do not copy the checkout, and do not wait or retry in a loop. Tell the user which agent holds it and why, and ask how to proceed. Claude Code and Codex enforce the claim in their pre-tool hook for file-writing tools and for git checkout, switch, commit, merge, rebase, reset, stash, cherry-pick, revert, pull, push, tag and the release scripts; other shell writes are not checked, so claim the checkout before changing it any other way. The daemon's own merges of reviewed worker branches into a checkout neither take nor respect a claim.
+
 ## Artifact-enabled projects and finding completed tickets
 
 For an artifact-enabled project, `.orchestrator/` is a projection of `refs/heads/relay/artifacts`. Use the daemon's artifact-backed ticket writer for ticket creation and changes; do not stage, edit, or commit projected ticket files directly. In such a project this replaces step 2's direct ticket-file write, `next_id` bump, and commit. This keeps automatic archival and board changes under the same writer.

@@ -124,6 +124,10 @@ marked **none** have no non-test caller today.
 | POST | `/v1/agent-presence` | 200 | MCP |
 | POST | `/v1/agent-presence/declare` | 200 | MCP |
 | POST | `/v1/agent-notices/claim` | 200 | Bridge, hook |
+| GET | `/v1/checkout-claims` | 200 | MCP |
+| POST | `/v1/checkout-claims/write` | 200 | Hook |
+| POST | `/v1/checkout-claims/claim` | 200 (409 held by another agent) | MCP |
+| POST | `/v1/checkout-claims/release` | 200 (409 held by another agent) | MCP |
 | GET | `/v1/orchestrator-sessions` | 200 | Bridge |
 | POST | `/v1/orchestrator-session/ensure` | 201 created, 200 existing | Bridge |
 | POST | `/v1/orchestrator-session/heartbeat` | 200 | Bridge |
@@ -417,6 +421,46 @@ merge or failure of a run whose dispatcher was bound
 (`dispatcher_session_key`) each queue an action notice for the other agents
 sharing it. Replayed writes and already-active dispatches send none. These
 change no response shape.
+
+`GET /v1/agent-presence` and `POST /v1/agent-presence` also return
+`checkout_claims`, the current [checkout claims](#checkout-claims).
+
+## Checkout claims
+
+At most one agent holds the claim on a registered project's checkout (RR-527;
+[Checkout claims](../agent-presence.md#checkout-claims)). A path is in a
+claimable checkout when the longest registered repository containing it is
+not general-tasks, the path is not under the daemon's workspaces or data root,
+and it is not under a `.claude/worktrees` directory. A claim is released by
+its holder, when its session's spool goes and 30 minutes after its last
+write. Each claim is `agent`, `name`, `session_key`, `repo_path`,
+`repository`, `purpose`, `claimed_at`, `last_write`, `expires_at` and
+`last_write_ago`.
+
+- `GET /v1/checkout-claims` → `{"checkout_claims": […]}`. Read only.
+- `POST /v1/checkout-claims/write` body `relay_session_key`, `paths` (the
+  files or directories a tool call changes), `action` (one line; the purpose
+  when this write takes the claim) → always 200 with `checkouts` (the
+  claimable checkouts the paths are in) and `decision`: `allow` with
+  `claimed` (`taken`, `refreshed`, or null when nothing is enforced: no
+  claimable checkout, or no running agent has the key), or `refuse` with
+  `message` (the holder's name, purpose and last write, and the rule to stop
+  and ask the user) and the holder's `claim`. 400 `invalid
+  relay_session_key`.
+- `POST /v1/checkout-claims/claim` body `relay_session_key`, `repo_path`,
+  `purpose` (all required) → `claimed` (`taken` or `refreshed`, which also
+  replaces the purpose), `claim`, `checkout_claims`. 409 with the refusal in
+  `error` and the holder's `claim` when another agent holds it. 400
+  `relay_session_key is required`, `repo_path is required`, `purpose is
+  required`, `repo_path … is not a registered project's checkout`,
+  `relay_session_key names no running Relay agent session`.
+- `POST /v1/checkout-claims/release` body `relay_session_key` (required),
+  `repo_path` (optional; every claim the caller holds when empty) →
+  `released` (the claims released, possibly none), `checkout_claims`. 409
+  when another agent holds it.
+
+Taking and releasing a claim queues one agent notice for every other running
+agent.
 
 ## Artifact board, history and retention
 
