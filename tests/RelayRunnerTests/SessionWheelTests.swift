@@ -8,9 +8,11 @@ final class SessionWheelTests: XCTestCase {
         SessionWheelController(haptics: .init(perform: { _ in }))
     }
     private func session(_ id: String) -> SessionWheelSession { .init(id: id, name: id) }
+    /// RR-519: the first `count` agents' tabs, named by agent.
     private func tabs(_ count: Int, active: Int = 0, off: Set<Int> = []) -> [SessionWheelTab] {
-        (0..<count).map { .init(id: "t\($0)", name: "Session \($0 + 1)", isActive: $0 == active, isLive: !off.contains($0)) }
+        (0..<count).map { .init(id: "t\($0)", name: SessionAgent.allCases[$0].name, isActive: $0 == active, isLive: !off.contains($0)) }
     }
+    private func label(_ index: Int, _ items: [SessionWheelSessionItem]) -> String { items[index].tab?.name ?? "" }
     private var bounds: CGRect { CGRect(origin: .zero, size: CGSize(width: geometry.diameter, height: geometry.diameter)) }
     private func itemPoint(_ index: Int, of count: Int) -> CGPoint {
         let arc = geometry.sessionItemArc(index, items: count)
@@ -36,7 +38,7 @@ final class SessionWheelTests: XCTestCase {
     /// RR-469: every tab segment, its close x and Add are reachable across the
     /// radial gap, including the segments that reach over History and Workspace.
     func testEveryTabSegmentAndControlIsReachableAcrossTheRadialGap() {
-        for count in 1...9 {
+        for count in 1...SessionAgent.allCases.count {
             let model = SessionWheelModel()
             model.refresh(sessions: [session("pm")])
             model.tabs = tabs(count)
@@ -50,7 +52,7 @@ final class SessionWheelTests: XCTestCase {
             XCTAssertEqual(items.last, .control(.add))
             for (index, item) in items.enumerated() {
                 let point = item.tab == nil ? itemPoint(index, of: items.count)
-                    : geometry.sessionTabLayout(index, items: items.count).label.point
+                    : geometry.sessionTabLayout(index, items: items.count, label: label(index, items)).label.point
                 model.hover(at: point)
                 XCTAssertEqual(model.hoveredSlot, 0, "\(count) tabs, item \(index)")
                 XCTAssertEqual(model.hoveredSessionItem, item, "\(count) tabs, item \(index)")
@@ -63,7 +65,7 @@ final class SessionWheelTests: XCTestCase {
                 XCTAssertTrue(geometry.contains(point, submenuSlot: 0, sessionItems: items.count))
                 guard let tab = item.tab else { continue }
                 // The close x sits inside its own segment, clear of the edges.
-                let close = geometry.sessionTabClosePoint(index, items: items.count)
+                let close = geometry.sessionTabClosePoint(index, items: items.count, label: tab.name)
                 for step in 0..<12 {
                     let angle = CGFloat(step) * .pi / 6
                     let edge = CGPoint(x: close.x + geometry.tabCloseHitRadius * cos(angle),
@@ -73,51 +75,50 @@ final class SessionWheelTests: XCTestCase {
                 model.hover(at: close)
                 XCTAssertEqual(model.hoveredSessionItem, item)
                 XCTAssertEqual(model.hoveredTabClose, tab, "\(count) tabs, item \(index)")
-                XCTAssertEqual(model.hoverDescriptor(at: close), "Close \(tab.name)")
+                XCTAssertEqual(model.hoverDescriptor(at: close), "Stop \(tab.name)")
             }
         }
     }
 
-    /// RR-469: five tabs or fewer keep the standard size over the session
-    /// cell; more grow along the arc, up to the far ends of History and
-    /// Workspace at nine, never reaching Settings or Notetaker.
-    func testSessionSubmenuIsStandardUpToFiveTabsAndWrapsToHistoryAndWorkspaceAtNine() {
-        for count in 1...5 {
-            XCTAssertEqual(geometry.sessionSubmenuSpan(items: count + 1), 1)
-        }
+    /// RR-519: one agent keeps the standard size over the session cell; each
+    /// further agent grows it along the arc, up to the far ends of History and
+    /// Workspace with all four, never reaching Settings or Notetaker.
+    func testSessionSubmenuIsStandardForOneAgentAndWrapsToHistoryAndWorkspaceAtFour() {
+        XCTAssertEqual(geometry.sessionSubmenuSpan(items: 2), 1)
         var previous: CGFloat = 1
-        for count in 6...9 {
+        for count in 2...4 {
             let span = geometry.sessionSubmenuSpan(items: count + 1)
             XCTAssertGreaterThan(span, previous)
             previous = span
         }
-        XCTAssertEqual(geometry.sessionSubmenuSpan(items: 10), 3, accuracy: 0.0001)
+        XCTAssertEqual(geometry.sessionSubmenuSpan(items: 5), 3, accuracy: 0.0001)
+        XCTAssertEqual(geometry.sessionMaxItems, SessionAgent.allCases.count + 1)
         // Each segment stays at least as wide as a standard one.
-        for count in 1...9 {
+        for count in 1...4 {
             XCTAssertGreaterThanOrEqual(geometry.sessionItemArc(0, items: count + 1).width,
-                                        geometry.sliceAngle / 6 - 0.0001)
+                                        geometry.sliceAngle / 3 - 0.0001)
         }
         // The full arc covers History (1) and Workspace (4) but not Settings (2) or Notetaker (3).
-        let first = geometry.sessionItemArc(0, items: 10)
-        let last = geometry.sessionItemArc(9, items: 10)
+        let first = geometry.sessionItemArc(0, items: 5)
+        let last = geometry.sessionItemArc(4, items: 5)
         XCTAssertEqual(first.start, -1.5 * geometry.sliceAngle, accuracy: 0.0001)
         XCTAssertEqual(last.start + last.width, 1.5 * geometry.sliceAngle, accuracy: 0.0001)
         for slot in [SessionWheelShortcut.settings.rawValue, SessionWheelShortcut.noteTaker.rawValue] {
             let point = geometry.position(slot: slot, radius: geometry.actionRadius)
-            XCTAssertNil(geometry.sessionItem(at: point, items: 10))
-            XCTAssertFalse(geometry.contains(point, submenuSlot: 0, sessionItems: 10))
+            XCTAssertNil(geometry.sessionItem(at: point, items: 5))
+            XCTAssertFalse(geometry.contains(point, submenuSlot: 0, sessionItems: 5))
         }
         for slot in [SessionWheelShortcut.history.rawValue, SessionWheelShortcut.workspace.rawValue] {
-            XCTAssertNotNil(geometry.sessionItem(at: geometry.position(slot: slot, radius: geometry.actionRadius), items: 10))
-            XCTAssertNil(geometry.sessionItem(at: geometry.position(slot: slot, radius: geometry.actionRadius), items: 6),
+            XCTAssertNotNil(geometry.sessionItem(at: geometry.position(slot: slot, radius: geometry.actionRadius), items: 5))
+            XCTAssertNil(geometry.sessionItem(at: geometry.position(slot: slot, radius: geometry.actionRadius), items: 2),
                          "A standard submenu stays over its own cell")
         }
     }
 
     func testAnAddedTabGrowsFromTheOldLayoutIntoTheNewOne() {
         let geometry = SessionWheelGeometry.self
-        // Six tabs and Add become seven tabs and Add, so the arc also widens.
-        for (old, new) in [(2, 3), (6, 7), (9, 10)] {
+        // Two agents and Add become three agents and Add, so the arc also widens.
+        for (old, new) in [(2, 3), (3, 4), (4, 5)] {
             let entering = new - 2
             for index in 0..<new {
                 let start = geometry.sessionItemArc(index, items: new, entering: (entering, 0))
@@ -376,7 +377,7 @@ final class SessionWheelTests: XCTestCase {
         model.refresh(sessions: [session("a")])
         model.tabs = tabs(1)
         model.hover(at: geometry.position(slot: 0, radius: 119))
-        model.hover(at: geometry.sessionTabClosePoint(0, items: 2))
+        model.hover(at: geometry.sessionTabClosePoint(0, items: 2, label: "Puck"))
         XCTAssertEqual(model.hoveredTabClose?.id, "t0")
         model.refresh(sessions: [session("b")])
         XCTAssertEqual(model.slots[0]?.id, "b")
@@ -492,44 +493,40 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertTrue(small.contains(frame))
     }
 
-    /// RR-469: Add is disabled at nine tabs and is the only control: every tab,
-    /// live or off, closes from its own x, and there is no Turn off. The wheel
-    /// has no Play/Replay, Record or Stop session controls.
-    func testTabControlsReflectTheTabLimitAndLiveTabs() {
+    /// RR-519: Add is disabled while all four agents run and is the only
+    /// control: every agent, live or off, stops from its own x, and there is
+    /// no Turn off. The wheel has no Play/Replay, Record or Stop session controls.
+    func testTabControlsReflectTheAgentLimitAndLiveTabs() {
         let model = SessionWheelModel()
         model.refresh(sessions: [session("pm")])
         model.tabs = tabs(1)
         XCTAssertTrue(model.isEnabled(.add))
-        XCTAssertTrue(model.isEnabled(.close(model.tabs[0])), "Closing the last tab ends the session")
+        XCTAssertTrue(model.isEnabled(.close(model.tabs[0])), "Stopping the last agent ends the session")
         model.tabs = tabs(2, off: [1])
         XCTAssertTrue(model.tabs.allSatisfy { model.isEnabled(.close($0)) })
-        model.tabs = tabs(9)
-        model.addTabUnavailableReason = "Nine tabs open"
+        model.tabs = tabs(4)
+        model.addTabUnavailableReason = "All agents running"
         XCTAssertFalse(model.isEnabled(.add))
         model.hover(at: geometry.position(slot: 0, radius: 119))
-        model.hover(at: itemPoint(9, of: 10))
+        model.hover(at: itemPoint(4, of: 5))
         XCTAssertEqual(model.hoveredSessionItem, .control(.add))
-        XCTAssertEqual(model.hoverDescriptor(at: itemPoint(9, of: 10)), "Nine tabs open")
+        XCTAssertEqual(model.hoverDescriptor(at: itemPoint(4, of: 5)), "All agents running")
         XCTAssertEqual(SessionWheelTabControl.allCases, [.add])
-        XCTAssertEqual(model.sessionItems.compactMap(\.tab).map(\.name), (1...9).map { "Session \($0)" })
-        XCTAssertEqual((0..<9).map { SessionWheelTab.shortLabel(position: $0) }, (1...9).map { "S\($0)" })
+        XCTAssertEqual(model.sessionItems.compactMap(\.tab).map(\.name), ["Puck", "Isabella", "George", "Sky"])
     }
 
-    /// A lone tab reads "Session 1" in full, and S1, S2 and so on beside
-    /// others. Its label and close x sit apart like `space-between`: the same
-    /// padding inside each end of the segment, the x after the label in
-    /// reading order, never overlapping.
+    /// A segment is labelled with its agent's name. Its label and close x sit
+    /// apart like `space-between`: the same padding inside each end of the
+    /// segment, the x after the label in reading order, never overlapping.
     func testTabSegmentSpacesItsLabelAndCloseXApart() {
-        XCTAssertEqual(geometry.sessionTabLabel(0, items: 2), "Session 1")
-        XCTAssertEqual((0..<3).map { geometry.sessionTabLabel($0, items: 4) }, ["S1", "S2", "S3"])
         let radius = geometry.actionRadius
         let diameter = geometry.tabCloseDiameter
-        for count in 1...9 {
+        for count in 1...SessionAgent.allCases.count {
             for index in 0..<count {
                 let items = count + 1
                 let arc = geometry.sessionItemArc(index, items: items)
-                let layout = geometry.sessionTabLayout(index, items: items)
-                let text = geometry.sessionTabLabel(index, items: items)
+                let text = SessionAgent.allCases[index].name
+                let layout = geometry.sessionTabLayout(index, items: items, label: text)
                 let width = geometry.trackedLetters(text).width
                 let axis = CGPoint(x: cos(layout.label.rotation), y: sin(layout.label.rotation))
                 let along = (layout.close.point.x - layout.label.point.x) * axis.x
@@ -547,9 +544,8 @@ final class SessionWheelTests: XCTestCase {
                 XCTAssertEqual(leadingPadding, trailingPadding, accuracy: 0.01, "\(count) tabs, item \(index)")
                 XCTAssertGreaterThanOrEqual(leadingPadding, 0, "\(count) tabs, item \(index)")
                 XCTAssertLessThanOrEqual(leadingPadding, geometry.tabContentPadding + 0.01)
-                if count <= 3 {
-                    XCTAssertEqual(leadingPadding, geometry.tabContentPadding, accuracy: 0.01, "Wide segments keep the full padding")
-                }
+                XCTAssertEqual(leadingPadding, geometry.tabContentPadding, accuracy: 0.01,
+                               "Every agent's name keeps the full padding, \(count) tabs, item \(index)")
                 // The label curves with the cell: every letter sits on the arc, give or
                 // take the slight tilt, in reading order, and its outline stays inside the band.
                 XCTAssertEqual(layout.glyphs.count, text.count)
@@ -589,16 +585,16 @@ final class SessionWheelTests: XCTestCase {
         var live = tabs(1)
         var performed: [SessionWheelSessionItem] = []
         controller.refresh = { model in
-            model.refresh(sessions: live.isEmpty ? [] : [.init(id: "pm", name: "Session 1", isFocused: true)])
+            model.refresh(sessions: live.isEmpty ? [] : [.init(id: "pm", name: "Puck", isFocused: true)])
             model.tabs = live
-            model.addTabUnavailableReason = live.count >= 9 ? "Nine tabs open" : nil
+            model.addTabUnavailableReason = live.count >= 4 ? "All agents running" : nil
         }
         controller.tabAction = { item in
             performed.append(item)
             switch item {
             case .control(.add):
                 live = live.map { var tab = $0; tab.isActive = false; return tab }
-                live.append(.init(id: "t\(live.count)", name: "Session \(live.count + 1)", isActive: true))
+                live.append(.init(id: "t\(live.count)", name: SessionAgent.allCases[live.count].name, isActive: true))
             case .tab(let tab):
                 live = live.map { var other = $0; other.isActive = other.id == tab.id; return other }
             case .close(let tab):
@@ -608,23 +604,23 @@ final class SessionWheelTests: XCTestCase {
             return true
         }
         controller.toggle()
-        for _ in 0..<8 { controller.performTabItem(.control(.add)) }
+        for _ in 0..<3 { controller.performTabItem(.control(.add)) }
         XCTAssertTrue(controller.isVisible)
-        XCTAssertEqual(controller.model.tabs.count, 9)
+        XCTAssertEqual(controller.model.tabs.map(\.name), ["Puck", "Isabella", "George", "Sky"])
         XCTAssertFalse(controller.model.isEnabled(.add))
         controller.performTabItem(.control(.add))
-        XCTAssertEqual(controller.model.tabs.count, 9, "A tenth tab changes nothing")
-        XCTAssertEqual(performed.count, 8)
+        XCTAssertEqual(controller.model.tabs.count, 4, "A fifth agent changes nothing")
+        XCTAssertEqual(performed.count, 3)
 
         controller.performTabItem(.tab(controller.model.tabs[2]))
         XCTAssertTrue(controller.isVisible)
         XCTAssertEqual(controller.model.tabs.first(where: \.isActive)?.id, "t2")
         controller.performTabItem(.close(controller.model.tabs[2]))
         XCTAssertTrue(controller.isVisible)
-        XCTAssertEqual(controller.model.tabs.count, 8)
-        XCTAssertNotNil(controller.model.tabs.first(where: \.isActive), "Closing the active tab moves activity to another live tab")
-        controller.performTabItem(.close(controller.model.tabs[5]))
-        XCTAssertEqual(controller.model.tabs.count, 7, "Any tab closes from its own x, not only the active one")
+        XCTAssertEqual(controller.model.tabs.count, 3)
+        XCTAssertNotNil(controller.model.tabs.first(where: \.isActive), "Stopping the active agent moves activity to another live one")
+        controller.performTabItem(.close(controller.model.tabs[2]))
+        XCTAssertEqual(controller.model.tabs.count, 2, "Any agent stops from its own x, not only the active one")
         XCTAssertEqual(controller.model.tabs.first(where: \.isActive)?.id, "t0")
     }
 
@@ -634,14 +630,14 @@ final class SessionWheelTests: XCTestCase {
         let controller = makeController()
         defer { controller.dismiss() }
         controller.refresh = { model in
-            model.refresh(sessions: [.init(id: "pm", name: "Session 1", isFocused: true)])
-            model.tabs = [.init(id: "t0", name: "Session 1", isActive: true)]
+            model.refresh(sessions: [.init(id: "pm", name: "Puck", isFocused: true)])
+            model.tabs = [.init(id: "t0", name: "Puck", isActive: true)]
         }
         controller.tabAction = { _ in false }
         controller.toggle()
         controller.performTabItem(.control(.add))
         XCTAssertTrue(controller.isVisible)
-        XCTAssertEqual(controller.model.notice, "Couldn't add a tab")
+        XCTAssertEqual(controller.model.notice, "Couldn't start an agent")
     }
 
     func testWorkspaceGlyphUsesNotchColoursAndMotionForEveryStatus() {
@@ -795,15 +791,25 @@ final class SessionWheelTests: XCTestCase {
             captions += SessionWheelNoteAction.allCases.map { $0.caption(for: phase) }
         }
         captions += SessionWheelTabControl.allCases.map(\.caption)
-        for tab in tabs(9, active: 8, off: [3]) { captions += [tab.caption, tab.closeTitle] }
-        captions += ["Nine tabs open", "Tab starting", "Finish notes first", "No session"]
+        for tab in tabs(4, active: 3, off: [1]) { captions += [tab.caption, tab.closeTitle] }
+        captions += ["All agents running", "Agent starting", "Finish notes first", "No session"]
         for caption in captions {
             XCTAssertTrue(NotchHoverDescriptor.isValid(caption), caption)
         }
-        XCTAssertEqual(SessionWheelTabControl.add.caption, "Add tab")
-        XCTAssertEqual(tabs(2, active: 1)[1].caption, "Session 2 active")
-        XCTAssertEqual(tabs(2, off: [1])[1].caption, "Session 2 off")
-        XCTAssertEqual(tabs(2)[1].closeTitle, "Close Session 2")
+        XCTAssertEqual(SessionWheelTabControl.add.caption, "Add agent")
+        XCTAssertEqual(tabs(2, active: 1)[1].caption, "Isabella active")
+        XCTAssertEqual(tabs(2, off: [1])[1].caption, "Isabella off")
+        XCTAssertEqual(tabs(2)[1].closeTitle, "Stop Isabella")
+        // VoiceOver titles name the agent too.
+        XCTAssertEqual(tabs(2, active: 1)[1].title, "Isabella, active agent")
+        XCTAssertEqual(tabs(2)[1].title, "Make Isabella the active agent")
+        XCTAssertEqual(tabs(2, off: [1])[1].title, "Start Isabella")
+        XCTAssertEqual(SessionWheelSessionItem.close(tabs(4)[3]).title, "Stop Sky")
+        for tab in tabs(4, active: 2, off: [1]) {
+            for text in [tab.caption, tab.closeTitle, tab.title] {
+                XCTAssertNil(text.range(of: #"\bS(ession )?[0-9]"#, options: .regularExpression), text)
+            }
+        }
         XCTAssertEqual(SessionWheelNoteAction.pause.caption(for: .recording), "Pause note")
         XCTAssertEqual(SessionWheelSettingsControl.keepAwake.caption, "Keep awake")
 
@@ -860,11 +866,11 @@ final class SessionWheelTests: XCTestCase {
         model.tabs = tabs(2)
         XCTAssertEqual(hint(slot: 0), "Open terminal tab")
         let first = geometry.sessionItemArc(0, items: 3)
-        XCTAssertEqual(hint(slot: 0, radius: geometry.actionRadius, offset: first.start + first.width / 2), "Session 1 active")
-        model.hover(at: geometry.sessionTabClosePoint(1, items: 3))
-        XCTAssertEqual(model.hoverDescriptor(at: geometry.sessionTabClosePoint(1, items: 3)), "Close Session 2")
+        XCTAssertEqual(hint(slot: 0, radius: geometry.actionRadius, offset: first.start + first.width / 2), "Puck active")
+        model.hover(at: geometry.sessionTabClosePoint(1, items: 3, label: "Isabella"))
+        XCTAssertEqual(model.hoverDescriptor(at: geometry.sessionTabClosePoint(1, items: 3, label: "Isabella")), "Stop Isabella")
         let add = geometry.sessionItemArc(2, items: 3)
-        XCTAssertEqual(hint(slot: 0, radius: geometry.actionRadius, offset: add.start + add.width / 2), "Add tab")
+        XCTAssertEqual(hint(slot: 0, radius: geometry.actionRadius, offset: add.start + add.width / 2), "Add agent")
 
         model.hover(at: geometry.center)
         XCTAssertEqual(model.hoverDescriptor(at: geometry.center), "Close session wheel")
@@ -1141,12 +1147,12 @@ final class SessionWheelTests: XCTestCase {
     @MainActor
     func testWheelRendering() throws {
         let model = SessionWheelModel()
-        model.refresh(sessions: [.init(id: "pm", name: "Session 1", isFocused: true)])
+        model.refresh(sessions: [.init(id: "pm", name: "Puck", isFocused: true)])
         model.tabs = tabs(1)
         let view = SessionWheelView(model: model, selectSlot: { _, _ in }, performTabItem: { _ in },
                                     selectCenter: {}, dismiss: {})
-        for state in ["sessions", "session-notice", "controls", "tabs-1", "tabs-1-close-hover", "tabs-3", "tabs-3-close-hover", "tabs-4", "tabs-6",
-                      "tabs-9", "tabs-9-add-hover", "tabs-off",
+        for state in ["sessions", "session-notice", "controls", "tabs-1", "tabs-1-close-hover", "tabs-3", "tabs-3-close-hover", "tabs-4",
+                      "tabs-4-add-hover", "tabs-off",
                       "shortcuts-empty", "start-unavailable", "notes-idle", "notes-recording", "notes-paused", "notes-saving",
                       "overflow-sessions",
                       "settings-min", "settings-max", "settings-keep-awake-off", "settings-keep-awake-on",
@@ -1160,17 +1166,17 @@ final class SessionWheelTests: XCTestCase {
             case "controls":
                 model.notice = nil
                 model.hover(at: geometry.position(slot: 0, radius: 119))
-            case "tabs-1", "tabs-1-close-hover", "tabs-3", "tabs-3-close-hover", "tabs-4", "tabs-6", "tabs-9", "tabs-9-add-hover", "tabs-off":
-                // RR-469: the session submenu with that many PM tabs.
+            case "tabs-1", "tabs-1-close-hover", "tabs-3", "tabs-3-close-hover", "tabs-4", "tabs-4-add-hover", "tabs-off":
+                // RR-519: the session submenu with that many named agents.
                 let count = state == "tabs-off" ? 3 : Int(state.split(separator: "-")[1]) ?? 1
                 model.reset(at: geometry.center)
-                model.refresh(sessions: [.init(id: "pm", name: "Session 1", isFocused: true)])
+                model.refresh(sessions: [.init(id: "pm", name: "Puck", isFocused: true)])
                 model.tabs = tabs(count, active: min(1, count - 1), off: state == "tabs-off" ? [2] : [])
-                model.addTabUnavailableReason = count >= 9 ? "Nine tabs open" : nil
+                model.addTabUnavailableReason = count >= 4 ? "All agents running" : nil
                 model.hover(at: geometry.position(slot: 0, radius: 119))
-                model.hover(at: state.hasSuffix("-close-hover") ? geometry.sessionTabClosePoint(0, items: count + 1)
-                            : state == "tabs-9-add-hover" ? itemPoint(count, of: count + 1)
-                            : geometry.sessionTabLayout(0, items: count + 1).label.point)
+                model.hover(at: state.hasSuffix("-close-hover") ? geometry.sessionTabClosePoint(0, items: count + 1, label: "Puck")
+                            : state == "tabs-4-add-hover" ? itemPoint(count, of: count + 1)
+                            : geometry.sessionTabLayout(0, items: count + 1, label: "Puck").label.point)
             case "shortcuts-empty":
                 model.reset(at: geometry.center)
                 model.refresh(sessions: [])

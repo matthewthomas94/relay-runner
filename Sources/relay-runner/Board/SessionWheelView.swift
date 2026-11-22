@@ -220,7 +220,7 @@ struct SessionWheelView: View {
         // Tiles show only their icon; the title names the tile to VoiceOver and
         // the notch names the action a click takes.
         let title = shortcut?.title ?? (session != nil ? SessionWheelSessionSlot.title : startSlot ? "Start session" : "")
-        let sessionHint = "Open the active tab's terminal in Workspace. Move outward for the PM tabs and Add."
+        let sessionHint = "Open the active agent's terminal in Workspace. Move outward for the agents and Add."
         let enabled = !empty || (startSlot && menu.canStartSession)
         let presentation = ProgramBoardInteractionPresentation.resolve(
             surface: .projectCard, isEnabled: enabled,
@@ -282,9 +282,8 @@ struct SessionWheelView: View {
         }
     }
 
-    /// RR-469: a tab segment shows its label and close x spaced apart: Session 1
-    /// alone, S1, S2 and so on beside other tabs. The active one is selected;
-    /// an off tab is dimmed. Add follows the tabs.
+    /// RR-469/RR-519: a tab segment shows its agent's name and close x spaced
+    /// apart. The active one is selected; an off tab is dimmed. Add follows the tabs.
     private func tabItemButton(_ item: SessionWheelSessionItem, index: Int, count: Int, slot: Int,
                                entering: SessionWheelGeometry.SessionTabEntry? = nil) -> some View {
         let arc = geometry.sessionItemArc(index, items: count, entering: entering)
@@ -295,7 +294,8 @@ struct SessionWheelView: View {
                              symbol: item.control?.symbol, enabled: enabled, hovered: hovered,
                              destructive: false,
                              labelGlyphs: item.tab == nil ? nil
-                                 : geometry.sessionTabLayout(index, items: count, entering: entering).glyphs,
+                                 : geometry.sessionTabLayout(index, items: count, label: item.tab?.name ?? "",
+                                                             entering: entering).glyphs,
                              selected: item.tab?.isActive ?? false,
                              dimmed: item.tab.map { !$0.isLive } ?? false,
                              arc: arc) {
@@ -306,11 +306,11 @@ struct SessionWheelView: View {
         .accessibilityAddTraits(item.tab?.isActive == true ? .isSelected : [])
     }
 
-    /// The x inside a tab's segment: closes that tab, as the tab strip's x does.
+    /// The x inside a tab's segment: stops that agent, as the tab strip's x does.
     /// It is the size of Add's plus, and hovering it fills a circle behind it.
     private func tabCloseButton(_ tab: SessionWheelTab, index: Int, count: Int, slot: Int,
                                 entering: SessionWheelGeometry.SessionTabEntry? = nil) -> some View {
-        let placement = geometry.sessionTabLayout(index, items: count, entering: entering).close
+        let placement = geometry.sessionTabLayout(index, items: count, label: tab.name, entering: entering).close
         let hovered = model.hoveredTabClose?.id == tab.id
         let size = geometry.tabCloseDiameter
         return Button {
@@ -452,8 +452,8 @@ struct SessionWheelView: View {
         .accessibilityValue(model.autoPlay ? "On" : "Off")
     }
 
-    /// A tab segment passes `labelGlyphs` (Session 1, S1, S2… set along the
-    /// arc beside its close x) and no symbol.
+    /// A tab segment passes `labelGlyphs` (its agent's name set along the arc
+    /// beside its close x) and no symbol.
     private func submenuButton(index: Int, slot: Int, title: String, help: String, symbol: LucideIcon?,
                                enabled: Bool, hovered: Bool, destructive: Bool,
                                keepAwake: KeepAwakeState? = nil,

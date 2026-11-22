@@ -185,7 +185,7 @@ final class SessionWheelController {
     func performTabItem(_ item: SessionWheelSessionItem) {
         guard isVisible, model.slots.contains(where: { $0 != nil }), model.isEnabled(item) else { return }
         guard tabAction?(item) == true else {
-            model.notice = item == .control(.add) ? model.addTabUnavailableReason ?? "Couldn't add a tab" : "Tab action unavailable"
+            model.notice = item == .control(.add) ? model.addTabUnavailableReason ?? "Couldn't start an agent" : "Agent action unavailable"
             return
         }
         model.notice = nil

@@ -96,7 +96,7 @@ enum AppTools {
         [
             AppTool(
                 name: "app_status",
-                description: "Report Relay Runner's state as JSON: app version and build, the session (state, project), Relay Remote (Remote mode, paired device count, Remote Login, pairing phase), privacy permissions and Keep Awake. Read-only.",
+                description: "Report Relay Runner's state as JSON: app version and build, the session (state, project), the four named agents (name, slug, whether each is running, which is active), Relay Remote (Remote mode, paired device count, Remote Login, pairing phase), privacy permissions and Keep Awake. Read-only.",
                 properties: [:],
                 client: client
             ),

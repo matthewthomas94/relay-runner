@@ -11,8 +11,8 @@ import Observation
 /// inbox routing build on these two properties.
 @Observable
 final class EmbeddedSessionRegistry {
-    /// RR-469: at most nine PM tabs, counting the first, however they start.
-    static let maxConcurrentSessions = 9
+    /// RR-519: at most four sessions, one per named agent, however they start.
+    static let maxConcurrentSessions = SessionAgent.allCases.count
 
     enum Admission {
         /// The context already has a live session; it is now focused.
@@ -23,9 +23,7 @@ final class EmbeddedSessionRegistry {
         case refused(String)
     }
 
-    static var capMessage: String {
-        "Relay Runner runs at most \(maxConcurrentSessions) PM tabs at once. Close one before opening another."
-    }
+    static var capMessage: String { SessionAgent.limitMessage }
 
     private(set) var sessions: [String: EmbeddedTerminalSession] = [:]
     private(set) var focusedContextID: String?

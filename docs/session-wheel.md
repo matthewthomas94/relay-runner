@@ -61,34 +61,41 @@ registered project.
   means a change is pending, a raised hand means the helper is waiting for your
   approval (click to cancel), and a warning icon marks a failure.
   See [Keep Awake](#keep-awake).
-- Hover the session (**Terminal**) to reveal its PM tabs (RR-469). The submenu holds
-  one segment per tab, **S1**, **S2** and so on for the tab strip's **Session 1**,
-  **Session 2** (a lone tab reads **Session 1** in full), each with its own **x**,
-  then **Add tab** (plus). The label sits at the start of its segment and the x at
+- Hover the session (**Terminal**) to reveal its agents (RR-469, RR-519). A session
+  runs up to four fixed, named agents — **Puck**, **Isabella**, **George** and **Sky**,
+  in that order — each with its own conversation. The submenu holds one segment per
+  started agent, labelled with its name as the tab strip is, each with its own **x**,
+  then **Add agent** (plus). The label sits at the start of its segment and the x at
   the end, in reading order.
   There are no Play / Replay, Record or Stop session controls on the wheel.
-  - Click a tab's label to make it the **active tab**: voice turns, replies and
-    TTS go to it, and the notch confirms the switch. The active tab's label is
-    orange and selected; a tab whose provider has exited is dimmed, and clicking it
-    turns it back on, resuming its conversation, and makes it active.
-  - A tab's **x** closes that tab, as the tab strip's x does: it ends the tab's
-    provider and drops it. Closing the active tab moves activity to another live
-    tab; closing the last live tab ends the session, as End does. The x is the
-    size of Add's plus; hovering it fills a circle behind it and the notch reads
-    *Close Session n*.
-  - **Add tab** opens another general PM tab, like the tab strip's "+". It is
-    disabled at nine tabs, the limit counting the first; the notch then reads
-    *Nine tabs open*.
-  - With five tabs or fewer the submenu keeps its standard size over the session's
-    own cell. More tabs grow it evenly along the arc, past its cell and over the
-    outer edge of **History** and **Workspace**, up to their far ends at nine tabs, so
-    every tab shows at once. Each segment stays at least as wide as a standard one.
-    History and Workspace have no submenus of their own, so nothing overlaps.
+  - Click an agent's label to make it the **active agent**: voice turns, replies and
+    TTS go to it, and the notch confirms the switch. The active agent's label is
+    orange and selected; an agent whose provider has exited is dimmed, and clicking it
+    starts it again, resuming its conversation, and makes it active.
+  - An agent's **x** stops it, as the tab strip's x and Command-W do: it ends the
+    agent's provider and removes its tab, and keeps its conversation, so starting it
+    again resumes where it left off. Stopping the active agent moves activity to
+    another live one; stopping the last live agent ends the session, as End does,
+    and End keeps every agent's conversation too. The x is the size of Add's plus;
+    hovering it fills a circle behind it and the notch reads *Stop Isabella* (the
+    agent's name).
+  - **Add agent** starts the first agent in table order that is not running, like
+    the tab strip's "+" and Command-T, resuming its conversation if it has one. It is
+    disabled while all four run; the notch then reads *All agents running*.
+    Every other start (Start Session, the wheel's Start session, `start_session`,
+    Relay Remote, the Notetaker hand-off) starts the most recently active agent, or
+    Puck if none has run. The conversation saved before agents existed is Puck's.
+  - With one agent the submenu keeps its standard size over the session's own
+    cell. Agent names are wider than numbers, so each further agent grows it evenly
+    along the arc, past its cell and over the outer edge of **History** and
+    **Workspace**, up to their far ends with all four, so every name shows in full
+    beside its x. Each segment stays at least as wide as a standard one. History
+    and Workspace have no submenus of their own, so nothing overlaps.
   - All tab actions keep the wheel open, and switching tabs does not close or
     replay the submenu. Each segment and control is also a VoiceOver action on the
     session slot.
-- Click **Terminal** to open Workspace directly to the active tab's terminal. Its
-  VoiceOver label names the tab. The wheel stays open.
+- Click **Terminal** to open Workspace directly to the active agent's terminal. Its
+  VoiceOver label names the agent. The wheel stays open.
 - With no session running, click **Start session** in the top slot to start
   the general session without opening Workspace. Session changes update the tile in
   place without replaying the whole wheel's transition; navigating between menus
@@ -96,7 +103,7 @@ registered project.
 
 The UI uses the workspace cards' shared dark fills, hover and selection treatment,
 and subtle borders, with Bai Jamjuree typography, purple session dots, and a red
-Remove tab control. Tab numbers and control icons use the primary text color. The wheel has
+Remove tab control. Agent names and control icons use the primary text color. The wheel has
 no outer border. Segments use consistent 8-point spacing between their straight
 edges, around the center and outer perimeter. The 34-point-deep outer
 controls follow the wheel's tangent, keeping their icons upright on
@@ -280,8 +287,10 @@ spools; they do not open the microphone or send commands to live sessions.
 
 Installed-app checks still require a physical trackpad and live sessions: open
 and dismiss across displays, reject swipes and pinches, navigate to every outer
-control, add PM tabs up to nine and check the submenu wraps to History and
-Workspace, switch tabs and close them from their x with each provider, and repeat after
+control, start all four agents and check the submenu wraps to History and Workspace
+and a fifth is refused, switch agents, stop
+them from their x and start them again to check each resumes its own conversation
+with each provider, and repeat after
 sleep or reconnecting a trackpad. Drag the intensity slider past
 both ends while watching the particle field, then reopen Settings.
 Keep Awake requires its own manual checks on the installed app. Automated tests and

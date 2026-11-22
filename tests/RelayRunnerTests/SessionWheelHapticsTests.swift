@@ -80,14 +80,14 @@ final class SessionWheelHapticsTests: XCTestCase {
 
         // RR-469: one tab and Add; Add is silent while it is unavailable.
         model.refresh(sessions: [.init(id: "a", name: "A")])
-        model.tabs = [.init(id: "t0", name: "Session 1", isActive: true)]
+        model.tabs = [.init(id: "t0", name: "Puck", isActive: true)]
         _ = target(slot: 0)
         for index in 0..<2 {
             let arc = geometry.sessionItemArc(index, items: 2)
             let resolved = target(slot: 0, radius: geometry.actionRadius, offset: arc.start + arc.width / 2)
             XCTAssertEqual(resolved, .action(slot: 0, index: index))
         }
-        model.addTabUnavailableReason = "Nine tabs open"
+        model.addTabUnavailableReason = "All agents running"
         let add = geometry.sessionItemArc(1, items: 2)
         XCTAssertNil(target(slot: 0, radius: geometry.actionRadius, offset: add.start + add.width / 2))
         model.addTabUnavailableReason = nil
@@ -142,7 +142,7 @@ final class SessionWheelHapticsTests: XCTestCase {
         controller.focusSession = { _ in }
         controller.refresh = { model in
             model.refresh(sessions: live)
-            model.tabs = live.isEmpty ? [] : [.init(id: "t0", name: "Session 1", isActive: true)]
+            model.tabs = live.isEmpty ? [] : [.init(id: "t0", name: "Puck", isActive: true)]
         }
         controller.toggle()
         XCTAssertTrue(pulses.isEmpty)

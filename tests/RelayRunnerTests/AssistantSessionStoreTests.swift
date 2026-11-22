@@ -31,25 +31,117 @@ final class AssistantSessionStoreTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(AssistantSessionContext.self, from: JSONEncoder().encode(second)), second)
     }
 
-    func testRemovingAPMTabDropsOnlyItsBindingAndHistory() throws {
+    // MARK: RR-519 named agents
+
+    private let general = AssistantSessionContext(kind: .project, projectID: "built-in", repositoryPath: "/general-tasks")
+
+    /// Launch `agent` as AppState does: resolve the resume id, begin, then let
+    /// the provider report its native session through the binding file.
+    /// Returns the id the launch resumed (nil: a new conversation).
+    @discardableResult
+    private func launch(_ agent: SessionAgent, in store: AssistantSessionStore, base: AssistantSessionContext? = nil,
+                        reporting native: String = UUID().uuidString) throws -> String? {
+        let context = (base ?? general).inTab(agent.tab)
+        let resumed = store.launchResumeID(for: context, provider: "claude", model: "opus")
+        let transport = UUID().uuidString.lowercased()
+        try store.select(context, provider: "claude", model: "opus", savingPreviousContext: true)
+        try store.begin(context: context, provider: "claude", model: "opus", transportSessionID: transport)
+        let nativeID = resumed ?? native
+        let transcript = store.directory.appendingPathComponent("\(nativeID).jsonl")
+        if !FileManager.default.fileExists(atPath: transcript.path) { try Data("{}\n".utf8).write(to: transcript) }
+        let url = store.bindingURL(transportSessionID: transport)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: [
+            "context_id": context.id, "provider": "claude", "provider_session_id": transport,
+            "native_session_id": nativeID, "working_directory": context.workingDirectory,
+            "transcript_path": transcript.path,
+        ]).write(to: url)
+        try store.reconcile(context: context, activeRunIDs: [], pendingIntentIDs: [])
+        try store.mark(.running, context: context)
+        return resumed
+    }
+
+    /// Stopping an agent or ending the session saves it; nothing removes it.
+    private func stop(_ agent: SessionAgent, in store: AssistantSessionStore) throws {
+        try store.mark(.saved, context: general.inTab(agent.tab))
+    }
+
+    func testStoppingAnAgentThenStartingItResumesTheSameNativeSession() throws {
         let store = AssistantSessionStore(directory: try temporaryDirectory())
-        let first = AssistantSessionContext(kind: .project, projectID: "built-in", repositoryPath: "/general-tasks")
-        let second = first.inTab("tab2")
-        for context in [first, second] {
-            try store.select(context, provider: "claude", model: "opus")
-            try store.begin(context: context, provider: "claude", model: "opus", transportSessionID: UUID().uuidString)
-            try store.append(AssistantConversationEntry(id: context.id, contextID: context.id, role: .user,
-                                                        text: "From \(context.id)", createdAt: Date()))
+        let native = UUID().uuidString
+        XCTAssertNil(try launch(.isabella, in: store, reporting: native), "No binding yet: a new conversation")
+        try stop(.isabella, in: store)
+        XCTAssertEqual(store.binding(for: general.inTab("isabella"))?.nativeSessionID, native, "Stop keeps the binding")
+        XCTAssertEqual(try launch(.isabella, in: store), native)
+        XCTAssertEqual(store.binding(for: general.inTab("isabella"))?.nativeSessionID, native)
+    }
+
+    func testEndSessionKeepsBothRunningAgentsAndEachResumesItsOwnConversation() throws {
+        let store = AssistantSessionStore(directory: try temporaryDirectory())
+        let puck = UUID().uuidString, george = UUID().uuidString
+        try launch(.puck, in: store, reporting: puck)
+        try launch(.george, in: store, reporting: george)
+        // End Session saves every live agent and drops none of them.
+        try stop(.puck, in: store)
+        try stop(.george, in: store)
+        XCTAssertNotNil(store.binding(for: general))
+        XCTAssertNotNil(store.binding(for: general.inTab("george")))
+        XCTAssertEqual(try launch(.george, in: store), george)
+        XCTAssertEqual(try launch(.puck, in: store), puck)
+        XCTAssertNil(try launch(.sky, in: store), "An agent that never ran starts a new conversation")
+    }
+
+    func testAReloadedStoreStillResumesEachAgentsConversation() throws {
+        let directory = try temporaryDirectory()
+        let store = AssistantSessionStore(directory: directory)
+        var natives: [SessionAgent: String] = [:]
+        for agent in SessionAgent.allCases {
+            natives[agent] = UUID().uuidString
+            try launch(agent, in: store, reporting: natives[agent]!)
         }
-        XCTAssertNotEqual(store.binding(for: first)?.transportSessionID, store.binding(for: second)?.transportSessionID,
-                          "Each tab has its own provider session")
-        try store.removeTab(context: second)
-        XCTAssertNil(store.binding(for: second))
-        XCTAssertTrue(store.history(for: second).isEmpty)
-        XCTAssertNotNil(store.binding(for: first))
-        XCTAssertEqual(store.history(for: first).count, 1)
-        try store.removeTab(context: first)
-        XCTAssertNotNil(store.binding(for: first), "The first tab is kept for Start Session's resume")
+        // Simulated relaunch: running bindings come back interrupted.
+        let reloaded = AssistantSessionStore(directory: directory)
+        XCTAssertEqual(reloaded.activeContext, general.inTab("sky"), "The most recently active agent is kept")
+        XCTAssertEqual(SessionAgent.toStart(activeContext: reloaded.activeContext), .sky)
+        for agent in SessionAgent.allCases {
+            XCTAssertEqual(reloaded.binding(for: general.inTab(agent.tab))?.lifecycle, .interrupted)
+        }
+        for agent in SessionAgent.allCases {
+            XCTAssertEqual(try launch(agent, in: reloaded), natives[agent], agent.name)
+        }
+    }
+
+    func testAPreAgentFirstTabBindingIsPucksAndRandomTabsAreDropped() throws {
+        let directory = try temporaryDirectory()
+        let store = AssistantSessionStore(directory: directory)
+        // Saved before agents existed: the first tab (tab nil) and a random tab id.
+        let native = UUID().uuidString
+        let firstTab = AssistantSessionContext(kind: .project, projectID: "built-in", repositoryPath: "/general-tasks")
+        try launch(.puck, in: store, reporting: native)
+        let random = firstTab.inTab("a1b2c3d4")
+        try store.select(random, provider: "claude", model: "opus")
+        try store.begin(context: random, provider: "claude", model: "opus", transportSessionID: UUID().uuidString)
+        try store.append(AssistantConversationEntry(id: "old", contextID: random.id, role: .user,
+                                                    text: "From an old tab", createdAt: Date()))
+        XCTAssertEqual(firstTab.id, "project:built-in", "Puck keeps the first tab's id")
+
+        let reloaded = AssistantSessionStore(directory: directory)
+        XCTAssertNil(reloaded.binding(for: random), "No agent owns a random tab id")
+        XCTAssertTrue(reloaded.history(for: random).isEmpty)
+        XCTAssertEqual(reloaded.activeContext, firstTab, "An unowned active tab falls back to Puck's")
+        XCTAssertEqual(SessionAgent.toStart(activeContext: reloaded.activeContext), .puck)
+        XCTAssertEqual(try launch(.puck, in: reloaded), native, "Puck resumes the first tab's conversation")
+    }
+
+    func testEachAgentKeepsItsOwnConversationPerContext() throws {
+        let store = AssistantSessionStore(directory: try temporaryDirectory())
+        let project = AssistantSessionContext(kind: .project, projectID: "relay", repositoryPath: "/repos/relay")
+        let inGeneral = UUID().uuidString, inProject = UUID().uuidString
+        try launch(.isabella, in: store, reporting: inGeneral)
+        try launch(.isabella, in: store, base: project, reporting: inProject)
+        XCTAssertEqual(project.inTab("isabella").id, "project:relay#tab-isabella")
+        XCTAssertEqual(try launch(.isabella, in: store), inGeneral)
+        XCTAssertEqual(try launch(.isabella, in: store, base: project), inProject)
     }
 
     private func temporaryDirectory() throws -> URL {

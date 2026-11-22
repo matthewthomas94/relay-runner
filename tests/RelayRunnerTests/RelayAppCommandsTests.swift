@@ -83,6 +83,10 @@ final class RelayAppCommandsTests: XCTestCase {
                     guard !self.keepAwake.isPending else { return false }
                     self.keepAwake = self.onToggle(self.keepAwake)
                     return true
+                },
+                agents: {
+                    SessionAgent.statuses(liveContextIDs: ["project:built-in", "project:built-in#tab-isabella"],
+                                          activeContextID: "project:built-in#tab-isabella")
                 }
             )
         }
@@ -183,6 +187,12 @@ final class RelayAppCommandsTests: XCTestCase {
         XCTAssertEqual(remoteInfo["paired_devices"] as? Int, 0)
         XCTAssertEqual(remoteInfo["pairing"] as? String, "idle")
         XCTAssertEqual((status["keep_awake"] as? [String: Any])?["state"] as? String, "off")
+        // RR-519: the four named agents in table order, with running and active state.
+        let agents = try XCTUnwrap(status["agents"] as? [[String: Any]])
+        XCTAssertEqual(agents.map { $0["name"] as? String }, ["Puck", "Isabella", "George", "Sky"])
+        XCTAssertEqual(agents.map { $0["slug"] as? String }, ["puck", "isabella", "george", "sky"])
+        XCTAssertEqual(agents.map { $0["running"] as? Bool }, [true, true, false, false])
+        XCTAssertEqual(agents.map { $0["active"] as? Bool }, [false, true, false, false])
     }
 
     func testNavigateOpensEachSurfaceAndSettingsPage() async throws {
@@ -227,6 +237,7 @@ final class RelayAppCommandsTests: XCTestCase {
         }
         var relayAppKeepAwakeState = KeepAwakeState.off
         func toggleRelayAppKeepAwake() -> Bool { true }
+        var relayAppAgents: [SessionAgent.Status] { SessionAgent.statuses(liveContextIDs: [], activeContextID: nil) }
     }
 
     private func bind(_ owner: WeakOwner) {

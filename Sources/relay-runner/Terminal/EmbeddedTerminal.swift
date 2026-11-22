@@ -4277,14 +4277,14 @@ struct WorkspaceTerminalPanel: View {
 
     var body: some View {
         // RR-469: the tab strip shows only while a session runs; Workspace's
-        // top-row Start launches the first tab.
+        // top-row Start launches the most recently active agent (RR-519).
         let running = appState.sessionRegistry.hasLiveSessions
         WorkspaceTerminalSurface(
             tabs: running ? appState.pmTabs : [],
             selectedID: appState.activeContext.id,
             addUnavailableReason: appState.pmTabUnavailableReason,
             select: { appState.selectPMTab($0) },
-            close: { appState.removePMTab($0) },
+            close: { appState.stopPMTab($0) },
             add: { appState.openPMTab() }
         ) {
             EmbeddedTerminalTab(

@@ -8,7 +8,7 @@ final class PMTabShortcutTests: XCTestCase {
 
     func testOpenOnTerminalTabWithSession() {
         XCTAssertEqual(route(.open), .openTab)
-        XCTAssertEqual(route(.open, live: 9), .openTab) // "+" path shows the limit message
+        XCTAssertEqual(route(.open, live: 4), .openTab) // "+" path shows the four-agent limit message
     }
 
     func testCloseWithSeveralTabsClosesWithoutAsking() {

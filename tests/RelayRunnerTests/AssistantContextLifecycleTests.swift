@@ -196,8 +196,12 @@ final class AssistantContextLifecycleTests: XCTestCase {
         XCTAssertTrue(switching.contains("switch sessionRegistry.admit(contextID: context.id)"))
         XCTAssertFalse(switching.contains("embeddedTerminal.end()"))
         XCTAssertTrue(switching.contains("case .refused:"))
-        // RR-469: nine PM tabs in all, however the tab starts.
+        // RR-519: four agent tabs in all, however the agent starts; a start
+        // that names no agent starts the most recently active one.
         XCTAssertTrue(switching.contains("pmTabIDs.count >= EmbeddedSessionRegistry.maxConcurrentSessions"))
+        XCTAssertTrue(switching.contains("let agent = agent ?? SessionAgent.toStart(activeContext: assistantSessionStore.activeContext)"))
+        XCTAssertTrue(switching.contains("context = preparedContext.context.inTab(agent.tab)"))
+        XCTAssertTrue(switching.contains("let nativeResumeID = assistantSessionStore.launchResumeID("))
         let endStart = try XCTUnwrap(source.range(of: "    func endSession(context: AssistantSessionContext) {"))
         let endBody = String(source[endStart.lowerBound...]).components(separatedBy: "\n    }\n")[0]
         XCTAssertTrue(endBody.contains("sessionRegistry.end(contextID: context.id, retainingSpool: bridgeTargetsContext)"))
@@ -218,7 +222,8 @@ final class AssistantContextLifecycleTests: XCTestCase {
         // A resume the provider refused at startup is forgotten, then retried fresh once.
         XCTAssertTrue(exitBody.contains("sessionRegistry.sessions[contextID]?.providerExitedBeforeReadiness == true"))
         XCTAssertTrue(exitBody.contains("try assistantSessionStore.forgetNativeSession(context: exitedContext)"))
-        XCTAssertTrue(exitBody.contains("if let refusedResume, newSession(workingDirectory: refusedResume.repositoryPath, tab: refusedResume.tab) { return }"))
+        XCTAssertTrue(exitBody.contains("if let refusedResume, newSession(workingDirectory: refusedResume.repositoryPath,"))
+        XCTAssertTrue(exitBody.contains("agent: SessionAgent(context: refusedResume)) { return }"))
         XCTAssertTrue(source.contains("if nativeResumeID != nil { resumingContextIDs.insert(context.id) } else { resumingContextIDs.remove(context.id) }"))
         XCTAssertTrue(switching.contains("try assistantSessionStore.select(context,"))
         XCTAssertTrue(switching.contains("for process in previousProcesses"))

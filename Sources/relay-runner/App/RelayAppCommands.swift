@@ -29,6 +29,8 @@ struct RelayAppCommandHost {
     var keepAwakeState: () -> KeepAwakeState
     /// `KeepAwakeController.toggle()`; false when a pending change ignores it.
     var toggleKeepAwake: () -> Bool
+    /// RR-519: the four named agents in table order, whether each runs and which is active.
+    var agents: () -> [SessionAgent.Status] = { [] }
     /// False once the app that supplies these closures is gone; every command then refuses.
     var isAvailable: () -> Bool = { true }
 }
@@ -44,6 +46,7 @@ protocol RelayAppCommandOwner: AnyObject {
     @MainActor func selectRelayAppProject(_ projectID: String) async -> Result<String, RelayAppCommandError>
     var relayAppKeepAwakeState: KeepAwakeState { get }
     func toggleRelayAppKeepAwake() -> Bool
+    var relayAppAgents: [SessionAgent.Status] { get }
 }
 
 extension RelayAppCommandHost {
@@ -66,6 +69,7 @@ extension RelayAppCommandHost {
             },
             keepAwakeState: { [weak owner] in owner?.relayAppKeepAwakeState ?? .off },
             toggleKeepAwake: { [weak owner] in owner?.toggleRelayAppKeepAwake() ?? false },
+            agents: { [weak owner] in owner?.relayAppAgents ?? [] },
             isAvailable: { [weak owner] in owner != nil }
         )
     }
@@ -230,6 +234,7 @@ final class RelayAppCommands {
         remoteInfo["pairing"] = Self.name(remote.phase)
         result["relay_remote"] = remoteInfo
         result["keep_awake"] = Self.json(host.keepAwakeState())
+        result["agents"] = host.agents().map(\.json)
         return result
     }
 

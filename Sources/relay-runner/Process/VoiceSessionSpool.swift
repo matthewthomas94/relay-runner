@@ -57,6 +57,8 @@ struct VoiceSessionSpool: Equatable {
     var manualSubmission: String { path("relay_terminal_manual_submission.json") }
     var deliveryEvents: String { path("relay_terminal_delivery_events.jsonl") }
     var launcher: String { path("voice_bridge_launch.command") }
+    /// RR-519: the named agent's slug and a newline, written before the provider starts.
+    var sessionAgent: String { path(SessionAgent.spoolFileName) }
     var authorizations: String { Self.sharedAuthorizationsPath }
 
     /// This session's delivery files; the shared surfaces come from `base`.
@@ -106,6 +108,13 @@ struct VoiceSessionSpool: Equatable {
                 throw CocoaError(.fileWriteNoPermission, userInfo: [NSFilePathErrorKey: path])
             }
         }
+    }
+
+    /// RR-519: record which agent this session runs as. A legacy /tmp spool
+    /// is shared by manual sessions, so it gets no agent file.
+    func writeSessionAgent(_ agent: SessionAgent) throws {
+        guard !isLegacy else { return }
+        try Data((agent.slug + "\n").utf8).write(to: URL(fileURLWithPath: sessionAgent), options: .atomic)
     }
 
     /// Remove only this session's spool. The legacy /tmp files stay owned by
