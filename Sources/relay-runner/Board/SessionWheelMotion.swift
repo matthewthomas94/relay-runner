@@ -107,11 +107,9 @@ final class SessionWheelMotion {
 /// The slots the wheel draws, captured so live session changes update in place.
 struct SessionWheelMenu: Equatable {
     let sessions: [SessionWheelSession?]
-    let canStartSession: Bool
 
     init(_ model: SessionWheelModel) {
         sessions = model.slots
-        canStartSession = model.canStartSession
     }
 
     var identity: [String?] { sessions.map { $0?.id } }

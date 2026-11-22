@@ -8,15 +8,25 @@ final class SessionWheelTests: XCTestCase {
         SessionWheelController(haptics: .init(perform: { _ in }))
     }
     private func session(_ id: String) -> SessionWheelSession { .init(id: id, name: id) }
-    /// RR-519: the first `count` agents' tabs, named by agent.
-    private func tabs(_ count: Int, active: Int = 0, off: Set<Int> = []) -> [SessionWheelTab] {
-        (0..<count).map { .init(id: "t\($0)", name: SessionAgent.allCases[$0].name, isActive: $0 == active, isLive: !off.contains($0)) }
-    }
-    private func label(_ index: Int, _ items: [SessionWheelSessionItem]) -> String { items[index].tab?.name ?? "" }
+    private let agents = SessionAgent.allCases
     private var bounds: CGRect { CGRect(origin: .zero, size: CGSize(width: geometry.diameter, height: geometry.diameter)) }
-    private func itemPoint(_ index: Int, of count: Int) -> CGPoint {
-        let arc = geometry.sessionItemArc(index, items: count)
+    private func itemPoint(_ index: Int) -> CGPoint {
+        let arc = geometry.sessionItemArc(index)
         return geometry.position(slot: 0, radius: geometry.actionRadius, offset: arc.start + arc.width / 2)
+    }
+    private func labelPoint(_ index: Int) -> CGPoint {
+        geometry.sessionAgentLayout(index, label: agents[index].shortLabel).label.point
+    }
+    private func glyphPoint(_ index: Int) -> CGPoint {
+        geometry.sessionGlyphPoint(index, label: agents[index].shortLabel)
+    }
+    /// RR-521: Puck active, Isabella and George running, Sky stopped, as in the mockup.
+    private func mockupAgents(_ model: SessionWheelModel) {
+        model.runningAgents = [.puck, .isabella, .george]
+        model.activeAgent = .puck
+    }
+    private func openSessionSubmenu(_ model: SessionWheelModel) {
+        model.hover(at: geometry.position(slot: 0, radius: 119))
     }
 
     func testTheOneSessionSlotSurvivesRefreshAndIsReusedOnceEmpty() {
@@ -35,107 +45,75 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertEqual(model.slots.compactMap { $0 }.count, 1, "Only one session slot")
     }
 
-    /// RR-469: every tab segment, its close x and Add are reachable across the
-    /// radial gap, including the segments that reach over History and Workspace.
-    func testEveryTabSegmentAndControlIsReachableAcrossTheRadialGap() {
-        for count in 1...SessionAgent.allCases.count {
+    /// RR-521: every agent's label and glyph is reachable across the radial
+    /// gap, with or without a session running.
+    func testEveryAgentSegmentAndGlyphIsReachableAcrossTheRadialGap() {
+        for running in [false, true] {
             let model = SessionWheelModel()
-            model.refresh(sessions: [session("pm")])
-            model.tabs = tabs(count)
-            model.hover(at: geometry.position(slot: 0, radius: 119))
+            if running {
+                model.refresh(sessions: [session("pm")])
+                mockupAgents(model)
+            }
+            openSessionSubmenu(model)
             XCTAssertEqual(model.hoveredSlot, 0)
+            XCTAssertEqual(model.submenuSlot, 0, "The submenu opens whether or not a session runs")
             model.hover(at: geometry.position(slot: 0, radius: (geometry.wheelRadius + geometry.actionInnerRadius) / 2))
-            XCTAssertEqual(model.hoveredSession?.id, "pm")
+            XCTAssertEqual(model.submenuSlot, 0)
             XCTAssertNil(model.hoveredSessionItem)
             let items = model.sessionItems
-            XCTAssertEqual(items.count, count + 1)
-            XCTAssertEqual(items.last, .control(.add))
+            XCTAssertEqual(items.count, 4)
             for (index, item) in items.enumerated() {
-                let point = item.tab == nil ? itemPoint(index, of: items.count)
-                    : geometry.sessionTabLayout(index, items: items.count, label: label(index, items)).label.point
+                let point = labelPoint(index)
                 model.hover(at: point)
-                XCTAssertEqual(model.hoveredSlot, 0, "\(count) tabs, item \(index)")
-                XCTAssertEqual(model.hoveredSessionItem, item, "\(count) tabs, item \(index)")
-                XCTAssertNil(model.hoveredTabClose, "The label side of a segment selects the tab")
-                let arc = geometry.sessionItemArc(index, items: items.count)
+                XCTAssertEqual(model.hoveredSlot, 0, "item \(index)")
+                XCTAssertEqual(model.hoveredSessionItem, item, "item \(index)")
+                XCTAssertNil(model.hoveredGlyph, "The label side of a segment is the label")
+                XCTAssertEqual(model.hoveredAgentAction, item.labelAction)
+                let arc = geometry.sessionItemArc(index)
                 let shape = SessionWheelSector(slot: 0, innerRadius: geometry.actionInnerRadius,
                                                outerRadius: geometry.actionOuterRadius,
                                                arcStart: arc.start, arcWidth: arc.width)
                 XCTAssertTrue(shape.path(in: bounds).contains(point))
-                XCTAssertTrue(geometry.contains(point, submenuSlot: 0, sessionItems: items.count))
-                guard let tab = item.tab else { continue }
-                // The close x sits inside its own segment, clear of the edges.
-                let close = geometry.sessionTabClosePoint(index, items: items.count, label: tab.name)
+                XCTAssertTrue(geometry.contains(point, submenuSlot: 0))
+                // The glyph sits inside its own segment, clear of the edges.
+                let glyph = glyphPoint(index)
                 for step in 0..<12 {
                     let angle = CGFloat(step) * .pi / 6
-                    let edge = CGPoint(x: close.x + geometry.tabCloseHitRadius * cos(angle),
-                                       y: close.y + geometry.tabCloseHitRadius * sin(angle))
-                    XCTAssertTrue(shape.path(in: bounds).contains(edge), "\(count) tabs, close x of item \(index)")
+                    let edge = CGPoint(x: glyph.x + geometry.agentGlyphHitRadius * cos(angle),
+                                       y: glyph.y + geometry.agentGlyphHitRadius * sin(angle))
+                    XCTAssertTrue(shape.path(in: bounds).contains(edge), "glyph of item \(index)")
                 }
-                model.hover(at: close)
+                model.hover(at: glyph)
                 XCTAssertEqual(model.hoveredSessionItem, item)
-                XCTAssertEqual(model.hoveredTabClose, tab, "\(count) tabs, item \(index)")
-                XCTAssertEqual(model.hoverDescriptor(at: close), "Stop \(tab.name)")
+                XCTAssertEqual(model.hoveredGlyph, item, "item \(index)")
+                XCTAssertEqual(model.hoveredAgentAction, item.glyphAction)
+                XCTAssertEqual(model.hoverDescriptor(at: glyph), item.glyphAction.title)
             }
         }
     }
 
-    /// RR-519: one agent keeps the standard size over the session cell; each
-    /// further agent grows it along the arc, up to the far ends of History and
-    /// Workspace with all four, never reaching Settings or Notetaker.
-    func testSessionSubmenuIsStandardForOneAgentAndWrapsToHistoryAndWorkspaceAtFour() {
-        XCTAssertEqual(geometry.sessionSubmenuSpan(items: 2), 1)
-        var previous: CGFloat = 1
-        for count in 2...4 {
-            let span = geometry.sessionSubmenuSpan(items: count + 1)
-            XCTAssertGreaterThan(span, previous)
-            previous = span
+    /// RR-521: the four segments fit the submenu's standard size over the
+    /// session's own cell and never reach History or Workspace.
+    func testSessionSubmenuIsOneCellForTheFourAgents() {
+        XCTAssertEqual(geometry.sessionItemCount, 4)
+        let first = geometry.sessionItemArc(0)
+        let last = geometry.sessionItemArc(3)
+        XCTAssertEqual(first.start, -geometry.sliceAngle / 2, accuracy: 0.0001)
+        XCTAssertEqual(last.start + last.width, geometry.sliceAngle / 2, accuracy: 0.0001)
+        for index in 0..<4 {
+            XCTAssertEqual(geometry.sessionItemArc(index).width, geometry.sliceAngle / 4, accuracy: 0.0001)
+            XCTAssertEqual(geometry.sessionItem(at: itemPoint(index)), index)
         }
-        XCTAssertEqual(geometry.sessionSubmenuSpan(items: 5), 3, accuracy: 0.0001)
-        XCTAssertEqual(geometry.sessionMaxItems, SessionAgent.allCases.count + 1)
-        // Each segment stays at least as wide as a standard one.
-        for count in 1...4 {
-            XCTAssertGreaterThanOrEqual(geometry.sessionItemArc(0, items: count + 1).width,
-                                        geometry.sliceAngle / 3 - 0.0001)
-        }
-        // The full arc covers History (1) and Workspace (4) but not Settings (2) or Notetaker (3).
-        let first = geometry.sessionItemArc(0, items: 5)
-        let last = geometry.sessionItemArc(4, items: 5)
-        XCTAssertEqual(first.start, -1.5 * geometry.sliceAngle, accuracy: 0.0001)
-        XCTAssertEqual(last.start + last.width, 1.5 * geometry.sliceAngle, accuracy: 0.0001)
-        for slot in [SessionWheelShortcut.settings.rawValue, SessionWheelShortcut.noteTaker.rawValue] {
+        for slot in 1..<geometry.slotCount {
             let point = geometry.position(slot: slot, radius: geometry.actionRadius)
-            XCTAssertNil(geometry.sessionItem(at: point, items: 5))
-            XCTAssertFalse(geometry.contains(point, submenuSlot: 0, sessionItems: 5))
+            XCTAssertNil(geometry.sessionItem(at: point), "Slot \(slot)")
+            XCTAssertFalse(geometry.contains(point, submenuSlot: 0))
         }
-        for slot in [SessionWheelShortcut.history.rawValue, SessionWheelShortcut.workspace.rawValue] {
-            XCTAssertNotNil(geometry.sessionItem(at: geometry.position(slot: slot, radius: geometry.actionRadius), items: 5))
-            XCTAssertNil(geometry.sessionItem(at: geometry.position(slot: slot, radius: geometry.actionRadius), items: 2),
-                         "A standard submenu stays over its own cell")
-        }
-    }
-
-    func testAnAddedTabGrowsFromTheOldLayoutIntoTheNewOne() {
-        let geometry = SessionWheelGeometry.self
-        // Two agents and Add become three agents and Add, so the arc also widens.
-        for (old, new) in [(2, 3), (3, 4), (4, 5)] {
-            let entering = new - 2
-            for index in 0..<new {
-                let start = geometry.sessionItemArc(index, items: new, entering: (entering, 0))
-                let end = geometry.sessionItemArc(index, items: new, entering: (entering, 1))
-                let target = geometry.sessionItemArc(index, items: new)
-                XCTAssertEqual(end.start, target.start, accuracy: 0.0001)
-                XCTAssertEqual(end.width, target.width, accuracy: 0.0001)
-                if index == entering {
-                    XCTAssertEqual(start.width, 0, accuracy: 0.0001)
-                } else {
-                    let before = geometry.sessionItemArc(index > entering ? index - 1 : index, items: old)
-                    XCTAssertEqual(start.start, before.start, accuracy: 0.0001)
-                    XCTAssertEqual(start.width, before.width, accuracy: 0.0001)
-                }
-            }
-            XCTAssertEqual(geometry.sessionSubmenuSpan(weight: geometry.sessionWeight(items: new, entering: (entering, 0))),
-                           geometry.sessionSubmenuSpan(items: old), accuracy: 0.0001)
+        let source = try? String(contentsOfFile: #filePath
+            .replacingOccurrences(of: "tests/RelayRunnerTests/SessionWheelTests.swift",
+                                  with: "Sources/relay-runner/Board/SessionWheelModel.swift"), encoding: .utf8)
+        for removed in ["sessionSubmenuSpan", "sessionStandardItems", "sessionMaxItems", "SessionTabEntry", "sessionWeight"] {
+            XCTAssertEqual(source?.contains(removed), false, removed)
         }
     }
 
@@ -182,16 +160,65 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertTrue([1, 2, 3, 4].allSatisfy { model.slots[$0] == nil })
     }
 
-    /// RR-445: no more-sessions slot or all-sessions page. With no session the
-    /// session slot starts the general session.
-    func testOnlyTheSessionSlotStartsASessionAndOnlyWhileNoneRuns() {
+    /// RR-521: with no session running the submenu still lists the four
+    /// agents in order, none running, and there is no Add control.
+    func testWithNoSessionTheSubmenuIsTheFourAgentsNoneRunning() {
         let model = SessionWheelModel()
-        XCTAssertEqual((0..<5).filter(model.isStartSlot), [0])
-        model.refresh(sessions: ["a", "b"].map(session))
-        XCTAssertEqual(model.slots[0]?.id, "a")
-        XCTAssertTrue((0..<5).allSatisfy { !model.isStartSlot($0) })
+        XCTAssertEqual(model.sessionItems.map(\.agent), [.puck, .isabella, .george, .sky])
+        XCTAssertTrue(model.sessionItems.allSatisfy { !$0.isRunning && !$0.isActive })
+        XCTAssertTrue(model.sessionItems.allSatisfy { $0.glyph == .plus })
+        XCTAssertTrue(model.sessionItems.allSatisfy { $0.labelAction == .start($0.agent) && $0.glyphAction == .start($0.agent) })
+        model.refresh(sessions: [session("a")])
+        mockupAgents(model)
+        XCTAssertEqual(model.sessionItems.map(\.agent), [.puck, .isabella, .george, .sky], "The order never changes")
         model.refresh(sessions: [])
-        XCTAssertEqual((0..<5).filter(model.isStartSlot), [0])
+        model.runningAgents = []
+        XCTAssertEqual(model.sessionItems.count, 4)
+    }
+
+    /// The segments are labelled PK, IS, GE and SK from the agent definition.
+    func testAgentSegmentsUseTheTwoLetterLabels() {
+        XCTAssertEqual(SessionAgent.allCases.map(\.shortLabel), ["PK", "IS", "GE", "SK"])
+        XCTAssertEqual(SessionWheelModel().sessionItems.map(\.label), ["PK", "IS", "GE", "SK"])
+        XCTAssertEqual(SessionWheelModel().sessionItems.map(\.name), ["Puck", "Isabella", "George", "Sky"])
+    }
+
+    /// A running agent shows the X, which stops it; a stopped one the plus,
+    /// which starts it. Only a running agent can be active.
+    func testRunningAgentsShowTheXAndStoppedOnesThePlus() {
+        let model = SessionWheelModel()
+        model.refresh(sessions: [session("a")])
+        mockupAgents(model)
+        let items = model.sessionItems
+        XCTAssertEqual(items.map(\.glyph), [.x, .x, .x, .plus])
+        XCTAssertEqual(items.map(\.isActive), [true, false, false, false])
+        XCTAssertEqual(items.map(\.glyphAction), [.stop(.puck), .stop(.isabella), .stop(.george), .start(.sky)])
+        XCTAssertEqual(items.map(\.labelAction), [.switchTo(.puck), .switchTo(.isabella), .switchTo(.george), .start(.sky)])
+        model.activeAgent = .sky
+        XCTAssertFalse(model.sessionItems[3].isActive, "A stopped agent is never active")
+        model.runningAgents.insert(.sky)
+        XCTAssertEqual(model.sessionItems[3].glyph, .x, "The glyph follows the agent's state")
+        XCTAssertTrue(model.sessionItems[3].isActive)
+    }
+
+    /// RR-521, from the mockup: grey X for running, primary plus for stopped,
+    /// orange label for the active agent, and no dimmed labels.
+    func testAgentLabelAndGlyphColoursFollowTheMockup() {
+        let model = SessionWheelModel()
+        mockupAgents(model)
+        let items = model.sessionItems
+        XCTAssertEqual(items.map(SessionWheelView.agentLabelColor),
+                       [ProgramBoardStyle.activeTrayOrange, ProgramBoardStyle.primaryText,
+                        ProgramBoardStyle.primaryText, ProgramBoardStyle.primaryText])
+        XCTAssertEqual(items.map { SessionWheelView.agentGlyphColor($0, hovered: false) },
+                       [ProgramBoardStyle.mutedText, ProgramBoardStyle.mutedText,
+                        ProgramBoardStyle.mutedText, ProgramBoardStyle.primaryText])
+        XCTAssertEqual(SessionWheelView.agentGlyphColor(items[1], hovered: true), ProgramBoardStyle.primaryText)
+        let source = try? String(contentsOfFile: #filePath
+            .replacingOccurrences(of: "tests/RelayRunnerTests/SessionWheelTests.swift",
+                                  with: "Sources/relay-runner/Board/SessionWheelView.swift"), encoding: .utf8)
+        XCTAssertEqual(source?.contains("dimmed:"), false, "No agent label is dimmed")
+        XCTAssertEqual(source?.contains(".opacity(dimmed"), false, "No agent label is dimmed")
     }
 
     func testNoteControlsRetainHoverAcrossGapAndSessionRefresh() {
@@ -360,30 +387,21 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertNil(model.hoveredSessionItem)
     }
 
-    func testStoppedSessionLosesItsTabControlsImmediately() {
+    /// RR-521: starting the first agent or stopping the last keeps the submenu open.
+    func testStartingAndStoppingSessionsKeepsTheSubmenuHovered() {
         let model = SessionWheelModel()
+        openSessionSubmenu(model)
+        model.hover(at: glyphPoint(0))
+        XCTAssertEqual(model.hoveredAgentAction, .start(.puck))
         model.refresh(sessions: [session("a")])
-        model.tabs = tabs(1)
-        model.hover(at: geometry.position(slot: 0, radius: 119))
-        model.hover(at: itemPoint(1, of: 2))
-        XCTAssertEqual(model.hoveredSessionItem, .control(.add))
+        model.runningAgents = [.puck]
+        model.activeAgent = .puck
+        XCTAssertEqual(model.submenuSlot, 0)
+        XCTAssertEqual(model.hoveredAgentAction, .stop(.puck), "The glyph swaps in place under the pointer")
         model.refresh(sessions: [])
-        XCTAssertNil(model.hoveredSession)
-        XCTAssertNil(model.hoveredSessionItem)
-    }
-
-    func testReplacementSessionDoesNotInheritTheStoppedSessionsHoveredControl() {
-        let model = SessionWheelModel()
-        model.refresh(sessions: [session("a")])
-        model.tabs = tabs(1)
-        model.hover(at: geometry.position(slot: 0, radius: 119))
-        model.hover(at: geometry.sessionTabClosePoint(0, items: 2, label: "Puck"))
-        XCTAssertEqual(model.hoveredTabClose?.id, "t0")
-        model.refresh(sessions: [session("b")])
-        XCTAssertEqual(model.slots[0]?.id, "b")
-        XCTAssertNil(model.hoveredSlot)
-        XCTAssertNil(model.hoveredSessionItem)
-        XCTAssertNil(model.hoveredTabClose)
+        model.runningAgents = []
+        XCTAssertEqual(model.submenuSlot, 0)
+        XCTAssertEqual(model.hoveredAgentAction, .start(.puck))
     }
 
     @MainActor
@@ -391,89 +409,54 @@ final class SessionWheelTests: XCTestCase {
         _ = NSApplication.shared
         let controller = makeController()
         defer { controller.dismiss() }
-        controller.startSession = { XCTFail("The centre never starts a session"); return false }
+        controller.agentAction = { _ in XCTFail("The centre never starts a session"); return false }
+        controller.openTerminal = { XCTFail("The centre never opens the terminal") }
 
         controller.toggle()
         controller.selectCenter()
         XCTAssertFalse(controller.isVisible)
     }
 
+    /// RR-521: the session slot always opens Workspace on the Terminal tab,
+    /// with or without a session, and never starts one.
     @MainActor
-    func testSessionSelectionKeepsWheelOpenAndRefreshesFocus() {
+    func testSessionSlotOnlyOpensTheTerminalAndKeepsTheWheelOpen() {
         _ = NSApplication.shared
-        for isFocused in [false, true] {
+        for running in [false, true] {
             for fromPointer in [false, true] {
                 let controller = makeController()
                 defer { controller.dismiss() }
-                var focused = isFocused
                 controller.refresh = { model in
-                    model.refresh(sessions: [.init(id: "a", name: "Project A", isFocused: focused)])
+                    model.refresh(sessions: running ? [.init(id: "a", name: "Puck", isFocused: true)] : [])
                 }
-                var selections: [String] = []
-                controller.focusSession = { id in
+                var opens = 0
+                controller.openTerminal = {
                     XCTAssertTrue(controller.isVisible)
-                    focused = true
-                    selections.append(id)
+                    opens += 1
                 }
+                controller.agentAction = { _ in XCTFail("The session slot never starts an agent"); return false }
                 controller.toggle()
+                for shortcut in [1, 2, 3, 4] { controller.selectSlot(shortcut, fromPointer: fromPointer) }
+                XCTAssertEqual(opens, 0, "Only the session slot opens the terminal")
                 controller.selectSlot(0, fromPointer: fromPointer)
                 XCTAssertTrue(controller.isVisible)
-                XCTAssertEqual(controller.model.slots[0]?.isFocused, true)
-                XCTAssertEqual(selections, ["a"])
-
+                XCTAssertEqual(opens, 1)
+                XCTAssertEqual(controller.model.slots[0] != nil, running)
                 controller.selectSlot(0, fromPointer: fromPointer)
-                XCTAssertTrue(controller.isVisible)
-                XCTAssertEqual(selections, ["a", "a"])
+                XCTAssertEqual(opens, 2)
                 controller.dismiss()
                 controller.selectSlot(0, fromPointer: fromPointer)
-                XCTAssertEqual(selections.count, 2)
+                XCTAssertEqual(opens, 2)
             }
         }
-    }
-
-    /// RR-445: the empty first slot starts the general session directly; there
-    /// is no project picker, and the wheel stays open on the new session.
-    @MainActor
-    func testStartSlotStartsTheGeneralSessionAndKeepsWheelOpen() {
-        _ = NSApplication.shared
-        let controller = makeController()
-        defer { controller.dismiss() }
-        var live: [SessionWheelSession] = []
-        controller.refresh = { model in model.refresh(sessions: live) }
-        var starts = 0
-        controller.startSession = {
-            starts += 1
-            live = [self.session("general")]
-            return true
-        }
-        controller.toggle()
-        for shortcut in [1, 2, 3, 4] { controller.selectSlot(shortcut, fromPointer: false) }
-        XCTAssertEqual(starts, 0, "Only the session slot starts a session")
-        controller.model.startUnavailableReason = "Finish taking notes first"
-        controller.selectSlot(0, fromPointer: false)
-        XCTAssertEqual(starts, 0)
-        controller.model.startUnavailableReason = nil
-        controller.selectSlot(0, fromPointer: false)
-        XCTAssertEqual(starts, 1)
-        XCTAssertTrue(controller.isVisible)
-        XCTAssertEqual(controller.model.slots[0]?.id, "general")
-        XCTAssertTrue((0..<5).allSatisfy { !controller.model.isStartSlot($0) })
-        controller.selectSlot(0, fromPointer: false)
-        XCTAssertEqual(starts, 1, "Selecting the running session focuses it")
-    }
-
-    @MainActor
-    func testFailedStartShowsANoticeAndLeavesTheStartSlot() {
-        _ = NSApplication.shared
-        let controller = makeController()
-        defer { controller.dismiss() }
-        controller.refresh = { model in model.refresh(sessions: []) }
-        controller.startSession = { false }
-        controller.toggle()
-        controller.selectSlot(0, fromPointer: false)
-        XCTAssertEqual(controller.model.notice, "Couldn't start session")
-        XCTAssertTrue(controller.model.isStartSlot(0))
-        XCTAssertTrue(controller.isVisible)
+        let model = SessionWheelModel()
+        openSessionSubmenu(model)
+        XCTAssertEqual(model.hoverDescriptor(at: geometry.position(slot: 0, radius: 119)), "Open terminal tab")
+        XCTAssertEqual(SessionWheelSessionSlot.title, "Terminal")
+        let source = try? String(contentsOfFile: #filePath
+            .replacingOccurrences(of: "tests/RelayRunnerTests/SessionWheelTests.swift",
+                                  with: "Sources/relay-runner/Board/SessionWheelModel.swift"), encoding: .utf8)
+        XCTAssertEqual(source?.contains("isStartSlot"), false)
     }
 
     func testWheelStartsAtCursorAndKeepsOuterControlsInsideEveryDisplayEdge() {
@@ -493,151 +476,139 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertTrue(small.contains(frame))
     }
 
-    /// RR-519: Add is disabled while all four agents run and is the only
-    /// control: every agent, live or off, stops from its own x, and there is
-    /// no Turn off. The wheel has no Play/Replay, Record or Stop session controls.
-    func testTabControlsReflectTheAgentLimitAndLiveTabs() {
-        let model = SessionWheelModel()
-        model.refresh(sessions: [session("pm")])
-        model.tabs = tabs(1)
-        XCTAssertTrue(model.isEnabled(.add))
-        XCTAssertTrue(model.isEnabled(.close(model.tabs[0])), "Stopping the last agent ends the session")
-        model.tabs = tabs(2, off: [1])
-        XCTAssertTrue(model.tabs.allSatisfy { model.isEnabled(.close($0)) })
-        model.tabs = tabs(4)
-        model.addTabUnavailableReason = "All agents running"
-        XCTAssertFalse(model.isEnabled(.add))
-        model.hover(at: geometry.position(slot: 0, radius: 119))
-        model.hover(at: itemPoint(4, of: 5))
-        XCTAssertEqual(model.hoveredSessionItem, .control(.add))
-        XCTAssertEqual(model.hoverDescriptor(at: itemPoint(4, of: 5)), "All agents running")
-        XCTAssertEqual(SessionWheelTabControl.allCases, [.add])
-        XCTAssertEqual(model.sessionItems.compactMap(\.tab).map(\.name), ["Puck", "Isabella", "George", "Sky"])
-    }
-
-    /// A segment is labelled with its agent's name. Its label and close x sit
-    /// apart like `space-between`: the same padding inside each end of the
-    /// segment, the x after the label in reading order, never overlapping.
-    func testTabSegmentSpacesItsLabelAndCloseXApart() {
-        let radius = geometry.actionRadius
-        let diameter = geometry.tabCloseDiameter
-        for count in 1...SessionAgent.allCases.count {
-            for index in 0..<count {
-                let items = count + 1
-                let arc = geometry.sessionItemArc(index, items: items)
-                let text = SessionAgent.allCases[index].name
-                let layout = geometry.sessionTabLayout(index, items: items, label: text)
-                let width = geometry.trackedLetters(text).width
-                let axis = CGPoint(x: cos(layout.label.rotation), y: sin(layout.label.rotation))
-                let along = (layout.close.point.x - layout.label.point.x) * axis.x
-                    + (layout.close.point.y - layout.label.point.y) * axis.y
-                XCTAssertGreaterThanOrEqual(along, width / 2 + diameter / 2 - 0.5, "\(count) tabs, item \(index)")
-                XCTAssertEqual(layout.close.rotation - layout.label.rotation,
-                               geometry.sessionArcOffset(at: layout.close.point) - geometry.sessionArcOffset(at: layout.label.point),
-                               accuracy: 0.0001, "The x turns with its label")
-                // Padding inside each end of the segment, along the arc.
-                let label = geometry.sessionArcOffset(at: layout.label.point)
-                let close = geometry.sessionArcOffset(at: layout.close.point)
-                let (leading, trailing) = close > label ? (arc.start, arc.start + arc.width) : (arc.start + arc.width, arc.start)
-                let leadingPadding = abs(label - leading) * radius - width / 2 - geometry.segmentGap / 2
-                let trailingPadding = abs(trailing - close) * radius - diameter / 2 - geometry.segmentGap / 2
-                XCTAssertEqual(leadingPadding, trailingPadding, accuracy: 0.01, "\(count) tabs, item \(index)")
-                XCTAssertGreaterThanOrEqual(leadingPadding, 0, "\(count) tabs, item \(index)")
-                XCTAssertLessThanOrEqual(leadingPadding, geometry.tabContentPadding + 0.01)
-                XCTAssertEqual(leadingPadding, geometry.tabContentPadding, accuracy: 0.01,
-                               "Every agent's name keeps the full padding, \(count) tabs, item \(index)")
-                // The label curves with the cell: every letter sits on the arc, give or
-                // take the slight tilt, in reading order, and its outline stays inside the band.
-                XCTAssertEqual(layout.glyphs.count, text.count)
-                for glyph in layout.glyphs {
-                    XCTAssertEqual(glyph.rotation - layout.label.rotation,
-                                   geometry.sessionArcOffset(at: glyph.point) - label + geometry.tabLabelTilt,
-                                   accuracy: 0.01, "Each letter follows the arc, turned by the tilt")
-                    XCTAssertEqual(hypot(glyph.point.x - geometry.center.x, glyph.point.y - geometry.center.y),
-                                   radius, accuracy: 1.5)
-                    var distances: [CGFloat] = []
-                    glyph.outline.applyWithBlock { element in
-                        let count = switch element.pointee.type {
-                        case .moveToPoint, .addLineToPoint: 1
-                        case .addQuadCurveToPoint: 2
-                        case .addCurveToPoint: 3
-                        default: 0
-                        }
-                        for point in UnsafeBufferPointer(start: element.pointee.points, count: count) {
-                            distances.append(hypot(point.x - geometry.center.x, point.y - geometry.center.y))
-                        }
-                    }
-                    guard !distances.isEmpty else { continue } // A space has no outline.
-                    XCTAssertGreaterThan(distances.min() ?? 0, radius - 8, "\(count) tabs, item \(index)")
-                    XCTAssertLessThan(distances.max() ?? .infinity, radius + 8, "\(count) tabs, item \(index)")
-                }
-                let offsets = layout.glyphs.map { geometry.sessionArcOffset(at: $0.point) }
-                XCTAssertEqual(offsets, close > label ? offsets.sorted() : offsets.sorted(by: >), "\(count) tabs, item \(index)")
-            }
-        }
-    }
-
+    /// RR-521: a stopped agent's label and plus both start it; a running
+    /// agent's label switches to it and its X stops it. The wheel stays open
+    /// throughout, including when the first agent starts the session.
     @MainActor
-    func testTabSegmentsAndControlsKeepTheWheelOpen() {
+    func testAgentLabelsAndGlyphsRequestStartSwitchAndStop() {
         _ = NSApplication.shared
         let controller = makeController()
         defer { controller.dismiss() }
-        var live = tabs(1)
-        var performed: [SessionWheelSessionItem] = []
+        var running: [SessionAgent] = []
+        var active: SessionAgent?
+        var performed: [SessionWheelAgentAction] = []
         controller.refresh = { model in
-            model.refresh(sessions: live.isEmpty ? [] : [.init(id: "pm", name: "Puck", isFocused: true)])
-            model.tabs = live
-            model.addTabUnavailableReason = live.count >= 4 ? "All agents running" : nil
+            model.refresh(sessions: running.isEmpty ? [] : [.init(id: "pm", name: "Puck", isFocused: true)])
+            model.runningAgents = Set(running)
+            model.activeAgent = active
         }
-        controller.tabAction = { item in
-            performed.append(item)
-            switch item {
-            case .control(.add):
-                live = live.map { var tab = $0; tab.isActive = false; return tab }
-                live.append(.init(id: "t\(live.count)", name: SessionAgent.allCases[live.count].name, isActive: true))
-            case .tab(let tab):
-                live = live.map { var other = $0; other.isActive = other.id == tab.id; return other }
-            case .close(let tab):
-                live.removeAll { $0.id == tab.id }
-                if !live.isEmpty, !live.contains(where: \.isActive) { live[0].isActive = true }
+        controller.agentAction = { action in
+            performed.append(action)
+            switch action {
+            case .start(let agent): running.append(agent); active = agent
+            case .switchTo(let agent): active = agent
+            case .stop(let agent):
+                running.removeAll { $0 == agent }
+                if active == agent { active = running.first }
             }
             return true
         }
         controller.toggle()
-        for _ in 0..<3 { controller.performTabItem(.control(.add)) }
-        XCTAssertTrue(controller.isVisible)
-        XCTAssertEqual(controller.model.tabs.map(\.name), ["Puck", "Isabella", "George", "Sky"])
-        XCTAssertFalse(controller.model.isEnabled(.add))
-        controller.performTabItem(.control(.add))
-        XCTAssertEqual(controller.model.tabs.count, 4, "A fifth agent changes nothing")
-        XCTAssertEqual(performed.count, 3)
+        let model = controller.model
+        func click(_ agent: SessionAgent, glyph: Bool) {
+            let item = model.sessionItems[agent.order - 1]
+            controller.performAgentAction(glyph ? item.glyphAction : item.labelAction)
+            XCTAssertTrue(controller.isVisible)
+        }
+        click(.puck, glyph: false)
+        XCTAssertEqual(performed.last, .start(.puck), "A stopped agent's name starts it, and the session with it")
+        click(.isabella, glyph: true)
+        XCTAssertEqual(performed.last, .start(.isabella), "A stopped agent's plus starts it")
+        XCTAssertEqual(model.activeAgent, .isabella, "A start makes the agent active")
+        click(.puck, glyph: false)
+        XCTAssertEqual(performed.last, .switchTo(.puck), "A running agent's name switches to it")
+        XCTAssertEqual(model.sessionItems.first(where: \.isActive)?.agent, .puck)
+        click(.isabella, glyph: true)
+        XCTAssertEqual(performed.last, .stop(.isabella), "A running agent's X stops it")
+        click(.puck, glyph: true)
+        XCTAssertEqual(performed.last, .stop(.puck))
+        XCTAssertTrue(model.runningAgents.isEmpty)
+        XCTAssertNil(model.slots[0], "Stopping the last agent ends the session")
+        XCTAssertEqual(performed.count, 5)
 
-        controller.performTabItem(.tab(controller.model.tabs[2]))
-        XCTAssertTrue(controller.isVisible)
-        XCTAssertEqual(controller.model.tabs.first(where: \.isActive)?.id, "t2")
-        controller.performTabItem(.close(controller.model.tabs[2]))
-        XCTAssertTrue(controller.isVisible)
-        XCTAssertEqual(controller.model.tabs.count, 3)
-        XCTAssertNotNil(controller.model.tabs.first(where: \.isActive), "Stopping the active agent moves activity to another live one")
-        controller.performTabItem(.close(controller.model.tabs[2]))
-        XCTAssertEqual(controller.model.tabs.count, 2, "Any agent stops from its own x, not only the active one")
-        XCTAssertEqual(controller.model.tabs.first(where: \.isActive)?.id, "t0")
+        // A start waits while another is starting; switching and stopping never do.
+        model.startUnavailableReason = "Agent starting"
+        controller.performAgentAction(.start(.sky))
+        XCTAssertEqual(performed.count, 5)
+        XCTAssertFalse(model.isEnabled(.start(.sky)))
+        XCTAssertTrue(model.isEnabled(.stop(.sky)))
+        XCTAssertTrue(model.isEnabled(.switchTo(.sky)))
     }
 
     @MainActor
-    func testRefusedTabActionShowsANotice() {
+    func testRefusedAgentActionShowsANotice() {
         _ = NSApplication.shared
         let controller = makeController()
         defer { controller.dismiss() }
-        controller.refresh = { model in
-            model.refresh(sessions: [.init(id: "pm", name: "Puck", isFocused: true)])
-            model.tabs = [.init(id: "t0", name: "Puck", isActive: true)]
-        }
-        controller.tabAction = { _ in false }
+        controller.agentAction = { _ in false }
         controller.toggle()
-        controller.performTabItem(.control(.add))
+        controller.performAgentAction(.start(.george))
         XCTAssertTrue(controller.isVisible)
-        XCTAssertEqual(controller.model.notice, "Couldn't start an agent")
+        XCTAssertEqual(controller.model.notice, "Couldn't start George")
+        controller.performAgentAction(.stop(.george))
+        XCTAssertEqual(controller.model.notice, "Couldn't stop George")
+        controller.performAgentAction(.switchTo(.george))
+        XCTAssertEqual(controller.model.notice, "Couldn't switch agents")
+        for action in [SessionWheelAgentAction.start(.isabella), .stop(.isabella), .switchTo(.isabella)] {
+            XCTAssertTrue(NotchHoverDescriptor.isValid(action.failureNotice), action.failureNotice)
+        }
+    }
+
+    /// A segment is labelled with its agent's two letters. Its label and
+    /// glyph sit apart like `space-between`: the same padding inside each end
+    /// of the segment, the glyph after the label in reading order, never overlapping.
+    func testAgentSegmentSpacesItsLabelAndGlyphApart() {
+        let radius = geometry.actionRadius
+        let diameter = geometry.agentGlyphDiameter
+        for index in 0..<geometry.sessionItemCount {
+            let arc = geometry.sessionItemArc(index)
+            let text = agents[index].shortLabel
+            let layout = geometry.sessionAgentLayout(index, label: text)
+            let width = geometry.trackedLetters(text).width
+            let axis = CGPoint(x: cos(layout.label.rotation), y: sin(layout.label.rotation))
+            let along = (layout.glyph.point.x - layout.label.point.x) * axis.x
+                + (layout.glyph.point.y - layout.label.point.y) * axis.y
+            XCTAssertGreaterThanOrEqual(along, width / 2 + diameter / 2 - 0.5, "item \(index)")
+            XCTAssertEqual(layout.glyph.rotation - layout.label.rotation,
+                           geometry.sessionArcOffset(at: layout.glyph.point) - geometry.sessionArcOffset(at: layout.label.point),
+                           accuracy: 0.0001, "The glyph turns with its label")
+            // Padding inside each end of the segment, along the arc.
+            let label = geometry.sessionArcOffset(at: layout.label.point)
+            let glyph = geometry.sessionArcOffset(at: layout.glyph.point)
+            let (leading, trailing) = glyph > label ? (arc.start, arc.start + arc.width) : (arc.start + arc.width, arc.start)
+            let leadingPadding = abs(label - leading) * radius - width / 2 - geometry.segmentGap / 2
+            let trailingPadding = abs(trailing - glyph) * radius - diameter / 2 - geometry.segmentGap / 2
+            XCTAssertEqual(leadingPadding, trailingPadding, accuracy: 0.01, "item \(index)")
+            XCTAssertGreaterThanOrEqual(leadingPadding, 4, "item \(index)")
+            XCTAssertLessThanOrEqual(leadingPadding, geometry.agentContentPadding + 0.01)
+            // The label curves with the cell: every letter sits on the arc, give or
+            // take the slight tilt, in reading order, and its outline stays inside the band.
+            XCTAssertEqual(layout.glyphs.count, text.count)
+            for letter in layout.glyphs {
+                XCTAssertEqual(letter.rotation - layout.label.rotation,
+                               geometry.sessionArcOffset(at: letter.point) - label + geometry.agentLabelTilt,
+                               accuracy: 0.01, "Each letter follows the arc, turned by the tilt")
+                XCTAssertEqual(hypot(letter.point.x - geometry.center.x, letter.point.y - geometry.center.y),
+                               radius, accuracy: 1.5)
+                var distances: [CGFloat] = []
+                letter.outline.applyWithBlock { element in
+                    let count = switch element.pointee.type {
+                    case .moveToPoint, .addLineToPoint: 1
+                    case .addQuadCurveToPoint: 2
+                    case .addCurveToPoint: 3
+                    default: 0
+                    }
+                    for point in UnsafeBufferPointer(start: element.pointee.points, count: count) {
+                        distances.append(hypot(point.x - geometry.center.x, point.y - geometry.center.y))
+                    }
+                }
+                guard !distances.isEmpty else { continue }
+                XCTAssertGreaterThan(distances.min() ?? 0, radius - 8, "item \(index)")
+                XCTAssertLessThan(distances.max() ?? .infinity, radius + 8, "item \(index)")
+            }
+            let offsets = layout.glyphs.map { geometry.sessionArcOffset(at: $0.point) }
+            XCTAssertEqual(offsets, glyph > label ? offsets.sorted() : offsets.sorted(by: >), "item \(index)")
+        }
     }
 
     func testWorkspaceGlyphUsesNotchColoursAndMotionForEveryStatus() {
@@ -790,25 +761,30 @@ final class SessionWheelTests: XCTestCase {
         for phase in [MeetingNoteCoordinatorPhase.idle, .recording, .paused] {
             captions += SessionWheelNoteAction.allCases.map { $0.caption(for: phase) }
         }
-        captions += SessionWheelTabControl.allCases.map(\.caption)
-        for tab in tabs(4, active: 3, off: [1]) { captions += [tab.caption, tab.closeTitle] }
-        captions += ["All agents running", "Agent starting", "Finish notes first", "No session"]
+        let model = SessionWheelModel()
+        mockupAgents(model)
+        for item in model.sessionItems {
+            captions += [model.caption(for: item.labelAction), model.caption(for: item.glyphAction)]
+        }
+        captions += ["Agent starting", "Finish notes first"]
         for caption in captions {
             XCTAssertTrue(NotchHoverDescriptor.isValid(caption), caption)
         }
-        XCTAssertEqual(SessionWheelTabControl.add.caption, "Add agent")
-        XCTAssertEqual(tabs(2, active: 1)[1].caption, "Isabella active")
-        XCTAssertEqual(tabs(2, off: [1])[1].caption, "Isabella off")
-        XCTAssertEqual(tabs(2)[1].closeTitle, "Stop Isabella")
-        // VoiceOver titles name the agent too.
-        XCTAssertEqual(tabs(2, active: 1)[1].title, "Isabella, active agent")
-        XCTAssertEqual(tabs(2)[1].title, "Make Isabella the active agent")
-        XCTAssertEqual(tabs(2, off: [1])[1].title, "Start Isabella")
-        XCTAssertEqual(SessionWheelSessionItem.close(tabs(4)[3]).title, "Stop Sky")
-        for tab in tabs(4, active: 2, off: [1]) {
-            for text in [tab.caption, tab.closeTitle, tab.title] {
-                XCTAssertNil(text.range(of: #"\bS(ession )?[0-9]"#, options: .regularExpression), text)
-            }
+        // RR-521: the notch and VoiceOver name the action and the agent in full.
+        for agent in SessionAgent.allCases {
+            XCTAssertEqual(SessionWheelAgentAction.start(agent).title, "Start \(agent.name)")
+            XCTAssertEqual(SessionWheelAgentAction.switchTo(agent).title, "Switch to \(agent.name)")
+            XCTAssertEqual(SessionWheelAgentAction.stop(agent).title, "Stop \(agent.name)")
+        }
+        XCTAssertEqual(model.caption(for: .start(.sky)), "Start Sky")
+        XCTAssertEqual(model.caption(for: .switchTo(.isabella)), "Switch to Isabella")
+        XCTAssertEqual(model.caption(for: .stop(.george)), "Stop George")
+        XCTAssertEqual(model.caption(for: .switchTo(.puck)), "Puck active", "The active agent has nothing to switch to")
+        model.startUnavailableReason = "Agent starting"
+        XCTAssertEqual(model.caption(for: .start(.sky)), "Agent starting")
+        XCTAssertEqual(model.caption(for: .stop(.george)), "Stop George")
+        for text in captions {
+            XCTAssertNil(text.range(of: #"\bS(ession )?[0-9]"#, options: .regularExpression), text)
         }
         XCTAssertEqual(SessionWheelNoteAction.pause.caption(for: .recording), "Pause note")
         XCTAssertEqual(SessionWheelSettingsControl.keepAwake.caption, "Keep awake")
@@ -831,7 +807,7 @@ final class SessionWheelTests: XCTestCase {
             model.hover(at: point)
             return model.hoverDescriptor(at: point)
         }
-        XCTAssertEqual(hint(slot: 0), "Start new session")
+        XCTAssertEqual(hint(slot: 0), "Open terminal tab", "RR-521: also with no session running")
         XCTAssertEqual(hint(slot: SessionWheelShortcut.history.rawValue), "Open history tab")
         XCTAssertEqual(hint(slot: SessionWheelShortcut.workspace.rawValue), "Open workspace tab")
         XCTAssertEqual(hint(slot: SessionWheelShortcut.noteTaker.rawValue), "Open notetaker tab")
@@ -859,18 +835,28 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertEqual(hint(slot: noteTaker, radius: geometry.actionRadius,
                             offset: geometry.actionOffset(SessionWheelNoteAction.recording.rawValue)), "Start new note")
 
+        // RR-521: the session slot never starts a session, so its hint never changes.
+        XCTAssertEqual(hint(slot: 0), "Open terminal tab")
+        model.hover(at: labelPoint(0))
+        XCTAssertEqual(model.hoverDescriptor(at: labelPoint(0)), "Start Puck")
+        model.hover(at: glyphPoint(0))
+        XCTAssertEqual(model.hoverDescriptor(at: glyphPoint(0)), "Start Puck")
         model.startUnavailableReason = "Finish notes first"
-        XCTAssertEqual(hint(slot: 0), "Finish notes first")
+        XCTAssertEqual(model.hoverDescriptor(at: glyphPoint(0)), "Finish notes first")
         model.startUnavailableReason = nil
         model.refresh(sessions: [.init(id: "a", name: "general")])
-        model.tabs = tabs(2)
+        mockupAgents(model)
         XCTAssertEqual(hint(slot: 0), "Open terminal tab")
-        let first = geometry.sessionItemArc(0, items: 3)
-        XCTAssertEqual(hint(slot: 0, radius: geometry.actionRadius, offset: first.start + first.width / 2), "Puck active")
-        model.hover(at: geometry.sessionTabClosePoint(1, items: 3, label: "Isabella"))
-        XCTAssertEqual(model.hoverDescriptor(at: geometry.sessionTabClosePoint(1, items: 3, label: "Isabella")), "Stop Isabella")
-        let add = geometry.sessionItemArc(2, items: 3)
-        XCTAssertEqual(hint(slot: 0, radius: geometry.actionRadius, offset: add.start + add.width / 2), "Add agent")
+        model.hover(at: labelPoint(0))
+        XCTAssertEqual(model.hoverDescriptor(at: labelPoint(0)), "Puck active")
+        model.hover(at: labelPoint(1))
+        XCTAssertEqual(model.hoverDescriptor(at: labelPoint(1)), "Switch to Isabella")
+        model.hover(at: glyphPoint(1))
+        XCTAssertEqual(model.hoverDescriptor(at: glyphPoint(1)), "Stop Isabella")
+        model.hover(at: labelPoint(3))
+        XCTAssertEqual(model.hoverDescriptor(at: labelPoint(3)), "Start Sky")
+        model.hover(at: glyphPoint(3))
+        XCTAssertEqual(model.hoverDescriptor(at: glyphPoint(3)), "Start Sky")
 
         model.hover(at: geometry.center)
         XCTAssertEqual(model.hoverDescriptor(at: geometry.center), "Close session wheel")
@@ -879,7 +865,7 @@ final class SessionWheelTests: XCTestCase {
         let outside = CGPoint(x: -30, y: -30)
         model.hover(at: outside)
         XCTAssertNil(model.hoverDescriptor(at: outside))
-        for hint in ["Start new session", "Finish notes first", "Turn on autoplay", "Keep Mac awake", "Adjust particle intensity"] {
+        for hint in ["Open terminal tab", "Finish notes first", "Turn on autoplay", "Keep Mac awake", "Adjust particle intensity"] {
             XCTAssertTrue(NotchHoverDescriptor.isValid(hint), hint)
         }
     }
@@ -1008,7 +994,7 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertFalse(values.isEmpty, "Dragging updates the previewed intensity live")
         controller.finishIntensity(at: session)
         XCTAssertEqual(previews, [true, false, true, false], "Releasing off the slider ends it")
-        XCTAssertNil(controller.model.submenuSlot)
+        XCTAssertFalse(controller.model.isHoveringSettings)
 
         enterSlider()
         controller.adjustIntensity(to: slider)
@@ -1148,11 +1134,11 @@ final class SessionWheelTests: XCTestCase {
     func testWheelRendering() throws {
         let model = SessionWheelModel()
         model.refresh(sessions: [.init(id: "pm", name: "Puck", isFocused: true)])
-        model.tabs = tabs(1)
-        let view = SessionWheelView(model: model, selectSlot: { _, _ in }, performTabItem: { _ in },
+        mockupAgents(model)
+        let view = SessionWheelView(model: model, selectSlot: { _, _ in }, performAgentAction: { _ in },
                                     selectCenter: {}, dismiss: {})
-        for state in ["sessions", "session-notice", "controls", "tabs-1", "tabs-1-close-hover", "tabs-3", "tabs-3-close-hover", "tabs-4",
-                      "tabs-4-add-hover", "tabs-off",
+        for state in ["sessions", "session-notice", "controls", "agents-mockup", "agents-stop-hover", "agents-start-hover",
+                      "agents-none", "agents-all",
                       "shortcuts-empty", "start-unavailable", "notes-idle", "notes-recording", "notes-paused", "notes-saving",
                       "overflow-sessions",
                       "settings-min", "settings-max", "settings-keep-awake-off", "settings-keep-awake-on",
@@ -1166,17 +1152,17 @@ final class SessionWheelTests: XCTestCase {
             case "controls":
                 model.notice = nil
                 model.hover(at: geometry.position(slot: 0, radius: 119))
-            case "tabs-1", "tabs-1-close-hover", "tabs-3", "tabs-3-close-hover", "tabs-4", "tabs-4-add-hover", "tabs-off":
-                // RR-519: the session submenu with that many named agents.
-                let count = state == "tabs-off" ? 3 : Int(state.split(separator: "-")[1]) ?? 1
+            case "agents-mockup", "agents-stop-hover", "agents-start-hover", "agents-none", "agents-all":
+                // RR-521: the four agents' segments; agents-mockup matches the ticket's mockup.
                 model.reset(at: geometry.center)
-                model.refresh(sessions: [.init(id: "pm", name: "Puck", isFocused: true)])
-                model.tabs = tabs(count, active: min(1, count - 1), off: state == "tabs-off" ? [2] : [])
-                model.addTabUnavailableReason = count >= 4 ? "All agents running" : nil
-                model.hover(at: geometry.position(slot: 0, radius: 119))
-                model.hover(at: state.hasSuffix("-close-hover") ? geometry.sessionTabClosePoint(0, items: count + 1, label: "Puck")
-                            : state == "tabs-4-add-hover" ? itemPoint(count, of: count + 1)
-                            : geometry.sessionTabLayout(0, items: count + 1, label: "Puck").label.point)
+                let none = state == "agents-none"
+                model.refresh(sessions: none ? [] : [.init(id: "pm", name: "Puck", isFocused: true)])
+                mockupAgents(model)
+                if none { model.runningAgents = [] }
+                if state == "agents-all" { model.runningAgents = Set(SessionAgent.allCases) }
+                openSessionSubmenu(model)
+                model.hover(at: state == "agents-stop-hover" ? glyphPoint(1)
+                            : state == "agents-start-hover" ? glyphPoint(3) : geometry.position(slot: 0, radius: 119))
             case "shortcuts-empty":
                 model.reset(at: geometry.center)
                 model.refresh(sessions: [])
@@ -1226,7 +1212,7 @@ final class SessionWheelTests: XCTestCase {
                     model.refresh(sessions: (0..<geometry.sessionSlots.count).map {
                         .init(id: "\($0)", name: "Project \($0 + 1)")
                     })
-                    model.tabs = tabs(2)
+                    mockupAgents(model)
                     model.hover(at: geometry.position(slot: slot, radius: 119))
                 }
             }
