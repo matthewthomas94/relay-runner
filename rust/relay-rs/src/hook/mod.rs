@@ -7,10 +7,12 @@
 //! automatic-compaction diagnostics and the session binding. It never logs
 //! prompt text, final response text, transcript paths, summaries or raw
 //! payloads. On a foreground `UserPromptSubmit` it prints the session's
-//! pending agent notices as the provider's prompt context (RR-525).
+//! pending agent notices as the provider's prompt context (RR-525). On a
+//! foreground `PreToolUse` it enforces the checkout claim (RR-527, `claim`).
 
 mod binding;
 mod broker;
+mod claim;
 mod compaction;
 mod continuation;
 mod turns;
@@ -236,6 +238,23 @@ fn deliver_agent_notices(event: &Event) {
     }
 }
 
+/// RR-527: a foreground agent's tool call that would change a checkout
+/// another agent holds is denied before it runs. Only this check runs on
+/// `PreToolUse`: no binding, turn or compaction work, so a tool call costs
+/// one process start and, only for writes, one local daemon request.
+fn check_checkout_claim(payload: &Dict) {
+    if !is_foreground_owner(&support::ownership_from_environment()) {
+        return;
+    }
+    let daemon = crate::bridge::notices::LocalDaemon;
+    let home = env_text("HOME");
+    if let Some(output) =
+        claim::pre_tool_use(payload, &env_text("RELAY_SESSION_KEY"), &home, &daemon)
+    {
+        println!("{output}");
+    }
+}
+
 /// One lifecycle event on stdin. Always exits 0: a hook must never fail the
 /// provider's turn.
 fn run_lifecycle_event() -> u8 {
@@ -247,6 +266,10 @@ fn run_lifecycle_event() -> u8 {
             return 0;
         }
     };
+    if payload.text("hook_event_name") == "PreToolUse" {
+        check_checkout_claim(&payload);
+        return 0;
+    }
     if binding::record_session_binding(&payload, false, None).is_err() {
         note("session binding unavailable");
     }

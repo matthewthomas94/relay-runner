@@ -38,7 +38,7 @@ The suite needs macOS (`/bin/ps`, `/usr/sbin/lsof`, an 8192-byte FIFO buffer) an
 
 | Arguments | stdin | stdout | Exit code |
 | --- | --- | --- | --- |
-| none | One lifecycle event, a JSON object | Empty, except the agent-notice context below | Always 0 |
+| none | One lifecycle event, a JSON object | Empty, except the agent-notice context and the checkout-claim denial below | Always 0 |
 | `--record-process` | Ignored | Empty | 0 when the binding was written, otherwise 1 |
 | `--record-codex-startup` | Ignored | Empty | 0 when the binding names a native session, otherwise 1 |
 | `--context-continuation` | One request, a JSON object | One JSON object and a newline | Always 0 |
@@ -55,8 +55,8 @@ The suite sets these and no others, apart from `PATH`, `HOME` and, in one case, 
 | `RELAY_RUNNER_PROVIDER` | hook | `claude` or `codex`. Selects the transcript parser and the turn-id rule. |
 | `RELAY_APP_SESSION_ID`, `RELAY_RECOVERY_GENERATION`, `RELAY_ACTOR_ROLE`, `RELAY_FOREGROUND_GATE_HANDLE` | both | Foreground ownership. It holds when the role is `foreground_pm` or `foreground_manual` and the other three are non-empty. |
 | `RELAY_PROVIDER_SESSION_ID` | both | The app's id for this provider launch (a UUID). |
-| `RELAY_SESSION_KEY` | both | The voice session key. The reply helper falls back to the last component of `RELAY_SESSION_SPOOL_DIR`. The hook claims this session's agent notices. |
-| `ORCHESTRATOR_PORT_FILE`, `ORCHESTRATOR_DEFAULT_PORT` | hook | Where the orchestrator daemon listens (default `/tmp/relay_orchestrator.port`, else port 7634), for the agent-notice claim. |
+| `RELAY_SESSION_KEY` | both | The voice session key. The reply helper falls back to the last component of `RELAY_SESSION_SPOOL_DIR`. The hook claims this session's agent notices and checks its checkout claims. |
+| `ORCHESTRATOR_PORT_FILE`, `ORCHESTRATOR_DEFAULT_PORT` | hook | Where the orchestrator daemon listens (default `/tmp/relay_orchestrator.port`, else port 7634), for the agent-notice claim and the checkout-claim check. |
 | `RELAY_SESSION_SPOOL_DIR` | reply helper | The session's spool directory. |
 | `VOICE_COMMAND_CLAIM_FILE` | both | The command this session claimed (input). |
 | `VOICE_COMMAND_STATE_FILE` | both | The newest command and its dispositions (input). |
@@ -81,7 +81,7 @@ The event is a JSON object. The hook reads `hook_event_name`, `session_id`, `tur
 
 A turn is named by `turn_id`. Claude sends none, so for Claude `prompt_id` stands in; for Codex `prompt_id` is ignored. An event with neither is tracked by a local sequence number, or by the session alone.
 
-Every event first rewrites the session binding (see below). Then:
+Every event but `PreToolUse` first rewrites the session binding (see below). Then:
 
 | Event | Provider | Effect |
 | --- | --- | --- |
@@ -90,6 +90,7 @@ Every event first rewrites the session binding (see below). Then:
 | `Stop` | both | Closes the turn and publishes the final reply. |
 | `StopFailure` | Claude | Closes the turn as failed and publishes a completion without text. |
 | `PreCompact`, `PostCompact` | both | Record a compaction attempt and its result. Need no foreground ownership. |
+| `PreToolUse` | both | Checks the checkout claim (below). Only that: no binding, turn or compaction work. Needs foreground ownership. |
 
 Without foreground ownership, `UserPromptSubmit`, `Stop` and `StopFailure` only rewrite the session binding. Otherwise every event after `SessionStart` appends one context diagnostic.
 
@@ -102,6 +103,21 @@ On a foreground `UserPromptSubmit` that is not a provider continuation (no `pare
 ```
 
 Claude Code and Codex both add `additionalContext` to the turn as model context; neither speaks it or shows it as a reply. With no notices, no key or no daemon the hook prints nothing, as before. A voice turn's notices were already appended to its prompt and claimed by the bridge, so the hook finds none for it. See [Agent presence](../agent-presence.md).
+
+### The checkout claim before a tool call
+
+The app registers the hook for `PreToolUse` on the shell and file-writing tools only: Claude Code's matcher is `Write|Edit|MultiEdit|NotebookEdit|Bash`, Codex's `Bash|apply_patch`. On a foreground `PreToolUse` with a valid `RELAY_SESSION_KEY` the hook reads `tool_name`, `tool_input` and `cwd` and works out what the call would change:
+
+- `Write`, `Edit`, `MultiEdit`: `tool_input.file_path`; `NotebookEdit`: `tool_input.notebook_path`; Codex `apply_patch`: each `*** Add File:`, `*** Update File:`, `*** Delete File:` and `*** Move to:` path in `tool_input.command`. Relative paths are taken against `cwd`.
+- `Bash` (both providers' shell): the directory of each `git checkout`, `switch`, `commit`, `merge`, `rebase`, `reset`, `stash`, `cherry-pick`, `revert`, `pull`, `push` or `tag` in `tool_input.command` (the shell's `cwd`, after any `cd`, or `git -C`, `--work-tree`, `--git-dir`); `gh release create|edit|delete|upload|delete-asset` and `gh workflow run`; and a release script (`build-dmg.sh`, `generate-appcast.sh`, `release*`). Leading `VAR=value` assignments, `env`, `command`, `sudo` and similar wrappers, and `sh|bash|zsh -c '…'` are seen through. `git stash list|show`, `git tag` listing forms, `--dry-run`, `push -n` and `--help` are read-only.
+
+A call that changes nothing of these prints nothing and asks no daemon. Otherwise the hook posts `POST /v1/checkout-claims/write {"relay_session_key", "paths", "action"}` (one second timeout). Only a `"decision": "refuse"` answer prints, as one line:
+
+```json
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Refused by the Relay checkout claim: Puck holds the claim on …"}}
+```
+
+Claude Code and Codex both block the call and show the reason to the model. An allowed call, a daemon that does not answer and a missing key print nothing, so the call goes ahead. Not seen: commands inside `$(…)` or backticks, `eval`, aliases and functions, scripts that run git themselves, and shell file writes (`>`, `sed -i`, `rm`, `mv`, `cp`). See [Checkout claims](../agent-presence.md#checkout-claims).
 
 ### Binding a prompt
 

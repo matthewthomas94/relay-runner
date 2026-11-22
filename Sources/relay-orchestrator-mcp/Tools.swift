@@ -1128,6 +1128,109 @@ struct AgentPresenceTool: MCPTool {
     }
 }
 
+// MARK: - Checkout claims (RR-527)
+
+/// The caller's key, required by the claim tools.
+private func requireCallerSessionKey(environment: [String: String]) throws -> String {
+    guard let key = callerSessionKey(environment: environment) else {
+        throw MCPToolError(message: "This session has no RELAY_SESSION_KEY; checkout claims are held only by Relay Runner agent sessions.")
+    }
+    return key
+}
+
+struct ClaimCheckoutTool: MCPTool {
+    let name = "claim_checkout"
+    let description = """
+        Take the checkout claim on a registered project's checkout before changing it, with a one-line \
+        purpose, for example before cutting a release. One agent at a time holds a checkout: while you hold \
+        it, other Relay agents' file edits, branch switches, commits, pushes and release scripts there are \
+        refused. Your first file edit or git change there takes the claim anyway (Claude Code and Codex hooks \
+        enforce it), so claim explicitly to state a purpose. Calling it again refreshes the claim and replaces \
+        the purpose. It is released by release_checkout, when your session stops, or after 30 minutes without \
+        a write. Fails, naming the holder, when another agent holds it: then stop and ask the user; never work \
+        around it. general-tasks and worktrees are never claimable.
+        """
+
+    var inputSchema: [String: Any] {
+        [
+            "type": "object",
+            "properties": [
+                "repo_path": [
+                    "type": "string",
+                    "description": "Absolute path to the registered project's checkout, e.g. ~/dev/relay-runner.",
+                ],
+                "purpose": [
+                    "type": "string",
+                    "description": "One line on why, shown to the other agents, e.g. 'cutting release v0.7.7'.",
+                ],
+            ],
+            "required": ["repo_path", "purpose"],
+        ]
+    }
+
+    static func body(arguments: [String: Any], environment: [String: String] = ProcessInfo.processInfo.environment) throws -> [String: Any] {
+        [
+            "relay_session_key": try requireCallerSessionKey(environment: environment),
+            "repo_path": try requireString(arguments, "repo_path"),
+            "purpose": try requireString(arguments, "purpose"),
+        ]
+    }
+
+    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
+        try await proxy(method: "POST", path: "/v1/checkout-claims/claim", body: try Self.body(arguments: arguments))
+    }
+}
+
+struct ReleaseCheckoutTool: MCPTool {
+    let name = "release_checkout"
+    let description = """
+        Release your checkout claim on a project's checkout when you are done changing it, so another Relay \
+        agent can work there. Omit repo_path to release every claim you hold. Only the holder can release a \
+        claim. The other running agents each get one silent agent notice.
+        """
+
+    var inputSchema: [String: Any] {
+        [
+            "type": "object",
+            "properties": [
+                "repo_path": [
+                    "type": "string",
+                    "description": "Absolute path to the checkout to release; omit to release all of yours.",
+                ],
+            ],
+        ]
+    }
+
+    static func body(arguments: [String: Any], environment: [String: String] = ProcessInfo.processInfo.environment) throws -> [String: Any] {
+        var body: [String: Any] = ["relay_session_key": try requireCallerSessionKey(environment: environment)]
+        if let path = arguments["repo_path"] as? String, !path.isEmpty {
+            body["repo_path"] = path
+        }
+        return body
+    }
+
+    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
+        try await proxy(method: "POST", path: "/v1/checkout-claims/release", body: try Self.body(arguments: arguments))
+    }
+}
+
+struct CheckoutClaimsTool: MCPTool {
+    let name = "checkout_claims"
+    let description = """
+        Read which Relay agent holds which project checkout claim: the agent, the checkout, its purpose, \
+        when it was claimed, its last write and when it expires. Read-only. agent_presence returns the \
+        same claims beside each agent's repositories.
+        """
+
+    var inputSchema: [String: Any] {
+        ["type": "object", "properties": [String: Any]()]
+    }
+
+    func call(arguments: [String: Any]) async throws -> [[String: Any]] {
+        try await proxy(method: "GET", path: "/v1/checkout-claims")
+    }
+}
+
 // MARK: - get_relay_instructions
 
 // Claude Code truncates `initialize` instructions at 2048 characters, so

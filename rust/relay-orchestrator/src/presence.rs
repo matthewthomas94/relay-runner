@@ -41,6 +41,11 @@
 //!   nothing. Edits of one ticket by one agent collapse into one line until
 //!   the receiver's next delivery.
 //!
+//! - **Checkout claims** (RR-527, `claims`). At most one agent holds the
+//!   claim on a registered project's checkout; another agent's write there is
+//!   refused. Claims live in the same record, are released when their
+//!   session's spool goes, and are announced through the same notice queue.
+//!
 //! The record survives a daemon restart in `<data root>/agent_presence.json`;
 //! every read first sweeps it against the live spools, so the entries of a
 //! session that no longer exists are gone after a daemon or app restart.
@@ -61,6 +66,10 @@ use crate::failure::{Failure, Outcome};
 use crate::relay_command::{optional_relay_session_key, relay_session_key};
 use crate::request::Request;
 use crate::router::{Reply, reply};
+
+mod claims;
+
+pub use claims::{Acquired, CLAIM_IDLE_SECONDS, Claim, Released, checkout_for};
 
 /// A repository leaves an agent's set after two hours without activity.
 pub const IDLE_SECONDS: f64 = 2.0 * 60.0 * 60.0;
@@ -292,6 +301,8 @@ struct State {
     /// Per receiver, notices dropped from a full queue.
     overflow: Vec<(String, i64)>,
     next_seq: i64,
+    /// RR-527: who holds which checkout.
+    claims: Vec<Claim>,
 }
 
 /// Notices one session claimed.
@@ -681,6 +692,19 @@ impl Presence {
         true
     }
 
+    /// Queues `text` once for every running agent except `sender`.
+    fn queue_notice(state: &mut State, sender: &str, text: &str, now: f64) {
+        let receivers: Vec<String> = state
+            .sessions
+            .iter()
+            .filter(|session| session.key != sender)
+            .map(|session| session.key.clone())
+            .collect();
+        for receiver in receivers {
+            Self::queue_for(state, &receiver, text, "", now);
+        }
+    }
+
     /// Queues `text` for one receiver, keeping its queue within
     /// `RECEIVER_QUEUE_LIMIT`; `key` lets later notices collapse into it.
     fn queue_for(state: &mut State, receiver: &str, text: &str, key: &str, now: f64) {
@@ -775,8 +799,10 @@ impl Presence {
                 };
                 Self::queue_for(state, &receiver, &text, "", now);
             }
+            claims::release_stopped(state, session, now);
             changed = true;
         }
+        changed |= claims::sweep(state, now);
         let live_keys: Vec<String> = state
             .sessions
             .iter()
@@ -973,6 +999,7 @@ impl Presence {
                 format!("- {name} is working in {}.", described.join(", "))
             });
         }
+        lines.extend(self.claim_lines(exclude_agent));
         lines.join("\n")
     }
 
@@ -1055,6 +1082,7 @@ impl Presence {
                 .get("next_seq")
                 .and_then(Value::py_int)
                 .unwrap_or(0),
+            claims: list("claims").iter().filter_map(Claim::from_dict).collect(),
         }
     }
 
@@ -1122,6 +1150,16 @@ impl Presence {
         document.insert("notices", Value::List(notices));
         document.insert("overflow", Value::List(overflow));
         document.insert("next_seq", state.next_seq);
+        document.insert(
+            "claims",
+            Value::List(
+                state
+                    .claims
+                    .iter()
+                    .map(|claim| Value::Dict(claim.to_dict()))
+                    .collect(),
+            ),
+        );
         let temporary = self.path.with_extension("json.tmp");
         let written = fs::write(&temporary, json::dumps(&Value::Dict(document)))
             .and_then(|()| fs::rename(&temporary, &self.path));
@@ -1238,6 +1276,7 @@ impl Daemon {
             ),
         );
         body.insert("startup_text", self.presence.startup_text(exclude));
+        body.insert("checkout_claims", self.presence.public_claims());
         reply(200, body)
     }
 
@@ -1260,6 +1299,7 @@ impl Daemon {
                     .collect(),
             ),
         );
+        body.insert("checkout_claims", self.presence.public_claims());
         claimed.insert_into(&mut body);
         reply(200, body)
     }
@@ -1368,13 +1408,13 @@ mod tests {
 
     /// A temporary spool root, record file and general-tasks folder, with a
     /// clock the test moves.
-    struct Fixture {
+    pub(super) struct Fixture {
         root: PathBuf,
         clock: Arc<AtomicU64>,
     }
 
     impl Fixture {
-        fn new(name: &str) -> Self {
+        pub(super) fn new(name: &str) -> Self {
             let root = std::env::temp_dir().join(format!(
                 "relay-presence-{name}-{}-{:?}",
                 std::process::id(),
@@ -1391,7 +1431,7 @@ mod tests {
             }
         }
 
-        fn open(&self) -> Presence {
+        pub(super) fn open(&self) -> Presence {
             let clock = self.clock.clone();
             Presence::open(
                 self.root.join("agent_presence.json"),
@@ -1401,21 +1441,21 @@ mod tests {
             )
         }
 
-        fn start(&self, key: &str, agent: &str) {
+        pub(super) fn start(&self, key: &str, agent: &str) {
             let spool = self.root.join("relay-sessions").join(key);
             fs::create_dir_all(&spool).unwrap();
             fs::write(spool.join("session_agent"), format!("{agent}\n")).unwrap();
         }
 
-        fn stop(&self, key: &str) {
+        pub(super) fn stop(&self, key: &str) {
             fs::remove_dir_all(self.root.join("relay-sessions").join(key)).unwrap();
         }
 
-        fn advance(&self, seconds: u64) {
+        pub(super) fn advance(&self, seconds: u64) {
             self.clock.fetch_add(seconds, Ordering::SeqCst);
         }
 
-        fn repo(&self, name: &str) -> String {
+        pub(super) fn repo(&self, name: &str) -> String {
             self.root.join(name).to_string_lossy().into_owned()
         }
     }

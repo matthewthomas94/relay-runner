@@ -539,7 +539,9 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertTrue(codexScript.contains("hooks.PostCompact="))
         XCTAssertTrue(codexScript.contains("Relay voice prompt binding"))
         XCTAssertTrue(codexScript.contains("Relay voice completion"))
-        XCTAssertEqual(Self.hookRegistrations(in: codexScript, target: .codex, hook: Self.hook), 4)
+        // RR-527: the checkout-claim check, on the shell and file-writing tools only.
+        XCTAssertTrue(codexScript.contains("hooks.PreToolUse=[{ matcher = \"Bash|apply_patch\", hooks ="))
+        XCTAssertEqual(Self.hookRegistrations(in: codexScript, target: .codex, hook: Self.hook), 5)
         XCTAssertFalse(codexScript.contains("--settings"))
 
         XCTAssertTrue(claudeScript.contains("--settings"))
@@ -548,7 +550,8 @@ final class ProcessManagerLaunchTests: XCTestCase {
         XCTAssertTrue(claudeScript.contains("\"StopFailure\""))
         XCTAssertTrue(claudeScript.contains("\"PreCompact\""))
         XCTAssertTrue(claudeScript.contains("\"PostCompact\""))
-        XCTAssertEqual(Self.hookRegistrations(in: claudeScript, target: .claude, hook: Self.hook), 6)
+        XCTAssertTrue(claudeScript.contains("\"PreToolUse\":[{\"matcher\":\"Write|Edit|MultiEdit|NotebookEdit|Bash\",\"hooks\":"))
+        XCTAssertEqual(Self.hookRegistrations(in: claudeScript, target: .claude, hook: Self.hook), 7)
         XCTAssertFalse(claudeScript.contains("--dangerously-bypass-hook-trust"))
         for script in [codexScript, claudeScript] {
             XCTAssertFalse(script.contains("relay_completion_hook.py"))

@@ -2,7 +2,7 @@
 
 Relay Runner runs up to four named foreground agents at once — Puck, Isabella, George and Sky (see [Named agents](orchestrator.md#named-agents)). All four are general sessions that can reach every registered project, so two of them can end up in the same repository. Agent presence (RR-525) records which repositories each running agent is working in and tells the other agents, one way and silently.
 
-Two later tickets build on this: overlap and action notices between agents that share a repository (RR-526, [Sharing a repository](#sharing-a-repository)) and an enforced claim on a shared checkout (RR-527). The interfaces they reuse are listed under [Interfaces](#interfaces).
+Two later tickets build on this: overlap and action notices between agents that share a repository (RR-526, [Sharing a repository](#sharing-a-repository)) and an enforced claim on a shared checkout (RR-527, [Checkout claims](#checkout-claims)). The interfaces they reuse are listed under [Interfaces](#interfaces).
 
 ## What is recorded
 
@@ -125,6 +125,45 @@ Overlap and action notices use RR-525's queue and delivery unchanged, so both pr
 - `agent_presence` — no arguments. Returns all four agents: `agent`, `name`, `running`, `session_key`, `repositories` (each `repo_path`, `name`, `source`, `detail`, `note`, `tickets`, `first_seen`, `last_seen`, newest first) and `last_activity`, with the caller's notices.
 
 Both identify the caller by its session key.
+
+## Checkout claims
+
+Presence and notices are advice. The checkout claim (RR-527) is the one hard rule: one agent at a time edits files, switches branches or releases in a registered project's checkout, and a second agent is refused and told who holds it. Worker runs are unaffected; each has its own worktree.
+
+### The claim
+
+- **At most one holder per checkout.** A claim records the agent, its session key, the checkout, a one-line purpose and the time of the holder's last write. It lives in the presence record (`agent_presence.json`, `claims`).
+- **Taken by writing.** An agent does not have to remember to claim: its first write to a free checkout takes the claim with the write as its purpose (for example `Edit README.md` or `git commit`), and each further write refreshes it. `claim_checkout` takes it explicitly with a purpose, for example before cutting a release, and refreshes it with a new purpose when the caller already holds it.
+- **Released** by `release_checkout` (only by its holder), when the holder's session stops (its spool goes, in the presence sweep), and after 30 minutes without a write by the holder.
+- **What is claimable.** The checkout is the longest registered repository containing the path. The built-in general-tasks project is never claimable, nor are the daemon's worker workspaces and data root, nor a Claude Code worktree under `.claude/worktrees`. A path outside every registered repository is not enforced.
+- **Notices.** Taking and releasing a claim queues one agent notice for every other running agent, for example `Agent notice: Puck took the checkout claim on relay-runner (cutting release v0.7.7); …` and `Agent notice: Puck released the checkout claim on relay-runner (30 minutes without a write).` Claims appear in `agent_presence` (`checkout_claims`), in `checkout_claims`, and in a starting session's startup presence.
+
+### What is enforced
+
+The provider's pre-tool hook (`relay-rs hook` on `PreToolUse`; see the [hook contract](specs/hook-contract.md#the-checkout-claim-before-a-tool-call)) checks the claim before a foreground agent's tool call changes a checkout, and denies the call with the holder's name, purpose and last write and the rule below when another agent holds it:
+
+- **File-writing tools** whose target is inside the checkout: Claude Code's `Write`, `Edit`, `MultiEdit` and `NotebookEdit`; Codex's `apply_patch` (every file its patch adds, updates, deletes or moves to).
+- **Shell commands** that change the checkout's git state or its remote, run from inside it, after `cd`, or with `git -C`: `git checkout`, `switch`, `commit`, `merge`, `rebase`, `reset`, `stash`, `cherry-pick`, `revert`, `pull`, `push` and `tag`; `gh release create|edit|delete|upload` and `gh workflow run`; and the project's release scripts (`scripts/build-dmg.sh`, `scripts/generate-appcast.sh`, any `release*` script).
+
+Read-only commands are never refused (`git status`, `git log`, `git diff`, `git stash list`, `git tag -l`, `--dry-run`, …), and neither are reads, searches, tests and builds, ticket writes through the daemon or dispatching. A call that changes none of the above never contacts the daemon, and a daemon that does not answer allows the call.
+
+**Not enforced.** Shell parsing is by name, not a full shell: a git command inside `$(…)` or backticks, `eval`, an alias or shell function, a script that runs git itself, and shell file writes (`>` redirection, `sed -i`, `rm`, `mv`, `cp`, `tee`) are not seen. The PM instructions therefore tell an agent to claim the checkout before changing it any other way. **Known gap:** the daemon's own merges of reviewed worker branches into a checkout neither take nor respect a claim, so a merge can land in a checkout another agent holds.
+
+### The rule for a refused agent
+
+A refused call means another agent holds the checkout. The agent must not work around it: no writing through another tool or the shell, no copying the checkout, no waiting or retrying in a loop. It tells the user which agent holds the claim and why, and asks how to proceed. Both providers' instructions carry this rule (the generated orchestrator rules, the compact Claude Code payload and the app-owned session instructions).
+
+### Claude and Codex
+
+Both providers enforce the claim the same way. Claude Code's `PreToolUse` hook is registered in the app's `--settings` JSON; Codex's with `-c hooks.PreToolUse=[{ matcher = "Bash|apply_patch", … }]` beside its other hooks. Codex's pinned source ([`openai/codex@cf3ff15`](https://github.com/openai/codex/blob/cf3ff1530d821ec2d26452da4971d8e3e7d18d25/codex-rs/hooks/src/events/pre_tool_use.rs)) runs a `PreToolUse` command hook before its shell (`exec_command`, reported as `Bash` with `{"command"}` and the command's working directory as `cwd`) and before `apply_patch` (`{"command": <patch>}`, also matched by `Write|Edit`), and blocks the call on `permissionDecision: "deny"` with a non-empty `permissionDecisionReason` (output schema `codex-rs/hooks/schema/generated/pre-tool-use.command.output.schema.json`), the same output Claude Code reads. Codex rejects a bare `allow`, so an allowed call prints nothing for both. No live Codex session was available when this shipped, so the Codex path rests on that source and the hook's tests; the Claude path was checked against its hooks documentation.
+
+### Tools
+
+- `claim_checkout` — `repo_path`, `purpose` (one line). Takes or refreshes the caller's claim; fails naming the holder when another agent holds it.
+- `release_checkout` — optional `repo_path`; without it, releases every claim the caller holds.
+- `checkout_claims` — no arguments. Every current claim.
+
+The routes are in the [orchestrator HTTP API](specs/orchestrator-http-api.md#checkout-claims).
 
 ## Interfaces
 
