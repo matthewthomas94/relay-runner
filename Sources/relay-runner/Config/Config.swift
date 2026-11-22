@@ -84,12 +84,10 @@ struct SttConfig: Codable, Equatable {
     }
 }
 
+/// Each agent speaks in its own voice (`SessionAgent.voiceID`, RR-520), so
+/// there is no voice setting; a saved `voice` is ignored and dropped on save.
 struct TtsConfig: Codable, Equatable {
-    /// Kokoro voices offered in Settings; any other saved voice loads as Puck.
-    static let standardVoices = ["am_puck", "bm_george", "bf_isabella", "af_sky"]
-
     var engine: String = "kokoro"
-    var voice: String = "am_puck"
     var rate: Double = 1.3
     var auto_play: Bool = false
     var chime: String = "Tink"

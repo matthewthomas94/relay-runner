@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "provenance": "RR-520: each named agent's Kokoro voice, in table order. Pins SessionAgent.voiceID (Swift) and AGENT_VOICES in rust/relay-speech/src/agents.rs to the same four pairs.",
+  "agents": [
+    {"slug": "puck", "voice": "am_puck"},
+    {"slug": "isabella", "voice": "bf_isabella"},
+    {"slug": "george", "voice": "bm_george"},
+    {"slug": "sky", "voice": "af_sky"}
+  ]
+}

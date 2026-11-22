@@ -278,6 +278,11 @@ pub struct StateSocket {
 
 impl StateSocket {
     pub fn from_environment(tutorial: bool) -> Self {
+        // Unit tests never reach a running app's overlay.
+        if cfg!(test) {
+            let path = std::env::temp_dir().join("relay-speech-unit-test-voice-state.sock");
+            return Self { path, tutorial };
+        }
         let path = std::env::var_os("VOICE_STATE_SOCK")
             .filter(|path| !path.is_empty())
             .map_or_else(|| PathBuf::from("/tmp/voice_state.sock"), PathBuf::from);

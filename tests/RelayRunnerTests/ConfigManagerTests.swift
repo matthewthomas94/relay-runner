@@ -11,9 +11,8 @@ final class ConfigManagerTests: XCTestCase {
         let loaded = manager.load()
         let raw = try String(contentsOf: manager.configPath, encoding: .utf8)
 
-        XCTAssertEqual(loaded.tts.voice, "am_puck")
         XCTAssertEqual(loaded.tts.rate, 1.3)
-        XCTAssertTrue(raw.contains("voice = \"am_puck\""))
+        XCTAssertFalse(raw.contains("voice ="), "Each agent speaks in its own voice (RR-520)")
         XCTAssertTrue(raw.contains("rate = 1.3"))
         XCTAssertFalse(raw.contains("prevent_sleep_while_running"))
     }
@@ -39,28 +38,38 @@ final class ConfigManagerTests: XCTestCase {
         try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
         try """
         [tts]
-        voice = "bf_isabella"
         auto_play = true
         """.write(to: manager.configPath, atomically: true, encoding: .utf8)
 
         let loaded = manager.load()
 
-        XCTAssertEqual(loaded.tts.voice, "bf_isabella")
         XCTAssertTrue(loaded.tts.auto_play)
         XCTAssertEqual(loaded.tts.rate, 1.3)
     }
 
-    func testVoiceOutsideStandardSetFallsBackToPuck() throws {
-        XCTAssertEqual(TtsConfig.standardVoices, ["am_puck", "bm_george", "bf_isabella", "af_sky"])
+    /// RR-520: each agent speaks in its own voice, so a saved voice loads
+    /// without error, changes nothing, and is gone after the next save.
+    func testSavedVoiceIsIgnoredAndDroppedOnSave() throws {
         let configDir = temporaryConfigDir()
         let manager = ConfigManager(configDir: configDir)
         try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
         try """
         [tts]
-        voice = "af_bella"
+        voice = "bm_george"
+        rate = 1.5
+        auto_play = true
+        chime = "Glass"
         """.write(to: manager.configPath, atomically: true, encoding: .utf8)
 
-        XCTAssertEqual(manager.load().tts.voice, "am_puck")
+        let loaded = manager.load()
+        XCTAssertEqual(loaded.tts, TtsConfig(rate: 1.5, auto_play: true, chime: "Glass"))
+        try manager.save(loaded)
+        let raw = try String(contentsOf: manager.configPath, encoding: .utf8)
+
+        XCTAssertFalse(raw.contains("voice"))
+        XCTAssertFalse(raw.contains("bm_george"))
+        XCTAssertTrue(raw.contains("rate = 1.5"))
+        XCTAssertEqual(manager.load().tts, loaded.tts)
     }
 
     func testExplicitTTSRateIsPreserved() throws {
@@ -178,8 +187,8 @@ final class ConfigManagerTests: XCTestCase {
         XCTAssertFalse(raw.contains("message_preview"))
     }
 
-    /// RR-462 removed custom voices: a leftover id loads, speech keeps the built-in voice,
-    /// and the key is gone after the next save.
+    /// RR-462 removed custom voices: a leftover id loads and the key is gone
+    /// after the next save.
     func testLegacyCustomVoiceIdIsIgnoredAndNotSerialized() throws {
         let configDir = temporaryConfigDir()
         let manager = ConfigManager(configDir: configDir)
@@ -192,13 +201,11 @@ final class ConfigManagerTests: XCTestCase {
         """.write(to: manager.configPath, atomically: true, encoding: .utf8)
 
         let loaded = manager.load()
-        XCTAssertEqual(loaded.tts.voice, "bm_george")
         XCTAssertEqual(loaded.tts.rate, 1.1)
         try manager.save(loaded)
         let raw = try String(contentsOf: manager.configPath, encoding: .utf8)
 
         XCTAssertFalse(raw.contains("custom_voice_id"))
-        XCTAssertTrue(raw.contains("voice = \"bm_george\""))
     }
 
     func testLegacyCodexReasoningEffortMigratesToOrchestratorEffort() throws {

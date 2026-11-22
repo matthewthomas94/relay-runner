@@ -1,5 +1,6 @@
 //! The `[tts]` keys speech reads from `config.toml`, with the defaults and
-//! migrations of `services/config.py`: `voice`, `rate`, `chime`, `auto_play`.
+//! migrations of `services/config.py`: `rate`, `chime`, `auto_play`. A saved
+//! `voice` is ignored: each agent speaks in its own voice (RR-520, `agents`).
 //!
 //! Only `[tts]` is read, so this is a small line-based reader rather than a
 //! TOML library: strings, booleans and numbers under table headers, skipping
@@ -7,15 +8,11 @@
 
 use std::path::{Path, PathBuf};
 
-/// `STANDARD_VOICES` in services/config.py.
-pub const STANDARD_VOICES: [&str; 4] = ["am_puck", "bm_george", "bf_isabella", "af_sky"];
-pub const DEFAULT_VOICE: &str = "am_puck";
 pub const DEFAULT_RATE: f64 = 1.3;
 pub const DEFAULT_CHIME: &str = "Tink";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TtsConfig {
-    pub voice: String,
     pub rate: f64,
     /// The chime's file, resolved like `_resolve_chime`.
     pub chime: PathBuf,
@@ -25,7 +22,6 @@ pub struct TtsConfig {
 impl Default for TtsConfig {
     fn default() -> Self {
         Self {
-            voice: DEFAULT_VOICE.to_string(),
             rate: DEFAULT_RATE,
             chime: resolve_chime(DEFAULT_CHIME),
             auto_play: false,
@@ -72,7 +68,6 @@ pub fn parse(text: &str) -> TtsConfig {
     let mut config = TtsConfig::default();
     for (key, value) in tts_entries(text) {
         match (key.as_str(), value) {
-            ("voice", Value::Text(voice)) => config.voice = voice,
             // `float(cfg.get("rate", 1.3))`, after the WPM migration below.
             ("rate", Value::Integer(rate)) if rate > 10 => {
                 let migrated = (2.0 - (rate as f64 - 100.0) * 1.5 / 200.0).clamp(0.5, 2.0);
@@ -90,10 +85,6 @@ pub fn parse(text: &str) -> TtsConfig {
             ("auto_play", Value::Integer(auto_play)) => config.auto_play = auto_play != 0,
             _ => {}
         }
-    }
-    // Voices outside the standard set (including old Piper names) -> Puck.
-    if !STANDARD_VOICES.contains(&config.voice.as_str()) {
-        config.voice = DEFAULT_VOICE.to_string();
     }
     if !config.rate.is_finite() {
         config.rate = DEFAULT_RATE;
@@ -236,10 +227,9 @@ mod tests {
     #[test]
     fn reads_the_tts_table_only() {
         let config = parse(
-            "voice = \"bm_george\"\n[tts]\nvoice = \"bf_isabella\" # comment\nrate = 1.5\n\
-             auto_play = true\nchime = \"/tmp/ding.aiff\"\n[stt]\nvoice = \"af_sky\"\n",
+            "rate = 1.8\n[tts]\nrate = 1.5 # comment\n\
+             auto_play = true\nchime = \"/tmp/ding.aiff\"\n[stt]\nrate = 0.7\n",
         );
-        assert_eq!(config.voice, "bf_isabella");
         assert_eq!(config.rate, 1.5);
         assert!(config.auto_play);
         assert_eq!(config.chime, PathBuf::from("/tmp/ding.aiff"));
@@ -247,9 +237,8 @@ mod tests {
 
     #[test]
     fn migrates_like_config_py() {
-        // An unknown voice becomes Puck; a words-per-minute rate a multiplier.
-        let config = parse("[tts]\nvoice = \"en_US-amy\"\nrate = 180\n");
-        assert_eq!(config.voice, "am_puck");
+        // A words-per-minute rate becomes a multiplier.
+        let config = parse("[tts]\nrate = 180\n");
         assert_eq!(config.rate, 1.4);
         assert_eq!(parse("[tts]\nrate = 2\n").rate, 2.0);
         assert_eq!(
@@ -261,9 +250,21 @@ mod tests {
     #[test]
     fn skips_values_that_span_lines() {
         let config = parse(
-            "[general]\nnotes = \"\"\"\n[tts]\nvoice = \"af_sky\"\n\"\"\"\nlist = [\n  \"a\",\n]\n\
-             [tts]\nvoice = \"bm_george\"\n",
+            "[general]\nnotes = \"\"\"\n[tts]\nrate = 0.6\n\"\"\"\nlist = [\n  \"a\",\n]\n\
+             [tts]\nrate = 1.7\n",
         );
-        assert_eq!(config.voice, "bm_george");
+        assert_eq!(config.rate, 1.7);
+    }
+
+    #[test]
+    fn a_saved_voice_is_ignored() {
+        // RR-520: each agent speaks in its own voice; `[tts] voice` is read by nothing.
+        let config = parse("[tts]\nvoice = \"bm_george\"\nrate = 1.2\nauto_play = true\n");
+        assert_eq!(config.rate, 1.2);
+        assert!(config.auto_play);
+        assert_eq!(
+            parse("[tts]\nvoice = \"bm_george\"\n"),
+            TtsConfig::default()
+        );
     }
 }

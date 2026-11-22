@@ -28,14 +28,14 @@ private struct DiskFull: LocalizedError {
 final class SettingsAutoSaveTests: XCTestCase {
     func testEachControlChangeSavesOnceAndAnUnchangedValueDoesNotSave() {
         let store = FakeConfigStore()
-        let voice = store.autoSave.binding(\.tts.voice)
+        let chime = store.autoSave.binding(\.tts.chime)
 
-        voice.wrappedValue = "bf_isabella"
+        chime.wrappedValue = "Glass"
         XCTAssertEqual(store.saves.count, 1)
-        XCTAssertEqual(store.config.tts.voice, "bf_isabella")
+        XCTAssertEqual(store.config.tts.chime, "Glass")
         XCTAssertEqual(store.autoSave.status, .saved)
 
-        voice.wrappedValue = "bf_isabella"
+        chime.wrappedValue = "Glass"
         XCTAssertEqual(store.saves.count, 1, "Choosing the current value is not a change")
     }
 
