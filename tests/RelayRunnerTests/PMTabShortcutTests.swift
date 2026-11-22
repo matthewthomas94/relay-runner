@@ -6,9 +6,21 @@ final class PMTabShortcutTests: XCTestCase {
         PMTabShortcut.route(s, terminalTabShowing: terminal, sessionRunning: running, liveTabCount: live)
     }
 
-    func testOpenOnTerminalTabWithSession() {
-        XCTAssertEqual(route(.open), .openTab)
-        XCTAssertEqual(route(.open, live: 4), .openTab) // "+" path shows the four-agent limit message
+    /// RR-523: Command-T opens the "+" agent menu and starts nothing itself.
+    func testOpenOnTerminalTabWithSessionOpensTheAgentMenu() throws {
+        XCTAssertEqual(route(.open), .openAgentMenu)
+        XCTAssertEqual(route(.open, live: 4), .openAgentMenu) // the menu path shows the four-agent limit message
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let shortcut = try String(contentsOf: root.appendingPathComponent("Sources/relay-runner/Board/PMTabShortcut.swift"), encoding: .utf8)
+        XCTAssertTrue(shortcut.contains("case .openAgentMenu:\n            requestAgentAddMenu()"))
+        let source = try String(contentsOf: root.appendingPathComponent("Sources/relay-runner/App/AppState.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "    func requestAgentAddMenu() {"))
+        let end = try XCTUnwrap(source.range(of: "\n    }\n", range: start.upperBound..<source.endIndex))
+        let request = String(source[start.lowerBound..<end.upperBound])
+        XCTAssertTrue(request.contains("agentAddMenuRequested = true"))
+        for starter in ["newSession(", "openPMTab(", "selectPMTab("] {
+            XCTAssertFalse(request.contains(starter), "Command-T starts nothing: \(starter)")
+        }
     }
 
     func testCloseWithSeveralTabsClosesWithoutAsking() {

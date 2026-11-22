@@ -110,16 +110,20 @@ public enum SessionPhase: String, Codable, Sendable {
 
 /// Lists projects, or starts, stops or inspects the Mac's Relay session
 /// (RR-456). `start` needs `project_id`; the Mac's provider, model and effort
-/// defaults apply.
+/// defaults apply. RR-523: `agent` names the agent to start by slug (`puck`,
+/// `isabella`, `george`, `sky`); a start without it, from an older phone
+/// build, starts the most recently active agent, or Puck if none has run.
 public struct SessionCommand: Codable, Equatable, Sendable {
     public var clientId: String
     public var action: SessionAction
     public var projectId: String?
+    public var agent: String?
 
-    public init(clientId: String, action: SessionAction, projectId: String? = nil) {
+    public init(clientId: String, action: SessionAction, projectId: String? = nil, agent: String? = nil) {
         self.clientId = clientId
         self.action = action
         self.projectId = projectId
+        self.agent = agent
     }
 }
 
@@ -276,7 +280,8 @@ public struct Pong: Codable, Equatable, Sendable {
 /// in answer to a `session_command`. `app_running: false` comes from the
 /// forced-command helper when neither socket is listening. `projects` is
 /// present on `list_projects` and on first contact; `error` explains a
-/// refused or failed command.
+/// refused or failed command. RR-523: `active_agent` is the active agent's
+/// slug and `running_agents` every running agent's, in table order.
 public struct SessionState: Codable, Equatable, Sendable {
     public var appRunning: Bool
     public var session: SessionPhase
@@ -284,15 +289,20 @@ public struct SessionState: Codable, Equatable, Sendable {
     public var projectName: String?
     public var projects: [ProjectSummary]?
     public var error: String?
+    public var activeAgent: String?
+    public var runningAgents: [String]?
 
     public init(appRunning: Bool, session: SessionPhase, projectId: String? = nil, projectName: String? = nil,
-                projects: [ProjectSummary]? = nil, error: String? = nil) {
+                projects: [ProjectSummary]? = nil, error: String? = nil,
+                activeAgent: String? = nil, runningAgents: [String]? = nil) {
         self.appRunning = appRunning
         self.session = session
         self.projectId = projectId
         self.projectName = projectName
         self.projects = projects
         self.error = error
+        self.activeAgent = activeAgent
+        self.runningAgents = runningAgents
     }
 }
 

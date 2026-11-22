@@ -103,6 +103,8 @@ pub struct SessionCommand {
     pub client_id: String,
     pub action: String,
     pub project_id: Option<String>,
+    /// RR-523: the agent slug to start; absent from older phone builds.
+    pub agent: Option<String>,
 }
 
 /// One registered project inside `SessionState::projects` (not a frame).
@@ -189,6 +191,9 @@ pub struct SessionState {
     pub project_name: Option<String>,
     pub projects: Option<Vec<ProjectEntry>>,
     pub error: Option<String>,
+    /// RR-523: the active agent's slug, and every running agent's in table order.
+    pub active_agent: Option<String>,
+    pub running_agents: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -284,6 +289,7 @@ impl Frame {
                 out.insert("client_id", f.client_id.as_str());
                 out.insert("action", f.action.as_str());
                 opt(&mut out, "project_id", &f.project_id);
+                opt(&mut out, "agent", &f.agent);
             }
             Frame::Ack(f) => {
                 out.insert("seq", f.seq);
@@ -352,6 +358,14 @@ impl Frame {
                     out.insert("projects", items);
                 }
                 opt(&mut out, "error", &f.error);
+                opt(&mut out, "active_agent", &f.active_agent);
+                if let Some(agents) = &f.running_agents {
+                    let items = agents
+                        .iter()
+                        .map(|slug| Value::Str(slug.clone()))
+                        .collect::<Vec<_>>();
+                    out.insert("running_agents", items);
+                }
             }
         }
         out
@@ -367,6 +381,8 @@ enum Kind {
     Bool,
     /// `session_state.projects`: a list of `ProjectEntry` objects.
     Projects,
+    /// `session_state.running_agents`: a list of strings.
+    StrList,
 }
 
 struct Field {
@@ -391,7 +407,7 @@ const fn opt(name: &'static str, kind: Kind) -> Field {
     }
 }
 
-use Kind::{Bool, Int, Projects, Str};
+use Kind::{Bool, Int, Projects, Str, StrList};
 
 /// Each frame's fields in the Python dataclass order, which decides which
 /// field an error names first.
@@ -426,6 +442,7 @@ fn fields(type_name: &str) -> Option<&'static [Field]> {
                     req("client_id", Str),
                     req("action", Str),
                     opt("project_id", Str),
+                    opt("agent", Str),
                 ]
             }
         }
@@ -489,6 +506,8 @@ fn fields(type_name: &str) -> Option<&'static [Field]> {
                     opt("project_name", Str),
                     opt("projects", Projects),
                     opt("error", Str),
+                    opt("active_agent", Str),
+                    opt("running_agents", StrList),
                 ]
             }
         }
@@ -540,6 +559,9 @@ fn kind_matches(kind: Kind, value: &Value) -> bool {
         Str => matches!(value, Value::Str(_)),
         Int => matches!(value, Value::Int(_)),
         Bool => matches!(value, Value::Bool(_)),
+        StrList => value
+            .as_list()
+            .is_some_and(|items| items.iter().all(|item| matches!(item, Value::Str(_)))),
         Projects => value.as_list().is_some_and(|items| {
             items.iter().all(|item| {
                 item.as_dict().is_some_and(|entry| {
@@ -761,6 +783,7 @@ fn build(type_name: &str, object: &Dict) -> Frame {
             client_id: s("client_id"),
             action: s("action"),
             project_id: os("project_id"),
+            agent: os("agent"),
         }),
         "ack" => Frame::Ack(Ack {
             seq: i("seq"),
@@ -840,6 +863,17 @@ fn build(type_name: &str, object: &Dict) -> Frame {
                         .collect()
                 }),
             error: os("error"),
+            active_agent: os("active_agent"),
+            running_agents: object
+                .get("running_agents")
+                .and_then(Value::as_list)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                }),
         }),
     }
 }
@@ -1103,6 +1137,47 @@ mod tests {
         for name in ALL_TYPES {
             assert!(fields(name).is_some(), "{name}");
         }
+    }
+
+    /// RR-523: `agent` round-trips and may be absent; `session_state` carries
+    /// the active and running agents.
+    #[test]
+    fn session_agent_fields_round_trip() {
+        for agent in [Some("george".to_string()), None] {
+            let frame = Frame::SessionCommand(SessionCommand {
+                client_id: "3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10".to_string(),
+                action: "start".to_string(),
+                project_id: Some("p".to_string()),
+                agent: agent.clone(),
+            });
+            let line = encode(&frame).unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&line).contains("\"agent\""),
+                agent.is_some()
+            );
+            assert_eq!(decode(&line).unwrap(), frame);
+        }
+        let frames = vectors("frames");
+        let line = |name: &str| {
+            list(&frames)
+                .iter()
+                .find(|entry| text(entry, "name") == name)
+                .map(|entry| text(entry, "line").as_bytes().to_vec())
+                .unwrap()
+        };
+        let Frame::SessionCommand(older) = decode(&line("session_command_start")).unwrap() else {
+            panic!("expected session_command");
+        };
+        assert_eq!(older.agent, None);
+        let Frame::SessionState(state) = decode(&line("session_state_ready_agents")).unwrap()
+        else {
+            panic!("expected session_state");
+        };
+        assert_eq!(state.active_agent.as_deref(), Some("george"));
+        assert_eq!(
+            state.running_agents,
+            Some(vec!["puck".to_string(), "george".to_string()])
+        );
     }
 
     #[test]

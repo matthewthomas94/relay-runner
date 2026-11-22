@@ -10,18 +10,23 @@ enum WorkspaceTerminalLayout {
     static let horizontalPadding = BoardDarkSurfaceStyle.columnCornerRadius + shoulderRadius
 }
 
-/// The Workspace terminal's panel. RR-469/RR-519: while a session runs, a tab
-/// strip lists its agents by name and a "+" starts the next one. The selected tab and terminal
+/// The Workspace terminal's panel. RR-469/RR-519/RR-523: while a session runs,
+/// a tab strip lists its agents by name in table order, and a "+" opens a menu
+/// of the agents not running. The selected tab and terminal
 /// share one outline; only that outline morphs on selection, leaving the live
 /// terminal's layout and hit targets stationary.
 struct WorkspaceTerminalSurface<Content: View>: View {
     var tabs: [AppState.PMTab] = []
     var selectedID: String?
-    /// Nil when "+" is unavailable; the reason names why, such as all four agents running.
+    /// Non-nil when "+" is unavailable; the reason names why, such as all four agents running.
     var addUnavailableReason: String?
+    /// The agents the "+" menu lists: those not running, in table order.
+    var addableAgents: [SessionAgent] = []
+    /// Command-T sets this to open the "+" menu; closing the menu clears it.
+    var addMenuRequested: Binding<Bool> = .constant(false)
     var select: (String) -> Void = { _ in }
     var close: (String) -> Void = { _ in }
-    var add: () -> Void = {}
+    var add: (SessionAgent) -> Void = { _ in }
     @ViewBuilder let content: () -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -43,7 +48,8 @@ struct WorkspaceTerminalSurface<Content: View>: View {
                         .anchorPreference(key: TerminalTabBounds.self, value: .bounds) { [tab.id: $0] }
                         .transition(.relayElement)
                     }
-                    WorkspaceAddTabButton(unavailableReason: addUnavailableReason, add: add)
+                    WorkspaceAddTabButton(unavailableReason: addUnavailableReason, agents: addableAgents,
+                                          isMenuPresented: addMenuRequested, add: add)
                     Spacer(minLength: 0)
                 }
                 .frame(height: WorkspaceTerminalLayout.tabHeight)
@@ -188,19 +194,24 @@ private struct WorkspaceSessionTab: View {
     }
 }
 
-/// Starts the next agent. Disabled while all four run, and while one is starting.
+/// RR-523: opens the menu of agents not running; choosing one starts it.
+/// Disabled while all four run, and while one is starting.
 private struct WorkspaceAddTabButton: View {
     let unavailableReason: String?
-    let add: () -> Void
+    let agents: [SessionAgent]
+    @Binding var isMenuPresented: Bool
+    let add: (SessionAgent) -> Void
     @State private var isHovered = false
 
+    private var isAvailable: Bool { unavailableReason == nil && !agents.isEmpty }
+
     var body: some View {
-        Button(action: add) {
+        Button { isMenuPresented.toggle() } label: {
             LucideImage(.plus, size: 16)
                 .frame(width: WorkspaceTerminalLayout.addButtonSize, height: WorkspaceTerminalLayout.addButtonSize)
                 .background {
                     RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.addButtonCornerRadius, style: .continuous)
-                        .fill(isHovered && unavailableReason == nil
+                        .fill(isHovered && isAvailable
                             ? BoardDarkSurfaceStyle.tabActionHoverFill : BoardDarkSurfaceStyle.tabActionFill)
                         .overlay {
                             RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.addButtonCornerRadius, style: .continuous)
@@ -211,12 +222,20 @@ private struct WorkspaceAddTabButton: View {
         }
         .buttonStyle(.graphicalPress)
         .foregroundStyle(ProgramBoardStyle.primaryText)
-        .disabled(unavailableReason != nil)
-        .opacity(unavailableReason == nil ? 1 : 0.45)
+        .disabled(!isAvailable)
+        .opacity(isAvailable ? 1 : 0.45)
         .onHover { isHovered = $0 }
         .animation(RelayMotion.hover, value: isHovered)
         .notchHint(unavailableReason ?? "Add agent")
         .accessibilityLabel("Add agent")
-        .accessibilityHint(unavailableReason ?? "Starts the first of Puck, Isabella, George and Sky that is not running.")
+        .accessibilityHint(unavailableReason ?? "Choose \(SessionAgent.list(agents)) to start.")
+        .background {
+            SettingsDropdownPresenter(isPresented: $isMenuPresented, minWidth: 160) {
+                SessionAgentMenuOptions(agents: agents, start: add) { isMenuPresented = false }
+            }
+        }
+        .onChange(of: isAvailable) { _, available in
+            if !available { isMenuPresented = false }
+        }
     }
 }

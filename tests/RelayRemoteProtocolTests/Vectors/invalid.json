@@ -105,6 +105,21 @@
   "error": "invalid_field"
  },
  {
+  "name": "session_command_agent_not_string",
+  "line": "{\"type\":\"session_command\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"action\":\"start\",\"agent\":4}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "session_state_running_agents_not_array",
+  "line": "{\"type\":\"session_state\",\"app_running\":true,\"session\":\"ready\",\"running_agents\":\"puck\"}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "session_state_running_agent_not_string",
+  "line": "{\"type\":\"session_state\",\"app_running\":true,\"session\":\"ready\",\"running_agents\":[1]}",
+  "error": "invalid_field"
+ },
+ {
   "name": "session_state_missing_session",
   "line": "{\"type\":\"session_state\",\"app_running\":true}",
   "error": "missing_field"

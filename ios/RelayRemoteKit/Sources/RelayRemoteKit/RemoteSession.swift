@@ -220,12 +220,14 @@ public final class RemoteSession {
     /// Works attached to a voice bridge, where the helper hands it to the app,
     /// and on a session-control channel. False when no channel is up: a
     /// start or stop the user asked for minutes ago should not run later.
+    /// RR-523: `agent` is the slug of the agent a start asks for; without it
+    /// the Mac starts its most recently active agent, or Puck.
     @discardableResult
-    public func send(sessionCommand action: SessionAction, projectID: String? = nil) -> Bool {
+    public func send(sessionCommand action: SessionAction, projectID: String? = nil, agent: String? = nil) -> Bool {
         guard let connection, core.isEstablished else { return false }
         core.sessionCommandSent()
         sessionError = nil
-        transmit(.sessionCommand(Self.sessionCommand(action, projectID: projectID)), on: connection)
+        transmit(.sessionCommand(Self.sessionCommand(action, projectID: projectID, agent: agent)), on: connection)
         return true
     }
 
@@ -462,8 +464,9 @@ public final class RemoteSession {
         }
     }
 
-    private static func sessionCommand(_ action: SessionAction, projectID: String? = nil) -> SessionCommand {
-        SessionCommand(clientId: UUID().uuidString.lowercased(), action: action, projectId: projectID)
+    private static func sessionCommand(_ action: SessionAction, projectID: String? = nil,
+                                       agent: String? = nil) -> SessionCommand {
+        SessionCommand(clientId: UUID().uuidString.lowercased(), action: action, projectId: projectID, agent: agent)
     }
 
     private func append(_ direction: FrameRecord.Direction, _ frame: Frame) {

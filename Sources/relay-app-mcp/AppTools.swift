@@ -140,9 +140,13 @@ enum AppTools {
             ),
             AppTool(
                 name: "start_session",
-                description: "Start a session for a registered project as the Workspace Start button does, using the Mac's provider defaults. Starting the project that is already running only reports it; while another project runs it is refused with that project's name. Returns the session state; poll app_status until session is ready.",
-                properties: ["project_id": ["type": "string", "description": "An id from list_projects."]],
-                required: ["project_id"],
+                description: "Start an agent (Puck, Isabella, George or Sky) for a registered project as choosing it from the Workspace Start Session menu does, using the Mac's provider defaults; it resumes that agent's conversation. agent is required: when the user has not said which agent, ask them before calling; app_status lists which agents are running. Without agent, or with an unknown one, the call is refused with the four agents and which run. Starting an agent that already runs in that project only reports it; another agent starts beside the running ones; while another project runs it is refused with that project's name. Returns the session state; poll app_status until session is ready.",
+                properties: [
+                    "project_id": ["type": "string", "description": "An id from list_projects."],
+                    "agent": ["type": "string",
+                              "description": "The agent to start: puck, isabella, george or sky (its name also works). Ask the user when they have not said."],
+                ],
+                required: ["project_id", "agent"],
                 client: client
             ),
             AppTool(

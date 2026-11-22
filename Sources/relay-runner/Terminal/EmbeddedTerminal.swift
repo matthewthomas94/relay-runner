@@ -4276,16 +4276,18 @@ struct WorkspaceTerminalPanel: View {
     @Bindable var appState: AppState
 
     var body: some View {
-        // RR-469: the tab strip shows only while a session runs; Workspace's
-        // top-row Start launches the most recently active agent (RR-519).
+        // RR-469: the tab strip shows only while a session runs. RR-523: "+"
+        // and the empty state's Start both open the agent menu.
         let running = appState.sessionRegistry.hasLiveSessions
         WorkspaceTerminalSurface(
             tabs: running ? appState.pmTabs : [],
             selectedID: appState.activeContext.id,
             addUnavailableReason: appState.pmTabUnavailableReason,
+            addableAgents: appState.agentsToAdd,
+            addMenuRequested: $appState.agentAddMenuRequested,
             select: { appState.selectPMTab($0) },
             close: { appState.stopPMTab($0) },
-            add: { appState.openPMTab() }
+            add: { appState.openPMTab(agent: $0) }
         ) {
             EmbeddedTerminalTab(
                 session: appState.embeddedTerminal,
@@ -4296,9 +4298,9 @@ struct WorkspaceTerminalPanel: View {
                         provider: appState.config.general.provider
                     ),
                     isEnabled: true,
-                    action: appState.hasActiveSession
-                        ? { appState.endSession() }
-                        : { _ = appState.newSession() }
+                    action: .resolve(hasActiveSession: appState.hasActiveSession,
+                                     end: { appState.endSession() },
+                                     start: { _ = appState.newSession(agent: $0) })
                 )
             )
         }

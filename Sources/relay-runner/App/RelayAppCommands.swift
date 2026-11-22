@@ -184,8 +184,15 @@ final class RelayAppCommands {
             case .failure(let error): throw error
             }
         case "start_session":
-            try a.only(["project_id"])
-            let state = session.perform(.start, projectID: try a.requiredString("project_id"))
+            try a.only(["project_id", "agent"])
+            let projectID = try a.requiredString("project_id")
+            // RR-523: a session never starts without the user choosing its agent.
+            let given = try a.string("agent")
+            guard let agent = given.flatMap(SessionAgent.init(choice:)) else {
+                let running = Set(host.agents().filter(\.isRunning).map(\.agent))
+                throw RelayAppCommandError(SessionAgent.choiceRefusal(given: given, running: running))
+            }
+            let state = session.perform(.start, projectID: projectID, agent: agent)
             if let error = state.error { throw RelayAppCommandError(error) }
             return Self.json(state)
         case "end_session":

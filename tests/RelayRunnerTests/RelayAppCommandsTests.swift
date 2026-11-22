@@ -18,6 +18,9 @@ final class RelayAppCommandsTests: XCTestCase {
         ]
         var snapshot = RelaySessionControlHost.Snapshot()
         var started: [String] = []
+        var startedAgents: [SessionAgent?] = []
+        var agents = SessionAgent.statuses(liveContextIDs: ["project:built-in", "project:built-in#tab-isabella"],
+                                           activeContextID: "project:built-in#tab-isabella")
         var stops = 0
         var config = AppConfig()
         var saves: [AppConfig] = []
@@ -40,8 +43,9 @@ final class RelayAppCommandsTests: XCTestCase {
             RelaySessionControlHost(
                 projects: { self.projects },
                 snapshot: { self.snapshot },
-                start: { path in
+                start: { path, agent in
                     self.started.append(path)
+                    self.startedAgents.append(agent)
                     self.snapshot.launching = true
                     return true
                 },
@@ -84,10 +88,7 @@ final class RelayAppCommandsTests: XCTestCase {
                     self.keepAwake = self.onToggle(self.keepAwake)
                     return true
                 },
-                agents: {
-                    SessionAgent.statuses(liveContextIDs: ["project:built-in", "project:built-in#tab-isabella"],
-                                          activeContextID: "project:built-in#tab-isabella")
-                }
+                agents: { self.agents }
             )
         }
     }
@@ -417,13 +418,25 @@ final class RelayAppCommandsTests: XCTestCase {
         XCTAssertEqual(unknown, "No registered project has id 'p-gone'.")
         XCTAssertEqual(app.selected, ["p-notes", "p-gone"])
 
-        let started = try await ok("start_session", ["project_id": "p-relay"])
+        // RR-523: start_session never starts without its agent.
+        app.agents = SessionAgent.statuses(liveContextIDs: ["project:built-in#tab-sky"], activeContextID: nil)
+        let missing = await refused("start_session", ["project_id": "p-relay"])
+        for name in ["start_session needs agent.", "puck (Puck)", "isabella (Isabella)", "george (George)", "sky (Sky)",
+                     "Running: Sky."] {
+            XCTAssertTrue(missing.contains(name), missing)
+        }
+        let unknownAgent = await refused("start_session", ["project_id": "p-relay", "agent": "bob"])
+        XCTAssertTrue(unknownAgent.hasPrefix("Unknown agent 'bob'."), unknownAgent)
+        XCTAssertEqual(app.started, [], "a refused start starts nothing")
+
+        let started = try await ok("start_session", ["project_id": "p-relay", "agent": "george"])
         XCTAssertEqual(started["session"] as? String, "starting")
         XCTAssertEqual(started["project_id"] as? String, "p-relay")
         XCTAssertEqual(app.started, ["/repos/relay-runner"])
+        XCTAssertEqual(app.startedAgents, [.george])
 
-        app.snapshot = .init(live: [.init(projectID: "p-relay", name: "relay-runner")])
-        let busy = await refused("start_session", ["project_id": "p-notes"])
+        app.snapshot = .init(live: [.init(projectID: "p-relay", name: "relay-runner", agent: .george)], activeAgent: .george)
+        let busy = await refused("start_session", ["project_id": "p-notes", "agent": "Puck"])
         XCTAssertEqual(busy, "relay-runner is already running on this Mac. Stop it before starting notes.")
 
         let unconfirmed = await refused("end_session")

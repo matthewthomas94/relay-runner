@@ -89,7 +89,7 @@ phone -> Mac
 {"type":"utterance","client_id":"...","text":"move RR-120 to ready","captured_at":"2026-10-22T09:14:03Z"}
 {"type":"control","client_id":"...","action":"stop"}           stop | interrupt | cancel | play | replay
 {"type":"remote_mode","client_id":"...","enabled":false}
-{"type":"session_command","client_id":"...","action":"start","project_id":"..."}   list_projects | start | stop | state
+{"type":"session_command","client_id":"...","action":"start","project_id":"...","agent":"george"}   list_projects | start | stop | state
 {"type":"ack","seq":44,"played":true}
 {"type":"ping","t":1761124443}
 
@@ -105,7 +105,7 @@ Mac -> phone
 {"type":"error","code":"no_session","message":"Relay Runner is not running a session"}
 {"type":"pong","t":1761124443}
 {"type":"session_state","app_running":true,"session":"none","projects":[{"project_id":"...","display_name":"relay-runner","availability":"available"}]}
-{"type":"session_state","app_running":true,"session":"ready","project_id":"...","project_name":"relay-runner"}
+{"type":"session_state","app_running":true,"session":"ready","project_id":"...","project_name":"relay-runner","active_agent":"george","running_agents":["puck","george"]}
 {"type":"session_state","app_running":false,"session":"none"}
 ```
 
@@ -129,7 +129,7 @@ Mac -> phone
 Relay Runner listens on `/tmp/relay_session_control.sock` whenever the app runs, with or without a session (RR-456). The socket is created mode 600, every connection's uid is checked with `getpeereid`, and its phone-side client is `relay-remote-shell`, which only a paired device's forced command runs. The same socket also carries [Relay App](relay-app.md)'s `app_command` lines (RR-459); a connection whose first line is `identify`, as every helper connection's is, is refused app commands, so a phone can only reach `session_command`.
 
 - **Routing.** `relay-remote-shell --device` connects to `/tmp/relay_remote.sock` when a session's bridge listens, as before. When it does not, the helper connects to the session-control socket instead; the app answers the helper's `identify` with `session_state` and the project list, ignores `hello` and answers `ping`. While attached to a bridge, the helper opens the session-control socket on the phone's first `session_command` and sends every `session_command` there, so Stop and the running project's name work from an attached session; without the app it answers `app_unavailable`. When neither socket listens the helper writes `session_state` with `app_running: false` and exits. An SSH failure remains "Mac unreachable" on the phone. The `status` and `--pair` modes never fall back.
-- **Commands.** `list_projects` and `state` report. `start` with a registered, available `project_id` calls `AppState.newSession(workingDirectory:)` with that project's path, the path the Workspace Start button uses, without raising the Workspace; the session uses the Mac's provider, model and effort defaults and behaves exactly like one started on the Mac, including its voice-command authority. `stop` calls `AppState.endSession()`. A `start` while another project's session runs is refused with an `error` naming it; starting the running project again only reports it. `client_id` de-duplicates a retried command.
+- **Commands.** `list_projects` and `state` report. `start` with a registered, available `project_id` calls `AppState.newSession(workingDirectory:)` with that project's path, the path the Workspace Start button uses, without raising the Workspace; the session uses the Mac's provider, model and effort defaults and behaves exactly like one started on the Mac, including its voice-command authority. `stop` calls `AppState.endSession()`. A `start` while another project's session runs is refused with an `error` naming it; starting the running project again only reports it. RR-523: `start` carries an optional `agent` slug (`puck`, `isabella`, `george`, `sky`); a named agent not yet running in the project starts beside the running ones, and an unknown one is refused. A `start` without `agent`, from an older phone build, starts the most recently active agent, or Puck if none has run. `session_state` reports `active_agent` and `running_agents` (table order) while a session runs. `client_id` de-duplicates a retried command.
 - **States.** `none`, then `starting` from the accepted start until the bridge's Relay Remote socket answers `status` with `running`, then `ready`; `failed` with an `error` when the app refuses the start or the session ends before it is ready. The app pushes each change to connected helpers once a second. A `stop` reports `none` at once.
 - **Attach.** On a session-control channel, `ready` closes the channel and the phone reconnects at once, so the helper attaches to the new bridge and `hello` carries the Remote mode as usual. If the channel reports `ready` on arrival, the phone reconnects after its normal backoff instead. Utterances typed before the session existed stay queued and are sent after `welcome`. After each `welcome` the phone sends `session_command` `state` to learn the running project.
 

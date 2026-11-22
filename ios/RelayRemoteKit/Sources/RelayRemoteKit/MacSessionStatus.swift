@@ -22,9 +22,16 @@ public struct MacSessionStatus: Equatable, Sendable {
     public let error: String?
     /// The Mac's registered projects, kept from the last list it sent.
     public let projects: [ProjectSummary]
+    /// RR-523: the Mac's active agent and its running agents, by slug, while
+    /// a session runs.
+    public let activeAgent: String?
+    public let runningAgents: [String]
 
     public init(connection: RemoteSession.State, appUnavailable: Bool, mac: SessionState?, error: String?) {
         projects = mac?.projects ?? []
+        let running = mac?.session == .ready || mac?.session == .starting
+        activeAgent = running ? mac?.activeAgent : nil
+        runningAgents = running ? mac?.runningAgents ?? [] : []
         self.error = error
         let macPhase = mac?.session
         let macProject = mac?.projectName

@@ -110,7 +110,7 @@ final class ProgramBoardOverlayController {
     private var loadingStateHandler: ((ProgramBoardLoadingState) -> Void)?
     private var addExistingProjectHandler: (() -> Void)?
     private var createProjectHandler: (() -> Void)?
-    private var startSessionHandler: (() -> Void)?
+    private var startSessionHandler: ((SessionAgent) -> Void)?
     private var endSessionHandler: (() -> Void)?
     private var startNoteTakerHandler: ((String) -> Bool)?
     private var stopNoteTakerHandler: (() -> Void)?
@@ -216,7 +216,7 @@ final class ProgramBoardOverlayController {
         createProjectHandler = create
     }
 
-    func setStartSessionHandler(_ handler: @escaping () -> Void) {
+    func setStartSessionHandler(_ handler: @escaping (SessionAgent) -> Void) {
         self.startSessionHandler = handler
     }
 
@@ -855,7 +855,7 @@ final class ProgramBoardOverlayController {
                 onHistoryChanged: { [weak self] in self?.checkForUpdates(inBackground: true) },
                 onAddExistingProject: { [weak self] in self?.addExistingProjectHandler?() },
                 onCreateProject: { [weak self] in self?.createProjectHandler?() },
-                onStartSession: { [weak self] in self?.startSession() },
+                onStartSession: { [weak self] agent in self?.startSession(agent) },
                 onEndSession: { [weak self] in self?.endSession() },
                 onStartNoteTaker: { [weak self] in self?.startNoteTaker() },
                 onStopNoteTaker: { [weak self] in self?.stopNoteTaker() },
@@ -1334,9 +1334,10 @@ final class ProgramBoardOverlayController {
     }
 
     /// RR-445: the Workspace's one Start/End control, for the general session.
-    private func startSession() {
+    /// RR-523: it starts the agent chosen from its menu.
+    private func startSession(_ agent: SessionAgent) {
         guard !model.hasActiveSession else { return }
-        startSessionHandler?()
+        startSessionHandler?(agent)
         model.hasActiveSession = sessionActiveProvider()
         model.runningSessionPaths = runningSessionPathsProvider()
     }

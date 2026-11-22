@@ -15,6 +15,7 @@ final class RelaySessionControlTests: XCTestCase {
         ]
         var snapshot = RelaySessionControlHost.Snapshot()
         var started: [String] = []
+        var startedAgents: [SessionAgent?] = []
         var stops = 0
         var startResult = true
         var message: String?
@@ -25,8 +26,9 @@ final class RelaySessionControlTests: XCTestCase {
             RelaySessionControlHost(
                 projects: { self.projects },
                 snapshot: { self.snapshot },
-                start: { path in
+                start: { path, agent in
                     self.started.append(path)
+                    self.startedAgents.append(agent)
                     if self.startResult { self.onStart?(self, path) }
                     return self.startResult
                 },
@@ -51,8 +53,10 @@ final class RelaySessionControlTests: XCTestCase {
         try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }
 
-    private func command(_ action: SessionAction, project: String? = nil, clientID: String = UUID().uuidString) -> Data {
-        Data(try! FrameCodec.encode(.sessionCommand(SessionCommand(clientId: clientID, action: action, projectId: project))).dropLast())
+    private func command(_ action: SessionAction, project: String? = nil, agent: String? = nil,
+                         clientID: String = UUID().uuidString) -> Data {
+        Data(try! FrameCodec.encode(.sessionCommand(SessionCommand(clientId: clientID, action: action, projectId: project,
+                                                                   agent: agent))).dropLast())
     }
 
     private func state(_ frames: [Frame], file: StaticString = #filePath, line: UInt = #line) -> SessionState? {
@@ -116,6 +120,48 @@ final class RelaySessionControlTests: XCTestCase {
         XCTAssertNil(ready.error)
     }
 
+    /// RR-523: an older phone build names no agent, so the app picks the
+    /// most recently active one; a newer one names it.
+    func testAStartWithoutAgentLeavesTheChoiceToTheAppAndANamedOneIsPassedOn() throws {
+        _ = control.handle(line: command(.start, project: "p-relay"))
+        XCTAssertEqual(fake.startedAgents, [nil])
+        fake.snapshot = .init()
+        let named = RelaySessionControl(host: fake.host)
+        _ = named.handle(line: command(.start, project: "p-relay", agent: "george"))
+        XCTAssertEqual(fake.startedAgents, [nil, .george])
+        let unknown = try XCTUnwrap(state(RelaySessionControl(host: fake.host)
+            .handle(line: command(.start, project: "p-relay", agent: "bob"))))
+        XCTAssertEqual(unknown.error, "Unknown agent 'bob'. Choose Puck, Isabella, George or Sky.")
+        XCTAssertEqual(fake.startedAgents, [nil, .george], "an unknown agent starts nothing")
+    }
+
+    func testANamedAgentStartsBesideTheRunningOnesInItsProject() throws {
+        fake.snapshot = .init(live: [.init(projectID: "p-relay", name: "relay-runner", agent: .puck)], activeAgent: .puck)
+        control.bridgeAccepting = true
+        let attach = try XCTUnwrap(state(control.handle(line: command(.start, project: "p-relay"))))
+        XCTAssertNil(attach.error)
+        let again = try XCTUnwrap(state(control.handle(line: command(.start, project: "p-relay", agent: "puck"))))
+        XCTAssertNil(again.error)
+        XCTAssertEqual(fake.started, [], "an older phone or a running agent only attaches")
+        _ = control.handle(line: command(.start, project: "p-relay", agent: "george"))
+        XCTAssertEqual(fake.startedAgents, [.george])
+        let elsewhere = try XCTUnwrap(state(control.handle(line: command(.start, project: "p-notes", agent: "sky"))))
+        XCTAssertEqual(elsewhere.error, "relay-runner is already running on this Mac. Stop it before starting notes.")
+        XCTAssertEqual(fake.startedAgents, [.george])
+    }
+
+    func testStateReportsTheActiveAndRunningAgents() throws {
+        let none = try XCTUnwrap(state(control.handle(line: command(.state))))
+        XCTAssertNil(none.activeAgent)
+        XCTAssertNil(none.runningAgents)
+        fake.snapshot = .init(live: [.init(projectID: "p-relay", name: "relay-runner", agent: .sky),
+                                     .init(projectID: "p-relay", name: "relay-runner", agent: .puck)],
+                              activeAgent: .sky)
+        let running = try XCTUnwrap(state(control.handle(line: command(.state))))
+        XCTAssertEqual(running.activeAgent, "sky")
+        XCTAssertEqual(running.runningAgents, ["puck", "sky"], "table order")
+    }
+
     func testRefusedStartReportsFailedWithTheAppsNewMessage() throws {
         fake.message = "Conversation restored."
         fake.startResult = false
@@ -126,7 +172,7 @@ final class RelaySessionControlTests: XCTestCase {
                        "a message that was already showing is not the reason")
 
         var host = fake.host
-        host.start = { _ in
+        host.start = { _, _ in
             self.fake.message = "Session limit reached"
             return false
         }

@@ -291,7 +291,7 @@ final class ProgramBoardStatusTests: XCTestCase {
         let header = String(contents[cardEnd.lowerBound..<control.lowerBound])
         XCTAssertTrue(header.contains("if lane == .done, let sessionControl {"))
         XCTAssertTrue(contents.contains("sessionControl: lane == .done ? sessionControl : nil"))
-        XCTAssertTrue(contents.contains("action: model.hasActiveSession ? onEndSession : onStartSession"))
+        XCTAssertTrue(contents.contains("action: .resolve(hasActiveSession: model.hasActiveSession,"))
         XCTAssertFalse(card.contains("ProgramSessionToolbarPresentation"))
         XCTAssertFalse(card.contains("onStartSession"))
         XCTAssertFalse(contents.contains("onStartProjectSession"))
@@ -305,10 +305,14 @@ final class ProgramBoardStatusTests: XCTestCase {
             contents.range(of: "private struct ProgramEditCapsuleButton", range: button.upperBound..<contents.endIndex)
         )
         let startButton = String(contents[button.lowerBound..<buttonEnd.lowerBound])
-        for removed in ["SessionWorkStyleStore", "ProjectWorkStyle", "chevronDown", "SettingsDropdownPresenter", "Work style"] {
+        for removed in ["SessionWorkStyleStore", "ProjectWorkStyle", "chevronDown", "Work style"] {
             XCTAssertFalse(startButton.contains(removed), removed)
             XCTAssertFalse(terminal.contains(removed), removed)
         }
+        // RR-523: the only menu behind the Start button is the agent menu.
+        XCTAssertTrue(startButton.contains("SessionAgentMenuOptions(agents: agents, start: start)"))
+        XCTAssertTrue(startButton.contains("case .chooseAgent: isChoosingAgent.toggle()"))
+        XCTAssertTrue(startButton.contains("Button(action: activate)"))
         XCTAssertTrue(contents.contains("if lane != .done, canCreate {"))
         // Rows are compact: no per-project board counts, no session dot, a selected trait.
         XCTAssertFalse(contents.contains("ProjectBoardOverview"))

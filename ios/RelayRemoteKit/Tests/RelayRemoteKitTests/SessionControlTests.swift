@@ -65,6 +65,28 @@ final class SessionControlTests: XCTestCase {
         session.stop()
     }
 
+    /// RR-523: a start names its agent, and the Mac's state reports the
+    /// active and running agents; a start without one leaves the choice to the Mac.
+    func testStartSendsItsAgentAndStatusReportsTheRunningAgents() async throws {
+        for agent in ["george", nil] as [String?] {
+            let mac = FakeMac()
+            mac.sessionRunning = false
+            let transport = FakeTransport(mac: mac)
+            let session = Fixtures.session(transport: transport, clock: TestClock())
+            session.start()
+            await eventually { session.state == .connectedToApp }
+            XCTAssertNil(status(session).activeAgent)
+            XCTAssertEqual(status(session).runningAgents, [])
+
+            XCTAssertTrue(session.send(sessionCommand: .start, projectID: "p-relay", agent: agent))
+            await eventually { self.status(session).phase == .starting }
+            XCTAssertEqual(mac.sessionCommands.first?.agent, agent)
+            XCTAssertEqual(status(session).activeAgent, agent ?? "puck")
+            XCTAssertEqual(status(session).runningAgents, [agent ?? "puck"])
+            session.stop()
+        }
+    }
+
     func testReadyOnArrivalReattachesAfterABackoff() async throws {
         let mac = FakeMac()
         mac.sessionRunning = false

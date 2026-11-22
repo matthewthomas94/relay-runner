@@ -56,6 +56,14 @@ final class AppMCPTests: XCTestCase {
         }
         let schemas = Dictionary(uniqueKeysWithValues: tools.map { ($0["name"] as! String, $0["inputSchema"] as! [String: Any]) })
         XCTAssertEqual(schemas["end_session"]?["required"] as? [String], ["confirm"])
+        // RR-523: a session never starts without its agent.
+        XCTAssertEqual(schemas["start_session"]?["required"] as? [String], ["project_id", "agent"])
+        let startProperties = schemas["start_session"]?["properties"] as? [String: Any]
+        XCTAssertNotNil(startProperties?["agent"])
+        let startDescription = tools.first { $0["name"] as? String == "start_session" }?["description"] as? String ?? ""
+        for name in ["Puck", "Isabella", "George", "Sky", "ask them"] {
+            XCTAssertTrue(startDescription.contains(name), name)
+        }
         XCTAssertEqual(schemas["relay_remote_unpair"]?["required"] as? [String], ["device_id", "confirm"])
         XCTAssertEqual(schemas["relay_remote_approve"]?["required"] as? [String], ["restrict_to_network"])
         let pages = ((schemas["navigate"]?["properties"] as? [String: Any])?["settings_page"] as? [String: Any])?["enum"] as? [String]
@@ -125,7 +133,7 @@ final class AppMCPTests: XCTestCase {
             ("set_settings", ["settings": ["tts": ["rate": 1.2]]]),
             ("list_projects", [:]),
             ("select_project", ["project_id": "p-relay"]),
-            ("start_session", ["project_id": "p-relay"]),
+            ("start_session", ["project_id": "p-relay", "agent": "george"]),
             ("end_session", ["confirm": true]),
             ("relay_remote_devices", [:]),
             ("relay_remote_unpair", ["device_id": "phone-1", "confirm": true]),

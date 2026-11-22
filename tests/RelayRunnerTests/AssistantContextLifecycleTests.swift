@@ -196,10 +196,11 @@ final class AssistantContextLifecycleTests: XCTestCase {
         XCTAssertTrue(switching.contains("switch sessionRegistry.admit(contextID: context.id)"))
         XCTAssertFalse(switching.contains("embeddedTerminal.end()"))
         XCTAssertTrue(switching.contains("case .refused:"))
-        // RR-519: four agent tabs in all, however the agent starts; a start
-        // that names no agent starts the most recently active one.
+        // RR-519: four agent tabs in all, however the agent starts. RR-523:
+        // every start names its agent.
         XCTAssertTrue(switching.contains("pmTabIDs.count >= EmbeddedSessionRegistry.maxConcurrentSessions"))
-        XCTAssertTrue(switching.contains("let agent = agent ?? SessionAgent.toStart(activeContext: assistantSessionStore.activeContext)"))
+        XCTAssertTrue(switching.contains("        agent: SessionAgent\n    ) -> Bool {"))
+        XCTAssertFalse(switching.contains("agent ?? "))
         XCTAssertTrue(switching.contains("context = preparedContext.context.inTab(agent.tab)"))
         XCTAssertTrue(switching.contains("let nativeResumeID = assistantSessionStore.launchResumeID("))
         let endStart = try XCTUnwrap(source.range(of: "    func endSession(context: AssistantSessionContext) {"))
