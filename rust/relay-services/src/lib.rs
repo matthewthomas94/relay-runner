@@ -13,6 +13,7 @@
 //! `relay-artifacts`, rows through `relay-store`, and every JSON file is
 //! written as the Python module writes it.
 
+pub mod agent_notices;
 pub mod authorization;
 pub mod command_actions;
 pub mod continuity;

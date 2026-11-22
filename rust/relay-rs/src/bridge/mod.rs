@@ -19,6 +19,7 @@ mod controls;
 mod diagnostics;
 mod finals;
 mod messenger_runtime;
+pub(crate) mod notices;
 mod orchestrator;
 mod pm_frontstage;
 mod ports;

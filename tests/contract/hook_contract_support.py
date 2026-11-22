@@ -281,6 +281,10 @@ class Sandbox:
             "RELAY_RECOVERY_GENERATION": self.RECOVERY_GENERATION,
             "RELAY_ACTOR_ROLE": self.ACTOR_ROLE,
             "RELAY_FOREGROUND_GATE_HANDLE": self.GATE_HANDLE,
+            # RR-525: the agent-notice claim reaches no real daemon unless a
+            # case names one; port 1 refuses at once.
+            "ORCHESTRATOR_PORT_FILE": str(self.root / "orchestrator.port"),
+            "ORCHESTRATOR_DEFAULT_PORT": "1",
         }
         for key, value in overrides.items():
             if value is None:

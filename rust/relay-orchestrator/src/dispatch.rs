@@ -713,6 +713,15 @@ impl Daemon {
             dispatcher_session_key: body.truthy("dispatcher_session_key").cloned(),
         };
         let result = self.dispatch(&dispatch)?;
+        // RR-525: the dispatching session is working in this repository.
+        let dispatcher = optional_relay_session_key(dispatch.dispatcher_session_key.as_ref())
+            .or_else(|| optional_relay_session_key(dispatch.voice.relay_session_key.as_ref()));
+        self.note_presence(
+            dispatcher.as_deref(),
+            &dispatch.repo_path,
+            crate::presence::Source::Dispatch,
+            &format!("dispatched {}", dispatch.ticket_id),
+        );
         let status = if result.get("already_active").is_some_and(Value::truthy) {
             200
         } else {

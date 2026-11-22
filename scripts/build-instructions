@@ -56,6 +56,7 @@ APP = [
 ORCHESTRATOR = [
     "subscription-only",
     "orchestration-workflow",
+    "agent-presence",
     "artifact-tickets",
     "program-manager-capture",
     "naming",
@@ -70,6 +71,7 @@ COMPACT_SERVERS = ["relay-actions", "relay-app", "relay-desktop", "relay-orchest
 CLAUDE_MD = [
     "subscription-only",
     "orchestration-workflow",
+    "agent-presence",
     "artifact-tickets",
     "program-manager-capture",
     "relay-actions-vs-computer-use",
@@ -89,6 +91,7 @@ COMMANDS = {
         "commands/relay-workflow",
         "subscription-only",
         "orchestration-workflow",
+        "agent-presence",
         "artifact-tickets",
     ],
     "relay-dispatch": ["commands/relay-dispatch", "subscription-only"],

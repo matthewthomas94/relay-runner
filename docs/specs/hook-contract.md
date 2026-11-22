@@ -38,7 +38,7 @@ The suite needs macOS (`/bin/ps`, `/usr/sbin/lsof`, an 8192-byte FIFO buffer) an
 
 | Arguments | stdin | stdout | Exit code |
 | --- | --- | --- | --- |
-| none | One lifecycle event, a JSON object | Empty | Always 0 |
+| none | One lifecycle event, a JSON object | Empty, except the agent-notice context below | Always 0 |
 | `--record-process` | Ignored | Empty | 0 when the binding was written, otherwise 1 |
 | `--record-codex-startup` | Ignored | Empty | 0 when the binding names a native session, otherwise 1 |
 | `--context-continuation` | One request, a JSON object | One JSON object and a newline | Always 0 |
@@ -55,7 +55,8 @@ The suite sets these and no others, apart from `PATH`, `HOME` and, in one case, 
 | `RELAY_RUNNER_PROVIDER` | hook | `claude` or `codex`. Selects the transcript parser and the turn-id rule. |
 | `RELAY_APP_SESSION_ID`, `RELAY_RECOVERY_GENERATION`, `RELAY_ACTOR_ROLE`, `RELAY_FOREGROUND_GATE_HANDLE` | both | Foreground ownership. It holds when the role is `foreground_pm` or `foreground_manual` and the other three are non-empty. |
 | `RELAY_PROVIDER_SESSION_ID` | both | The app's id for this provider launch (a UUID). |
-| `RELAY_SESSION_KEY` | both | The voice session key. The reply helper falls back to the last component of `RELAY_SESSION_SPOOL_DIR`. |
+| `RELAY_SESSION_KEY` | both | The voice session key. The reply helper falls back to the last component of `RELAY_SESSION_SPOOL_DIR`. The hook claims this session's agent notices. |
+| `ORCHESTRATOR_PORT_FILE`, `ORCHESTRATOR_DEFAULT_PORT` | hook | Where the orchestrator daemon listens (default `/tmp/relay_orchestrator.port`, else port 7634), for the agent-notice claim. |
 | `RELAY_SESSION_SPOOL_DIR` | reply helper | The session's spool directory. |
 | `VOICE_COMMAND_CLAIM_FILE` | both | The command this session claimed (input). |
 | `VOICE_COMMAND_STATE_FILE` | both | The newest command and its dispositions (input). |
@@ -91,6 +92,16 @@ Every event first rewrites the session binding (see below). Then:
 | `PreCompact`, `PostCompact` | both | Record a compaction attempt and its result. Need no foreground ownership. |
 
 Without foreground ownership, `UserPromptSubmit`, `Stop` and `StopFailure` only rewrite the session binding. Otherwise every event after `SessionStart` appends one context diagnostic.
+
+### Agent notices on a typed turn
+
+On a foreground `UserPromptSubmit` that is not a provider continuation (no `parent_tool_use_id`), the hook claims the session's undelivered agent notices with `POST /v1/agent-notices/claim {"relay_session_key": $RELAY_SESSION_KEY}` (one second timeout) and, when there are any, prints one line:
+
+```json
+{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"Agent notices (…):\n- Agent notice: …"}}
+```
+
+Claude Code and Codex both add `additionalContext` to the turn as model context; neither speaks it or shows it as a reply. With no notices, no key or no daemon the hook prints nothing, as before. A voice turn's notices were already appended to its prompt and claimed by the bridge, so the hook finds none for it. See [Agent presence](../agent-presence.md).
 
 ### Binding a prompt
 

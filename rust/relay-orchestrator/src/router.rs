@@ -118,6 +118,18 @@ fn dispatch(daemon: &Daemon, request: &Request) -> Outcome<Reply> {
     if get && is(&["v1", "program", "dashboard"]) {
         return daemon.program_dashboard_route(request);
     }
+    if get && is(&["v1", "agent-presence"]) {
+        return daemon.agent_presence_route(request);
+    }
+    if post && is(&["v1", "agent-presence"]) {
+        return daemon.read_agent_presence_route(request);
+    }
+    if post && is(&["v1", "agent-presence", "declare"]) {
+        return daemon.declare_agent_presence_route(request);
+    }
+    if post && is(&["v1", "agent-notices", "claim"]) {
+        return daemon.claim_agent_notices_route(request);
+    }
     if get && is(&["v1", "orchestrator-sessions"]) {
         return daemon.list_orchestrator_sessions_route(request);
     }

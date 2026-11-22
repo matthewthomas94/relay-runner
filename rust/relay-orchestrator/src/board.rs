@@ -32,6 +32,7 @@ use relay_services::notes::util::{b64decode_strict, b64encode, utc_now_isoformat
 
 use crate::daemon::{Daemon, guard, read_json, registered_project_repo_paths};
 use crate::failure::{Failure, Outcome};
+use crate::presence::Source;
 use crate::request::Request;
 use crate::router::{Reply, reply};
 
@@ -662,8 +663,18 @@ impl Daemon {
         let token = body_token(request);
         let lifecycle = self.artifact_board_lifecycle(&repo_path, token.as_deref())?;
         let event_id = board_event_id("claim", request.get("request_id"));
-        let _board = guard(&self.board_lock);
-        reply(201, self.claim_artifact_board_id(&lifecycle, &event_id)?)
+        let claimed = {
+            let _board = guard(&self.board_lock);
+            self.claim_artifact_board_id(&lifecycle, &event_id)?
+        };
+        // RR-525: an optional relay_session_key attributes the claim.
+        self.note_presence(
+            Self::request_session_key(request).as_deref(),
+            &repo_path,
+            Source::TicketClaim,
+            &format!("claimed ticket id {}", claimed.text("ticket_id")),
+        );
+        reply(201, claimed)
     }
 
     /// `_claim_artifact_board_id`.
@@ -722,11 +733,18 @@ impl Daemon {
             ));
         }
         let event_id = board_event_id("ticket", request.get("request_id"));
-        let _board = guard(&self.board_lock);
-        reply(
-            200,
-            self.write_artifact_board_ticket(&lifecycle, &event_id, &ticket_id, &markdown)?,
-        )
+        let written = {
+            let _board = guard(&self.board_lock);
+            self.write_artifact_board_ticket(&lifecycle, &event_id, &ticket_id, &markdown)?
+        };
+        // RR-525: an optional relay_session_key attributes the write.
+        self.note_presence(
+            Self::request_session_key(request).as_deref(),
+            &repo_path,
+            Source::TicketWrite,
+            &format!("wrote ticket {ticket_id}"),
+        );
+        reply(200, written)
     }
 
     /// `_write_artifact_board_ticket`.

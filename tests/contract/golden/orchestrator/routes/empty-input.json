@@ -1,4 +1,11 @@
 {
+  "GET /v1/agent-presence": {
+    "keys": [
+      "agents",
+      "startup_text"
+    ],
+    "status": 200
+  },
   "GET /v1/artifacts/dependencies/{ticket_id}": {
     "error": "project is not using the artifact-backed board writer",
     "status": 400
@@ -169,6 +176,27 @@
   },
   "GET /v1/runs/{run_id}/review": {
     "error": "unknown run_id 999",
+    "status": 400
+  },
+  "POST /v1/agent-notices/claim": {
+    "keys": [
+      "notice_block",
+      "notices",
+      "omitted_notices"
+    ],
+    "status": 200
+  },
+  "POST /v1/agent-presence": {
+    "keys": [
+      "agents",
+      "notice_block",
+      "notices",
+      "omitted_notices"
+    ],
+    "status": 200
+  },
+  "POST /v1/agent-presence/declare": {
+    "error": "relay_session_key is required",
     "status": 400
   },
   "POST /v1/artifacts/attachments/write": {
