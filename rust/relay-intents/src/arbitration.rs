@@ -79,15 +79,37 @@ wire_enum! {
     }
 }
 
+/// Replacement wording other than a cancel word, which counts anywhere.
 static EXPLICIT_REPLACE: LazyLock<Regex> = LazyLock::new(|| {
     compile(
-        r"\b(cancel|stop|abort|scratch\s+that|never\s+mind|nevermind|actually\s+instead|replace\s+(?:that|it)|redirect|switch\s+to)\b",
+        r"\b(actually\s+instead|replace\s+(?:that|it)|redirect|switch\s+to)\b",
         true,
     )
 });
 static CANCEL: LazyLock<Regex> = LazyLock::new(|| {
     compile(
-        r"\b(cancel|stop|abort|scratch\s+that|never\s+mind|nevermind)\b",
+        r"\b(?:cancel|stop|abort|(?P<idiom>scratch\s+that|never\s+mind|nevermind))\b",
+        true,
+    )
+});
+/// Words that may come between a clause's start and a cancel word while it
+/// stays an instruction to Relay: fillers, politeness and a request to "you".
+const CANCEL_LEAD_FILLER: &str = r"okay|ok|uh+|um+|er|erm|hm+|oh|ah|hey|relay|actually|please|wait|no|nope|yeah|yes|right|alright|all\s+right|just|now|instead|(?:can|could|would|will)\s+you";
+/// The clause start a cancel word follows, then only fillers up to it. The
+/// earliest start wins, so a clause opened by a conjunction is `conj`.
+static CANCEL_LEAD: LazyLock<Regex> = LazyLock::new(|| {
+    compile(
+        &format!(
+            r"(?:^|(?P<comma>,)|[.!?;:]|\b(?P<conj>and(?:\s+then)?|but|then|so|or)\b)(?:[\s,]|\b(?:{CANCEL_LEAD_FILLER})\b)*$"
+        ),
+        true,
+    )
+});
+/// A clause whose subject is someone other than Relay: "unless they go",
+/// "the user opens", "when it ends". Its verbs describe, they do not instruct.
+static THIRD_PARTY_SUBJECT: LazyLock<Regex> = LazyLock::new(|| {
+    compile(
+        r"(?:^|,|\b(?:if|when|whenever|unless|until|once|because|since|after|before|while|where|how|that|which|who|so|and|but|then)\b)\s*(?:(?:the|a|an|each|every|any|our|their|his|her|its|that|this)\s+)?(?:they|he|she|it|users?|people|persons?|someone|somebody|everyone|everybody|anyone|anybody|customers?|clients?|viewers?|players?|readers?|operators?)\s+\w",
         true,
     )
 });
@@ -304,7 +326,8 @@ fn item_target(source_text: &str, cancellation: bool) -> Option<String> {
     }
     let text = json::py_strip(source_text);
     let text = if cancellation {
-        pattern::group(&CANCEL_TARGET, text, 1)
+        let start = imperative_cancel(text).unwrap_or(0);
+        pattern::group(&CANCEL_TARGET, &text[start..], 1)
             .map(|rest| json::py_strip(rest).to_string())
             .unwrap_or_default()
     } else {
@@ -345,6 +368,58 @@ fn matching_prior_item(
     (candidates.len() == 1 && target.is_none()).then_some(last)
 }
 
+/// Whether the sentence `before` ends in has a third-party subject.
+fn third_party_clause(before: &str) -> bool {
+    let sentence = before
+        .rsplit(['.', '!', '?', ';', ':'])
+        .next()
+        .unwrap_or(before);
+    search(&THIRD_PARTY_SUBJECT, sentence)
+}
+
+/// `ITEM_BOUNDARY` splits, except at "and/then/but + verb" inside a clause
+/// whose subject is a third party: "unless they go in and click …" describes.
+fn item_clauses(text: &str) -> Vec<&str> {
+    let mut pieces = Vec::new();
+    let mut last = 0;
+    for found in ITEM_BOUNDARY.find_iter(text).map_while(Result::ok) {
+        let conjunction = found.as_str().chars().any(char::is_alphabetic);
+        if conjunction && third_party_clause(&text[last..found.start()]) {
+            continue;
+        }
+        pieces.push(&text[last..found.start()]);
+        last = found.end();
+    }
+    pieces.push(&text[last..]);
+    pieces
+}
+
+/// The offset of the first cancel word addressed to Relay: at the start of
+/// the turn, a sentence or a conjoined clause, after only fillers ("okay",
+/// "uh, actually", "please", "can you"). "scratch that" and "never mind"
+/// also count after a comma. A cancel word with its own subject ("they
+/// stop"), after a verb ("how to cancel", "should stop"), or joined to a
+/// third-party clause ("they go in and stop it") is a description.
+fn imperative_cancel(text: &str) -> Option<usize> {
+    for found in CANCEL.captures_iter(text).map_while(Result::ok) {
+        let word = found.get(0)?;
+        let before = &text[..word.start()];
+        let Some(lead) = CANCEL_LEAD.captures(before).ok().flatten() else {
+            continue;
+        };
+        if lead.name("comma").is_some() && found.name("idiom").is_none() {
+            continue;
+        }
+        if let Some(conj) = lead.name("conj")
+            && third_party_clause(&before[..conj.start()])
+        {
+            continue;
+        }
+        return Some(word.start());
+    }
+    None
+}
+
 /// Splits a completed turn into durable ordered work and cancellation items.
 pub fn normalize_voice_work_items(
     source_text: &str,
@@ -355,7 +430,7 @@ pub fn normalize_voice_work_items(
     if text.is_empty() {
         return Vec::new();
     }
-    let clauses: Vec<&str> = pattern::split(&ITEM_BOUNDARY, text)
+    let clauses: Vec<&str> = item_clauses(text)
         .into_iter()
         .map(|part| part.trim_matches([' ', ',']))
         .filter(|part| !part.is_empty())
@@ -416,7 +491,7 @@ pub fn inferred_resource_claims(source_text: &str) -> Vec<String> {
 pub fn explicit_replace_requested(source_text: &str, action_reason: &str) -> bool {
     let negated = search(&NEGATED_REPLACE, source_text);
     let unnegated = pattern::sub(&NEGATED_REPLACE, source_text, 0);
-    if search(&EXPLICIT_REPLACE, &unnegated) {
+    if imperative_cancel(&unnegated).is_some() || search(&EXPLICIT_REPLACE, &unnegated) {
         return true;
     }
     let reason = json::py_strip(action_reason).to_lowercase();
@@ -426,9 +501,10 @@ pub fn explicit_replace_requested(source_text: &str, action_reason: &str) -> boo
     ) && !negated
 }
 
-/// Whether completed language positively requests cancellation.
+/// Whether completed language positively requests cancellation: a cancel
+/// word in imperative position (see `imperative_cancel`), not negated.
 pub fn explicit_cancel_requested(source_text: &str) -> bool {
-    search(&CANCEL, &pattern::sub(&NEGATED_REPLACE, source_text, 0))
+    imperative_cancel(&pattern::sub(&NEGATED_REPLACE, source_text, 0)).is_some()
 }
 
 /// Whether a bounded read-only sidecar can run without contention.
@@ -801,6 +877,85 @@ mod tests {
             "cancel"
         ));
         assert!(explicit_replace_requested("keep going", "redirect"));
+    }
+
+    /// The disposition and scope of the turn's last item.
+    fn last_item(text: &str) -> (&'static str, &'static str) {
+        let items = items(text);
+        let (_, _, disposition, scope) = items.last().cloned().unwrap();
+        (disposition, scope)
+    }
+
+    #[test]
+    fn short_cancel_commands_keep_their_scopes() {
+        for (text, scope) in [
+            ("stop", "ambiguous"),
+            ("cancel that", "ambiguous"),
+            ("okay stop", "ambiguous"),
+            ("please cancel the build", "item"),
+            ("Cancel RR-400", "ticket"),
+            ("uh, actually stop that", "ambiguous"),
+            ("scratch that", "ambiguous"),
+            ("never mind", "ambiguous"),
+            ("write the ticket. Stop the build.", "item"),
+            ("can you stop the build", "item"),
+            ("stop everything", "all_work"),
+        ] {
+            assert!(explicit_cancel_requested(text), "{text}");
+            assert!(explicit_replace_requested(text, ""), "{text}");
+            assert_eq!(last_item(text), ("cancellation", scope), "{text}");
+        }
+        let turn = items("write the ticket. Stop the build.");
+        assert_eq!(turn.len(), 2);
+        assert_eq!(turn[0].2, "accepted");
+        assert_eq!(turn[1].1, "build");
+    }
+
+    #[test]
+    fn a_cancel_word_inside_a_description_is_not_a_cancel() {
+        for text in [
+            "that's how they stop the session",
+            "the X is how the user stops it",
+            "it should stop playing when the lid closes",
+            "tell me how to cancel a run",
+            "If there is a session active, that plus will turn into an X and that's how they \
+             stop the session. Uh that's what I'm thinking.",
+            "unless they go into the submenu and stop the session",
+        ] {
+            assert!(!explicit_cancel_requested(text), "{text}");
+            assert!(!explicit_replace_requested(text, ""), "{text}");
+            for item in normalize_voice_work_items(text, 1, "c") {
+                assert_eq!(item.disposition, WorkItemDisposition::Accepted, "{text}");
+                assert_eq!(item.cancellation_scope, CancellationScope::None, "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_third_party_clause_is_not_split_into_an_action() {
+        let text = "A session doesn't get started from the wheel unless they go into the submenu \
+                    and click one of the four names that appear in that submenu.";
+        assert_eq!(items(text).len(), 1);
+        assert_eq!(items("the user opens the menu and selects a name").len(), 1);
+        assert_eq!(
+            items("open Chrome and click the Add project button"),
+            vec![
+                ("open Chrome".into(), "chrome".into(), "accepted", "none"),
+                (
+                    "click the Add project button".into(),
+                    "add project button".into(),
+                    "accepted",
+                    "none"
+                ),
+            ]
+        );
+        assert_eq!(
+            items("fix the test and then run the suite"),
+            vec![
+                ("fix the test".into(), "test".into(), "accepted", "none"),
+                ("run the suite".into(), "suite".into(), "accepted", "none"),
+            ]
+        );
     }
 
     #[test]
