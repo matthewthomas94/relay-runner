@@ -1034,7 +1034,7 @@ impl TtsWorker {
                 let not_cancelled: Arc<dyn Fn() -> bool + Send + Sync> =
                     Arc::new(move || !check.load(Ordering::SeqCst));
                 let Some(audio) =
-                    self.bounded_synthesis(text, &voice, not_cancelled, SYNTHESIS_TIMEOUT)
+                    self.bounded_synthesis(text, voice, not_cancelled, SYNTHESIS_TIMEOUT)
                 else {
                     if cancelled() {
                         return Ok(());
