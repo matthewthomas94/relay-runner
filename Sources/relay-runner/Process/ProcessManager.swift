@@ -1385,6 +1385,7 @@ final class ProcessManager {
                 ? VoiceSessionSpool(key: providerSessionID ?? UUID().uuidString.lowercased())
                 : retainedSpool
         try spool.prepare()
+        if let sessionContext { try spool.writeSessionAgent(SessionAgent(context: sessionContext)) }
         let launcher = spool.launcher
         let appSessionID = voiceDelivery == .appOwned
             ? RelayDiagnostics.shared.appSessionID
@@ -1604,6 +1605,7 @@ final class ProcessManager {
         ))
         \(Self.appOwnedProviderSessionExport(effectiveProviderSessionID))
         \(Self.sessionSpoolEnvironment(spool, voiceDelivery: voiceDelivery))
+        \(Self.sessionAgentEnvironment(sessionContext))
         \(Self.appOwnedAutomaticCompactionEnvironment(
             target: target,
             voiceDelivery: voiceDelivery,
@@ -2165,6 +2167,7 @@ final class ProcessManager {
         guard voiceDelivery == .appOwned else { return "" }
         var instructions = appOwnedRelayInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
         if let sessionContext {
+            instructions += "\n" + SessionAgent(context: sessionContext).startupInstruction
             instructions += "\nActive context: \(sessionContext.displayName) (\(sessionContext.kind.rawValue)). Execution is bound to \(sessionContext.workingDirectory). A context change requires Relay Runner to replace or resume the provider; never claim that a chat instruction changed your cwd or project mutation authority."
             if reachesRegisteredProjects {
                 instructions += "\n" + generalSessionReachInstructions
@@ -2311,12 +2314,18 @@ final class ProcessManager {
             .joined(separator: "\n")
     }
 
+    /// RR-519: the named agent this provider runs as, beside RELAY_SESSION_KEY.
+    static func sessionAgentEnvironment(_ context: AssistantSessionContext?) -> String {
+        guard let context else { return "unset \(SessionAgent.environmentName)" }
+        return "export \(SessionAgent.environmentName)=" + shellQuoted(SessionAgent(context: context).slug)
+    }
+
     /// Codex filters stdio MCP child environments. Forward only the ownership
     /// fields consumed by our servers, per launch; Claude inherits them.
     static func appOwnedMCPEnvironmentFlag(target: AgentTarget, voiceDelivery: SessionVoiceDelivery) -> String {
         guard target == .codex, voiceDelivery == .appOwned else { return "" }
         let ownership = ["RELAY_PROVIDER_SESSION_ID", "RELAY_APP_SESSION_ID", "RELAY_RECOVERY_GENERATION", "RELAY_FOREGROUND_GATE_HANDLE", "RELAY_SESSION_BINDING_PATH"]
-            + VoiceSessionSpool.environmentNames
+            + VoiceSessionSpool.environmentNames + [SessionAgent.environmentName]
         let servers = [
             ("relay-actions", ownership + ["RELAY_RUNNER_PROVIDER", "RELAY_CONTEXT_ID"]),
             ("relay-orchestrator", ownership + ["RELAY_PROJECT_SCOPE_TOKEN", "RELAY_PROJECT_SCOPE_TOKENS"]),

@@ -9,10 +9,11 @@ enum PMTabShortcut: Equatable {
     enum Action: Equatable {
         /// Not ours: the key behaves as it does today.
         case passThrough
-        /// Same path as "+"; at the nine-tab limit that path shows the limit message.
+        /// Same path as "+": starts the first agent that is not running; with
+        /// all four running that path shows the limit message.
         case openTab
         case closeTab
-        /// Closing the last live tab ends the session, so ask first.
+        /// Stopping the last live agent ends the session, so ask first.
         case confirmEndSession
     }
 
@@ -58,17 +59,17 @@ extension AppState {
         case .openTab:
             openPMTab()
         case .closeTab:
-            removePMTab(activeContext.id)
+            stopPMTab(activeContext.id)
         case .confirmEndSession:
             // Not inside the key monitor: a modal alert needs a clean event turn.
             DispatchQueue.main.async { [weak self] in
                 let alert = NSAlert()
                 alert.messageText = "End the session?"
-                alert.informativeText = "Closing the last tab ends the session."
+                alert.informativeText = "Stopping the last agent ends the session. Its conversation is kept."
                 alert.addButton(withTitle: "End Session")
                 alert.addButton(withTitle: "Cancel")
                 if alert.runModal() == .alertFirstButtonReturn, let self {
-                    self.removePMTab(self.activeContext.id)
+                    self.stopPMTab(self.activeContext.id)
                 }
             }
         }

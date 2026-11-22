@@ -4288,15 +4288,17 @@ final class EmbeddedSessionRegistryTests: XCTestCase {
         XCTAssertEqual(registry.liveContextIDs, ["b"])
     }
 
-    func testTenthConcurrentSessionIsRefusedWithTheCap() throws {
+    /// RR-519: one session per named agent, four at once.
+    func testFifthConcurrentSessionIsRefusedWithTheAgentLimit() throws {
         let registry = makeRegistry()
-        for id in ["a", "b", "c", "d", "f", "g", "h", "i", "j"] { _ = try launch(registry, id) }
+        for id in ["a", "b", "c", "d"] { _ = try launch(registry, id) }
         guard case .refused(let message) = registry.admit(contextID: "e") else {
-            return XCTFail("A tenth session must be refused")
+            return XCTFail("A fifth session must be refused")
         }
-        XCTAssertTrue(message.contains("\(EmbeddedSessionRegistry.maxConcurrentSessions)"))
-        XCTAssertEqual(EmbeddedSessionRegistry.maxConcurrentSessions, 9)
-        XCTAssertEqual(registry.focusedContextID, "j", "A refusal changes nothing")
+        XCTAssertEqual(message, "Relay Runner runs at most four agents at once: Puck, Isabella, George and Sky. Stop one before starting another.")
+        XCTAssertEqual(EmbeddedSessionRegistry.maxConcurrentSessions, 4)
+        XCTAssertEqual(EmbeddedSessionRegistry.maxConcurrentSessions, SessionAgent.allCases.count)
+        XCTAssertEqual(registry.focusedContextID, "d", "A refusal changes nothing")
         XCTAssertNil(registry.sessions["e"])
 
         registry.end(contextID: "b")

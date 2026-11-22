@@ -7,31 +7,24 @@ struct SessionWheelSession: Identifiable, Equatable {
     var isFocused = false
 }
 
-/// RR-469: one PM tab in the session slot's submenu. An off tab keeps its
-/// conversation; clicking it turns it back on and makes it active.
+/// RR-469/RR-519: one agent's tab in the session slot's submenu, named by
+/// its agent. An off tab keeps its conversation; clicking it starts the agent
+/// again, resuming it, and makes it active.
 struct SessionWheelTab: Identifiable, Equatable {
     let id: String
+    /// The agent's name, and the segment's label.
     let name: String
     var isActive = false
     var isLive = true
 
     var title: String {
-        isActive ? "\(name), active tab" : isLive ? "Make \(name) the active tab" : "Turn \(name) on"
+        isActive ? "\(name), active agent" : isLive ? "Make \(name) the active agent" : "Start \(name)"
     }
 
     var caption: String { isActive ? "\(name) active" : isLive ? name : "\(name) off" }
 
-    /// The x inside the tab's segment.
-    var closeTitle: String { "Close \(name)" }
-
-    /// The segment's short label: S1, S2 and so on by position.
-    static func shortLabel(position: Int) -> String { "S\(position + 1)" }
-
-    /// The segment's label: "Session 1" in full while it is the only tab,
-    /// the short label beside others.
-    static func label(position: Int, tabCount: Int) -> String {
-        tabCount == 1 ? "Session \(position + 1)" : shortLabel(position: position)
-    }
+    /// The x inside the tab's segment: it stops the agent and keeps its conversation.
+    var closeTitle: String { "Stop \(name)" }
 }
 
 /// RR-469: the tab controls after the tab segments. Each tab closes from the
@@ -39,10 +32,10 @@ struct SessionWheelTab: Identifiable, Equatable {
 enum SessionWheelTabControl: Int, CaseIterable {
     case add
 
-    var title: String { "Add a PM tab" }
+    var title: String { "Start the next agent" }
 
     /// One or two short words: the notch hover descriptor.
-    var caption: String { "Add tab" }
+    var caption: String { "Add agent" }
 
     var symbol: LucideIcon { .plus }
 }
@@ -245,12 +238,13 @@ enum SessionWheelGeometry {
         return submenuSlot == slot(at: point)
     }
 
-    /// RR-469: the session submenu holds six segments over its own cell, the
-    /// standard size for five tabs and Add. More segments
-    /// grow it along the arc, evenly on both sides, up to the far ends of
-    /// the History and Workspace cells: three cells for nine tabs.
-    static let sessionStandardItems = 6
-    static let sessionMaxItems = 9 + SessionWheelTabControl.allCases.count
+    /// RR-469/RR-519: the session submenu holds two segments over its own
+    /// cell, the standard size for one agent and Add. Agent names are wider
+    /// than numbers, so each further agent grows it along the arc, evenly on
+    /// both sides, up to the far ends of the History and Workspace cells:
+    /// three cells for all four agents.
+    static let sessionStandardItems = 2
+    static let sessionMaxItems = SessionAgent.allCases.count + SessionWheelTabControl.allCases.count
 
     /// The submenu's width in cells.
     static func sessionSubmenuSpan(items: Int) -> CGFloat {
@@ -281,11 +275,6 @@ enum SessionWheelGeometry {
     /// The close x's hover circle, which is also where the x is hit.
     static let tabCloseDiameter: CGFloat = 20
     static var tabCloseHitRadius: CGFloat { tabCloseDiameter / 2 }
-
-    /// The label in tab segment `index` of `items`.
-    static func sessionTabLabel(_ index: Int, items: Int) -> String {
-        SessionWheelTab.label(position: index, tabCount: items - SessionWheelTabControl.allCases.count)
-    }
 
     /// Extra space between a tab label's letters.
     static let tabLabelTracking: CGFloat = 1
@@ -337,7 +326,7 @@ enum SessionWheelGeometry {
     /// the arc at its own angle and turns with the segment, so the two read
     /// the same way. The label curves with the cell: `glyphs` sets each
     /// letter's outline on the arc, and `label` is the label's middle.
-    static func sessionTabLayout(_ index: Int, items: Int, entering: SessionTabEntry? = nil)
+    static func sessionTabLayout(_ index: Int, items: Int, label: String, entering: SessionTabEntry? = nil)
         -> (label: (point: CGPoint, rotation: CGFloat), glyphs: [Glyph], close: (point: CGPoint, rotation: CGFloat)) {
         let slot = sessionSlots.first ?? 0
         let arc = sessionItemArc(index, items: items, entering: entering)
@@ -346,7 +335,7 @@ enum SessionWheelGeometry {
         // Reading order runs clockwise, or anticlockwise where labelRotation turns labels over.
         let direction: CGFloat = cos(rotation - (CGFloat(slot) * sliceAngle + centre)) >= 0 ? 1 : -1
         let half = arc.width / 2 * actionRadius - segmentGap / 2
-        let text = trackedLetters(sessionTabLabel(index, items: items))
+        let text = trackedLetters(label)
         let padding = min(tabContentPadding, max(0, (2 * half - text.width - tabCloseDiameter) / 2))
         func place(_ distance: CGFloat) -> (point: CGPoint, rotation: CGFloat) {
             let offset = centre + direction * distance / actionRadius
@@ -373,8 +362,8 @@ enum SessionWheelGeometry {
     }
 
     /// Where the close x inside tab segment `index` is drawn and hit.
-    static func sessionTabClosePoint(_ index: Int, items: Int) -> CGPoint {
-        sessionTabLayout(index, items: items).close.point
+    static func sessionTabClosePoint(_ index: Int, items: Int, label: String) -> CGPoint {
+        sessionTabLayout(index, items: items, label: label).close.point
     }
 
     /// One segment's start and width, relative to the session cell's centre.
@@ -453,9 +442,9 @@ final class SessionWheelModel {
     private var intensityDragAngle: (raw: CGFloat, unwrapped: CGFloat) = (0, 0)
     var startUnavailableReason: String?
     var canStartSession: Bool { startUnavailableReason == nil }
-    /// RR-469: the PM tabs in the session submenu, in tab-strip order.
+    /// RR-469: the agent tabs in the session submenu, in tab-strip order.
     var tabs: [SessionWheelTab] = []
-    /// Why Add is unavailable, such as the nine-tab limit; nil when it is.
+    /// Why Add is unavailable, such as all four agents running; nil when it is.
     var addTabUnavailableReason: String?
     var notice: String?
     private(set) var hoveredSlot: Int?
@@ -597,7 +586,8 @@ final class SessionWheelModel {
             // RR-469: the session submenu may reach over History and Workspace.
             hoveredControl = geometry.sessionItem(at: pointer, items: sessionItems.count)
             if let index = hoveredControl, sessionItems.indices.contains(index), sessionItems[index].tab != nil {
-                let close = geometry.sessionTabClosePoint(index, items: sessionItems.count)
+                let close = geometry.sessionTabClosePoint(index, items: sessionItems.count,
+                                                          label: sessionItems[index].tab?.name ?? "")
                 hoveringTabClose = hypot(pointer.x - close.x, pointer.y - close.y) <= geometry.tabCloseHitRadius
             }
         } else if submenuSlot != nil,

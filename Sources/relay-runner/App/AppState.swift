@@ -1382,69 +1382,91 @@ final class AppState {
         sessionRegistry.liveContextIDs.map { id in (id, sessionLabel(contextID: id)) }
     }
 
-    // MARK: - PM tabs (RR-469)
+    // MARK: - Agent tabs (RR-469, RR-519)
 
-    /// One PM tab in the Workspace terminal's tab strip and the wheel.
+    /// One agent's tab in the Workspace terminal's tab strip and the wheel.
     struct PMTab: Identifiable, Equatable {
         let id: String
+        let agent: SessionAgent
         let name: String
         let isLive: Bool
         let isActive: Bool
     }
 
-    /// The PM tabs in the order they opened. A tab stays listed while it is
-    /// turned off or its provider has exited, until it is removed.
+    /// The agent tabs started in this session, in the order they started. A
+    /// tab stays listed while its provider has exited, until it is stopped.
     private(set) var pmTabIDs: [String] = []
 
     var pmTabs: [PMTab] {
         pmTabIDs.map { id in
             let live = sessionRegistry.isLive(id)
-            return PMTab(id: id, name: sessionLabel(contextID: id), isLive: live,
-                         isActive: live && id == activeContext.id)
+            return PMTab(id: id, agent: SessionAgent(contextID: id) ?? .puck, name: sessionLabel(contextID: id),
+                         isLive: live, isActive: live && id == activeContext.id)
         }
     }
 
     static let pmTabLimitMessage = EmbeddedSessionRegistry.capMessage
 
-    /// Why another tab cannot open now; nil when it can.
+    /// The agents with a live session in any context.
+    var runningAgents: Set<SessionAgent> {
+        Set(sessionRegistry.liveContextIDs.compactMap(SessionAgent.init(contextID:)))
+    }
+
+    /// `app_status`: every agent, whether it runs and which is active.
+    var agentStatuses: [SessionAgent.Status] {
+        SessionAgent.statuses(liveContextIDs: sessionRegistry.liveContextIDs, activeContextID: activeContext.id)
+    }
+
+    /// The agent an Add control starts now, by `SessionAgent.toAdd`; nil when
+    /// all four run or no slot is free.
+    private var agentToAdd: SessionAgent? {
+        guard sessionRegistry.liveContextIDs.count < EmbeddedSessionRegistry.maxConcurrentSessions,
+              let agent = SessionAgent.toAdd(running: runningAgents) else { return nil }
+        let id = activeContext.inTab(agent.tab).id
+        return pmTabIDs.contains(id) || pmTabIDs.count < EmbeddedSessionRegistry.maxConcurrentSessions ? agent : nil
+    }
+
+    /// Why Add cannot start an agent now; nil when it can.
     var pmTabUnavailableReason: String? {
         if !sessionRegistry.hasLiveSessions { return "No session" }
-        if pmTabIDs.count >= EmbeddedSessionRegistry.maxConcurrentSessions { return "Nine tabs open" }
-        if pendingSessionLaunchID != nil { return "Tab starting" }
+        if agentToAdd == nil { return "All agents running" }
+        if pendingSessionLaunchID != nil { return "Agent starting" }
         if meetingNoteSnapshot.phase.ownsForeground { return "Finish notes first" }
         return nil
     }
 
-    /// A general tab reads "Session n" by its position; another project keeps its name.
+    /// A tab is named by its agent; a project other than general adds its name.
     func sessionLabel(contextID: String) -> String {
-        let name = assistantSessionStore.document.bindings[contextID]?.context.displayName
+        let project = assistantSessionStore.document.bindings[contextID]?.context.displayName
             ?? AssistantSessionContext.baseID(contextID)
-        guard name == "general", let index = pmTabIDs.firstIndex(of: contextID) else { return name }
-        return "Session \(index + 1)"
+        let agent = (SessionAgent(contextID: contextID) ?? .puck).name
+        return project == "general" ? agent : "\(agent) · \(project)"
     }
 
-    /// Open another general PM tab beside the running ones. It gets the first
-    /// tab's instructions, MCP servers and scope tokens, and its own provider
-    /// session. Refused, changing nothing, at nine tabs.
+    /// Start an agent beside the running ones, in the active context's
+    /// project. nil is the Add rule: the first agent in table order that is
+    /// not running. It gets the same instructions, MCP servers and scope
+    /// tokens, and its own provider session, resuming its saved conversation.
+    /// Refused, changing nothing, when all four agents run.
     @discardableResult
-    func openPMTab(showsTerminal: Bool = true) -> Bool {
+    func openPMTab(agent: SessionAgent? = nil, showsTerminal: Bool = true) -> Bool {
         guard allowsAppShellAccess, sessionRegistry.hasLiveSessions else { return false }
-        guard pmTabIDs.count < EmbeddedSessionRegistry.maxConcurrentSessions else {
+        guard let agent = agent ?? agentToAdd else {
             refusePMTab()
             return false
         }
-        let tab = String(UUID().uuidString.lowercased().prefix(8))
-        return newSession(showsWorkspaceOnLaunch: showsTerminal, tab: tab)
+        return newSession(workingDirectory: activeContext.repositoryPath, showsWorkspaceOnLaunch: showsTerminal,
+                          agent: agent)
     }
 
     private func refusePMTab() {
         contextSwitchMessage = Self.pmTabLimitMessage
-        stateMachine.showProgramStatus(title: "PM tab limit reached", body: Self.pmTabLimitMessage)
+        stateMachine.showProgramStatus(title: "All agents running", body: Self.pmTabLimitMessage)
         syncNotchActivitySurface()
     }
 
-    /// Make a tab active: voice, replies and the terminal follow it. An off
-    /// tab is turned back on, resuming its conversation.
+    /// Make a tab active: voice, replies and the terminal follow it. A tab
+    /// whose provider exited is started again, resuming its conversation.
     @discardableResult
     func selectPMTab(_ contextID: String, showsTerminal: Bool = true) -> Bool {
         guard pmTabIDs.contains(contextID),
@@ -1453,23 +1475,24 @@ final class AppState {
             if showsTerminal { programBoardOverlay.showTerminal() }
             return true
         }
-        return newSession(workingDirectory: context.repositoryPath, showsWorkspaceOnLaunch: showsTerminal, tab: context.tab)
+        return newSession(workingDirectory: context.repositoryPath, showsWorkspaceOnLaunch: showsTerminal,
+                          agent: SessionAgent(context: context))
     }
 
-    /// End a tab and drop it. Removing the last live tab ends the session, as End does.
-    func removePMTab(_ contextID: String) {
+    /// Stop a tab's agent: its provider ends and the tab leaves the strip.
+    /// Its conversation is kept, so starting the agent again resumes it.
+    /// Stopping the last live tab ends the session, as End does.
+    func stopPMTab(_ contextID: String) {
         guard pmTabIDs.contains(contextID) else { return }
         guard sessionRegistry.liveContextIDs.contains(where: { $0 != contextID }) else {
             endSession()
             return
         }
-        let context = assistantSessionStore.document.bindings[contextID]?.context
-        if sessionRegistry.isLive(contextID), let context {
+        if sessionRegistry.isLive(contextID), let context = assistantSessionStore.document.bindings[contextID]?.context {
             cancelRecording(targeting: contextID)
             endSession(context: context)
         }
         pmTabIDs.removeAll { $0 == contextID }
-        if let context { try? assistantSessionStore.removeTab(context: context) }
         publishConversationState()
     }
 
@@ -1480,21 +1503,11 @@ final class AppState {
         }
     }
 
-    /// The session ended: forget every extra tab. The first tab's binding
-    /// stays for Start Session's resume.
-    private func discardPMTabs() {
-        for id in pmTabIDs {
-            if let context = assistantSessionStore.document.bindings[id]?.context, context.tab != nil {
-                try? assistantSessionStore.removeTab(context: context)
-            }
-        }
+    /// The session ended: the strip empties. Every agent's binding stays,
+    /// and the active context keeps its agent, so the next start resumes the
+    /// most recently active agent's conversation.
+    private func clearPMTabs() {
         pmTabIDs = []
-        let active = assistantSessionStore.activeContext
-        if active.tab != nil {
-            let first = active.inTab(nil)
-            try? assistantSessionStore.select(first, provider: config.general.provider.rawValue, model: config.general.model)
-            try? assistantSessionStore.removeTab(context: active)
-        }
         publishConversationState()
     }
 
@@ -2251,7 +2264,7 @@ final class AppState {
                     suppressesStartupGreeting: true,
                     recoveryGeneration: context.recoveryGeneration,
                     preservesVoiceBridge: true,
-                    tab: exitedContext?.tab
+                    agent: exitedContext.map(SessionAgent.init(context:))
                 )
                 if !started {
                     stateMachine.showProgramStatus(
@@ -2271,7 +2284,8 @@ final class AppState {
         }
         resetActiveSessionState()
         // Retry once with a new conversation; a fresh launch never resumes, so this can't loop.
-        if let refusedResume, newSession(workingDirectory: refusedResume.repositoryPath, tab: refusedResume.tab) { return }
+        if let refusedResume, newSession(workingDirectory: refusedResume.repositoryPath,
+                                         agent: SessionAgent(context: refusedResume)) { return }
         if let earlyFailureMessage {
             statusText = "Session failed before provider readiness"
             stateMachine.showProgramStatus(
@@ -2305,8 +2319,8 @@ final class AppState {
         // Cancel any in-flight recording too, so the mic indicator clears.
         sttEngine?.cancelRecording()
         stateMachine.reset()
-        // RR-469: the session ended, so its extra PM tabs go too.
-        discardPMTabs()
+        // RR-519: the session ended; its agents' conversations are kept.
+        clearPMTabs()
         refreshWorkspaceActivity(invalidateRoute: true)
     }
 
@@ -2666,7 +2680,8 @@ final class AppState {
             return true
         }
         pendingContextSelection = nil
-        return newSession(workingDirectory: context.repositoryPath, showsWorkspaceOnLaunch: showsTerminal, tab: context.tab)
+        return newSession(workingDirectory: context.repositoryPath, showsWorkspaceOnLaunch: showsTerminal,
+                          agent: SessionAgent(context: context))
     }
 
     private func reserveContextContinuation(_ request: [String: String], destination: AssistantSessionContext) throws -> String {
@@ -2829,7 +2844,8 @@ final class AppState {
                assistantSessionStore.pendingContinuation == nil || continuationSourceReady {
                 pendingContextSelection = nil
                 _ = newSession(workingDirectory: selection.repositoryPath,
-                               showsWorkspaceOnLaunch: pendingContextSelectionShowsTerminal, tab: selection.tab)
+                               showsWorkspaceOnLaunch: pendingContextSelectionShowsTerminal,
+                               agent: SessionAgent(context: selection))
                 return
             }
         } catch {
@@ -2847,7 +2863,7 @@ final class AppState {
         recoveryGeneration: String? = nil,
         preservesVoiceBridge: Bool = false,
         bypassesNoteTransition: Bool = false,
-        tab: String? = nil
+        agent: SessionAgent? = nil
     ) -> Bool {
         if !bypassesNoteTransition, meetingNoteSnapshot.phase.ownsForeground {
             return transitionFromNoteToSession(
@@ -2857,7 +2873,8 @@ final class AppState {
                 showsWorkspaceOnLaunch: showsWorkspaceOnLaunch,
                 suppressesStartupGreeting: suppressesStartupGreeting,
                 recoveryGeneration: recoveryGeneration,
-                preservesVoiceBridge: preservesVoiceBridge
+                preservesVoiceBridge: preservesVoiceBridge,
+                agent: agent
             )
         }
         if !preservesVoiceBridge {
@@ -2881,8 +2898,10 @@ final class AppState {
         do {
             let preparedContext = try Self.prepareSessionContext(workingDirectory: workingDirectory, registry: projectRegistryV2)
             projectScopeToken = preparedContext.projectScopeToken
-            // RR-469: an extra PM tab is the same project in its own context.
-            context = preparedContext.context.inTab(tab)
+            // RR-519: each agent is the same project in its own context. A
+            // start that names no agent starts the most recently active one.
+            let agent = agent ?? SessionAgent.toStart(activeContext: assistantSessionStore.activeContext)
+            context = preparedContext.context.inTab(agent.tab)
             contextWorkingDirectory = preparedContext.workingDirectory
         } catch {
             if requestedProject.isEmpty || AssistantSessionStore.samePath(requestedProject, AssistantSessionStore.filesDirectory.path) {
@@ -2910,7 +2929,7 @@ final class AppState {
             return true
         }
         guard pendingSessionLaunchID == nil else { return false }
-        // RR-469: nine tabs in all, live or off, however the tab is started.
+        // RR-519: four agent tabs in all, live or off, however the agent is started.
         if !pmTabIDs.contains(context.id), pmTabIDs.count >= EmbeddedSessionRegistry.maxConcurrentSessions {
             refusePMTab()
             return false
@@ -3053,9 +3072,8 @@ final class AppState {
                 let joinsVoiceBridge = !preservesVoiceBridge
                     && sessionRegistry.liveContextIDs.contains { $0 != context.id }
                     && processManager.bridgeAlive()
-                let nativeResumeID = assistantSessionStore.binding(for: context).flatMap {
-                    $0.provider == launchConfig.general.provider.rawValue && $0.model == launchConfig.general.model ? $0.launchableNativeSessionID : nil
-                }
+                let nativeResumeID = assistantSessionStore.launchResumeID(
+                    for: context, provider: launchConfig.general.provider.rawValue, model: launchConfig.general.model)
                 let prepared = try processManager.prepareNewSession(
                     config: launchConfig,
                     voiceDelivery: voiceDelivery,
@@ -3176,7 +3194,8 @@ final class AppState {
         showsWorkspaceOnLaunch: Bool,
         suppressesStartupGreeting: Bool,
         recoveryGeneration: String?,
-        preservesVoiceBridge: Bool
+        preservesVoiceBridge: Bool,
+        agent: SessionAgent?
     ) -> Bool {
         guard let coordinator = meetingNoteCoordinator else { return false }
         // The destination path is captured now. Later Workspace selection
@@ -3216,7 +3235,8 @@ final class AppState {
                         suppressesStartupGreeting: suppressesStartupGreeting,
                         recoveryGeneration: recoveryGeneration,
                         preservesVoiceBridge: preservesVoiceBridge,
-                        bypassesNoteTransition: true
+                        bypassesNoteTransition: true,
+                        agent: agent
                     )
                 }
             } catch {
@@ -3490,7 +3510,7 @@ final class AppState {
             ))
             return true
         case .close(let tab):
-            removePMTab(tab.id)
+            stopPMTab(tab.id)
             return true
         case .control(.add):
             return openPMTab(showsTerminal: false)
@@ -4779,7 +4799,8 @@ final class AppState {
                     engine.playDetectedAt = nil
                     self.onboarding.noteTutorialPlaybackRequested()
                     self.stateMachine.dismissSessionPrompt()
-                    self.newSession(workingDirectory: self.activeContext.workingDirectory, tab: self.activeContext.tab)
+                    self.newSession(workingDirectory: self.activeContext.workingDirectory,
+                                    agent: SessionAgent(context: self.activeContext))
                 } else if CapsLockGesture.isCapsLockOn() != self.sessionPromptCapsState {
                     // Any Caps Lock toggle → dismiss prompt immediately
                     if engine.isRecording { engine.cancelRecording() }
@@ -5220,7 +5241,7 @@ final class AppState {
                 suppressesStartupGreeting: true,
                 recoveryGeneration: request.recoveryGeneration,
                 preservesVoiceBridge: preservesVoiceBridge,
-                tab: voiceContext.tab
+                agent: SessionAgent(context: voiceContext)
             )
             if applied {
                 releasedContinuityProviderTargets.remove(providerTargetKey)
@@ -5404,6 +5425,8 @@ final class AppState {
             ],
         ]
     }
+
+    var relayAppAgents: [SessionAgent.Status] { agentStatuses }
 
     func openRelayAppDestination(_ destination: RelayAppDestination) -> String? {
         guard allowsAppShellAccess else {

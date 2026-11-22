@@ -10,14 +10,14 @@ enum WorkspaceTerminalLayout {
     static let horizontalPadding = BoardDarkSurfaceStyle.columnCornerRadius + shoulderRadius
 }
 
-/// The Workspace terminal's panel. RR-469: while a session runs, a tab strip
-/// lists its PM tabs and a "+" opens another. The selected tab and terminal
+/// The Workspace terminal's panel. RR-469/RR-519: while a session runs, a tab
+/// strip lists its agents by name and a "+" starts the next one. The selected tab and terminal
 /// share one outline; only that outline morphs on selection, leaving the live
 /// terminal's layout and hit targets stationary.
 struct WorkspaceTerminalSurface<Content: View>: View {
     var tabs: [AppState.PMTab] = []
     var selectedID: String?
-    /// Nil when "+" is unavailable; the reason names why, such as nine tabs.
+    /// Nil when "+" is unavailable; the reason names why, such as all four agents running.
     var addUnavailableReason: String?
     var select: (String) -> Void = { _ in }
     var close: (String) -> Void = { _ in }
@@ -150,9 +150,10 @@ private struct WorkspaceSessionTab: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.graphicalPress)
-            .notchHint(tab.isLive ? (selected ? "Active tab" : "Make active") : "Turn on")
+            .notchHint(tab.isLive ? (selected ? "\(tab.name) active" : "Make \(tab.name) active") : "Start \(tab.name)")
             .accessibilityLabel(tab.isLive ? tab.name : "\(tab.name), off")
-            .accessibilityHint(tab.isLive ? "Make this the active tab; voice and replies follow it." : "Turn this tab on and make it active.")
+            .accessibilityHint(tab.isLive ? "Make \(tab.name) the active agent; voice and replies follow it."
+                               : "Start \(tab.name) again, resuming its conversation, and make it active.")
             Button(action: close) {
                 LucideImage(.x, size: 14)
                     .frame(width: 28, height: 28)
@@ -163,8 +164,8 @@ private struct WorkspaceSessionTab: View {
             .buttonStyle(.graphicalPress)
             .padding(.trailing, 8)
             .onHover { closeHovered = $0 }
-            .notchHint("Close tab")
-            .accessibilityLabel("Close \(tab.name)")
+            .notchHint("Stop \(tab.name)")
+            .accessibilityLabel("Stop \(tab.name)")
         }
         .foregroundStyle(ProgramBoardStyle.primaryText)
         .background {
@@ -187,7 +188,7 @@ private struct WorkspaceSessionTab: View {
     }
 }
 
-/// Opens another PM tab. Disabled at nine tabs, and while a tab is starting.
+/// Starts the next agent. Disabled while all four run, and while one is starting.
 private struct WorkspaceAddTabButton: View {
     let unavailableReason: String?
     let add: () -> Void
@@ -214,8 +215,8 @@ private struct WorkspaceAddTabButton: View {
         .opacity(unavailableReason == nil ? 1 : 0.45)
         .onHover { isHovered = $0 }
         .animation(RelayMotion.hover, value: isHovered)
-        .notchHint(unavailableReason ?? "New PM tab")
-        .accessibilityLabel("New PM tab")
-        .accessibilityHint(unavailableReason ?? "Opens another PM agent bound to general-tasks.")
+        .notchHint(unavailableReason ?? "Add agent")
+        .accessibilityLabel("Add agent")
+        .accessibilityHint(unavailableReason ?? "Starts the first of Puck, Isabella, George and Sky that is not running.")
     }
 }

@@ -8,8 +8,9 @@ struct AssistantSessionContext: Codable, Equatable, Identifiable {
     let kind: Kind
     let projectID: String?
     let repositoryPath: String?
-    /// RR-469: an extra PM tab's stable identity; nil is the session's first
-    /// tab, so existing bindings keep their ids. Each tab has its own binding,
+    /// RR-469/RR-519: the agent tab's stable identity, `SessionAgent.tab`:
+    /// nil is Puck, the session's first tab, so existing bindings keep their
+    /// ids; the other agents use their slug. Each tab has its own binding,
     /// native provider session, spool and history.
     var tab: String? = nil
 
@@ -31,7 +32,7 @@ struct AssistantSessionContext: Codable, Equatable, Identifiable {
     }
     var workingDirectory: String { repositoryPath ?? AssistantSessionStore.filesDirectory.path }
 
-    /// The same project in another PM tab (nil: the first tab).
+    /// The same project in another agent's tab (nil: Puck, the first tab).
     func inTab(_ tab: String?) -> Self {
         Self(kind: kind, projectID: projectID, repositoryPath: repositoryPath, tab: tab)
     }
@@ -149,6 +150,7 @@ final class AssistantSessionStore {
                         document.bindings[key]?.lifecycle = .interrupted
                     }
                 }
+                Self.dropTabsWithoutAgent(&document)
             } catch { loadError = "Saved conversation could not be read: \(error.localizedDescription)" }
         }
     }
@@ -318,19 +320,23 @@ final class AssistantSessionStore {
         }
     }
 
-    /// RR-469: a removed extra PM tab keeps nothing: its binding and public
-    /// history go, so a later tab never resumes it. The first tab (nil) is
-    /// kept for Start Session's resume.
-    func removeTab(context: AssistantSessionContext) throws {
-        guard context.tab != nil, document.bindings[context.id] != nil
-                || document.history.contains(where: { $0.contextID == context.id }) else { return }
-        if let transport = binding(for: context)?.transportSessionID {
-            try? FileManager.default.removeItem(at: bindingURL(transportSessionID: transport))
+    /// RR-519: the native session a launch of this context resumes: its saved
+    /// conversation when the provider and model still match, else nil for a
+    /// new one. Stopping an agent or ending the session keeps the binding, so
+    /// its next start resumes here.
+    func launchResumeID(for context: AssistantSessionContext, provider: String, model: String) -> String? {
+        binding(for: context).flatMap {
+            $0.provider == provider && $0.model == model ? $0.launchableNativeSessionID : nil
         }
-        try update { document in
-            document.bindings[context.id] = nil
-            document.history.removeAll { $0.contextID == context.id }
-        }
+    }
+
+    /// RR-519: bindings and history left by pre-agent random tab ids belong to
+    /// no agent and are dropped; Puck's (nil) and the agents' tabs are kept.
+    private static func dropTabsWithoutAgent(_ document: inout Document) {
+        func owned(_ context: AssistantSessionContext) -> Bool { SessionAgent(tab: context.tab) != nil }
+        document.bindings = document.bindings.filter { owned($0.value.context) }
+        document.history.removeAll { SessionAgent(contextID: $0.contextID) == nil }
+        if !owned(document.activeContext) { document.activeContext = document.activeContext.inTab(nil) }
     }
 
     func mark(_ lifecycle: Lifecycle, context: AssistantSessionContext, now: Date = Date()) throws {
