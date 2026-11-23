@@ -51,6 +51,17 @@ final class SettingsAgentCardTests: XCTestCase {
                 .map(\.isActive),
             [false, false, true, false]
         )
+        // The orb moves by the same rules: only the active agent follows the overlay.
+        func activity(_ state: OverlayState, working: Bool = false) -> [ParticleFieldRenderer.OrbActivity] {
+            SettingsAgentPresentation.cards(
+                statuses: statuses, agents: AgentsConfig(), state: state, hasWorkingProgress: working
+            ).map(\.activity)
+        }
+        XCTAssertEqual(activity(.idle), [.standingBy, .stopped, .standingBy, .stopped])
+        XCTAssertEqual(activity(.idle, working: true)[2], .thinking)
+        XCTAssertEqual(activity(.recording)[2], .listening)
+        XCTAssertEqual(activity(.processing)[2], .thinking)
+        XCTAssertEqual(activity(.speaking)[2], .responding)
         // Nothing running: every card is stopped, even while the overlay listens.
         let stopped = SessionAgent.statuses(liveContextIDs: [], activeContextID: nil)
         XCTAssertEqual(
@@ -58,6 +69,57 @@ final class SettingsAgentCardTests: XCTestCase {
                 .map(\.status),
             Array(repeating: "Not running", count: 4)
         )
+    }
+
+    /// Under the orb each card shows what its agent last said it was working
+    /// on, or its last project until it has said; an agent that has never
+    /// had a session shows nothing.
+    func testCardsShowEachAgentsWorkOrItsLastProject() throws {
+        func binding(_ context: AssistantSessionContext, _ agent: SessionAgent, at seconds: TimeInterval)
+            -> AssistantSessionStore.Binding {
+            AssistantSessionStore.Binding(
+                context: context.inTab(agent.tab), provider: "claude", model: "", transportSessionID: nil,
+                nativeSessionID: nil, transcriptPath: nil, lifecycle: .saved,
+                lastActivity: Date(timeIntervalSince1970: seconds), activeRunIDs: [], pendingIntentIDs: []
+            )
+        }
+        let relay = AssistantSessionContext(kind: .project, projectID: "a", repositoryPath: "/tmp/dev/relay-runner")
+        let cad = AssistantSessionContext(kind: .project, projectID: "b", repositoryPath: "/tmp/dev/cad-engine")
+        let projects = SettingsAgentPresentation.lastProjects(bindings: [
+            binding(relay, .puck, at: 10), binding(.general, .puck, at: 30), binding(cad, .puck, at: 20),
+            binding(cad, .george, at: 5), binding(relay, .george, at: 6),
+        ])
+        XCTAssertEqual(projects, [.puck: "general", .george: "relay-runner"])
+        let cards = SettingsAgentPresentation.cards(
+            statuses: SessionAgent.statuses(liveContextIDs: [], activeContextID: nil),
+            agents: AgentsConfig(), state: .idle, hasWorkingProgress: false, lastProjects: projects,
+            workDescriptions: [.george: "Fixing the Settings dividers", .sky: "Reviewing the ring layout"]
+        )
+        XCTAssertEqual(cards.map(\.workLine), [
+            "Last worked on general", nil, "Fixing the Settings dividers", "Reviewing the ring layout",
+        ])
+
+        // The store keeps each agent's line across launches, one per agent.
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AssistantSessionStore(directory: directory)
+        try store.setWorkDescription("Fixing the dividers", agent: .george)
+        try store.setWorkDescription("Reviewing the ring layout", agent: .sky)
+        try store.setWorkDescription("Fixing the Settings dividers", agent: .george)
+        XCTAssertEqual(
+            AssistantSessionStore(directory: directory).document.workDescriptions,
+            ["george": "Fixing the Settings dividers", "sky": "Reviewing the ring layout"]
+        )
+        XCTAssertLessThanOrEqual(SessionAgent.workDescriptionLimit, 60, "two short lines on a card")
+        XCTAssertTrue(SessionAgent.workDescriptionInstruction.contains("mcp__relay-app__set_working_on"))
+
+        // The line starts under the orb and stays inside the card, whichever
+        // of the card's width and height limits the orb.
+        for size in [CGSize(width: 206, height: 325), CGSize(width: 236, height: 220), CGSize(width: 106, height: 500)] {
+            let top = SettingsAgentCardLayout.workLineTop(cardSize: size)
+            XCTAssertGreaterThan(top, size.height / 2)
+            XCTAssertLessThanOrEqual(top, size.height - ParticleFieldRenderer.orbVerticalReserve / 2)
+        }
     }
 
     func testSubtitleDescribesForegroundStateWithoutWorkerActivity() {
@@ -184,10 +246,10 @@ final class SettingsAgentCardTests: XCTestCase {
         }
     }
 
-    /// RR-522: every card, in either column, puts the name and status at the
-    /// top-left and the picker at the top-right on the same top inset, and
-    /// truncates the text before it reaches the picker.
-    func testCardContentIsTopLeftTextAndTopRightPicker() throws {
+    /// RR-522: every card, in either column, puts the name at the left and
+    /// the picker at the top-right, the name centred on the picker's height,
+    /// and truncates the name before it reaches the picker. No status line.
+    func testCardContentIsLeftNameCentredOnTheTopRightPicker() throws {
         let inset = SettingsAgentCardLayout.contentInset
         let frames = SettingsAgentCardLayout.gridFrames(in: CGSize(width: 480, height: 900), spacing: 12)
         let pickerSize = CGSize(width: 120, height: SharedActionButtonMetrics.controlHeight)
@@ -196,12 +258,13 @@ final class SettingsAgentCardTests: XCTestCase {
             for textWidth in [40.0, 400.0] as [CGFloat] {
                 let content = SettingsAgentCardLayout.contentFrames(
                     cardSize: card.size,
-                    textSize: CGSize(width: textWidth, height: 40),
+                    textSize: CGSize(width: textWidth, height: 22),
                     pickerSize: pickerSize
                 )
                 XCTAssertEqual(content.text.minX, inset)
-                XCTAssertEqual(content.text.minY, inset)
-                XCTAssertEqual(content.picker.minY, content.text.minY)
+                XCTAssertEqual(content.picker.minY, inset)
+                XCTAssertEqual(content.text.midY, content.picker.midY)
+                XCTAssertEqual(content.text.height, 22)
                 XCTAssertEqual(content.picker.maxX, card.width - inset)
                 XCTAssertEqual(content.picker.size, pickerSize)
                 XCTAssertLessThanOrEqual(content.text.maxX, content.picker.minX - SettingsAgentCardLayout.contentGap)
@@ -224,8 +287,9 @@ final class SettingsAgentCardTests: XCTestCase {
         )
         let card = try XCTUnwrap(source.components(separatedBy: "struct SettingsAgentCard: View {").dropFirst().first)
             .components(separatedBy: "private struct SettingsAgentCardContentLayout").first ?? ""
-        XCTAssertFalse(card.contains(".center"), "nothing in the card is centred")
-        XCTAssertTrue(card.contains("VStack(alignment: .leading"))
+        XCTAssertFalse(card.contains(".center"), "the name and the picker are not centred horizontally")
+        XCTAssertFalse(card.contains("presentation.status, style"), "the status is not shown as text")
+        XCTAssertFalse(card.contains("VStack"))
         XCTAssertTrue(card.contains(".multilineTextAlignment(.leading)"))
         XCTAssertTrue(card.contains(".accessibilityElement(children: .contain)"))
         XCTAssertTrue(card.contains(".accessibilityLabel(presentation.name)"))
@@ -364,8 +428,9 @@ final class SettingsAgentCardTests: XCTestCase {
             let maxY = try XCTUnwrap(pixels.map(\.y).max())
             XCTAssertGreaterThan(minX, 8)
             XCTAssertLessThan(maxX, 472)
-            XCTAssertGreaterThan(minY, 120)
-            XCTAssertLessThan(maxY, 563)
+            // Half the vertical reserve stays free above and below the orb.
+            XCTAssertGreaterThan(minY, 75)
+            XCTAssertLessThan(maxY, 608)
             XCTAssertEqual(Double(minX + maxX) / 2, 240, accuracy: 16)
             XCTAssertEqual(Double(minY + maxY) / 2, 341.5, accuracy: 16)
             var quadrants = [Double](repeating: 0, count: 4)
@@ -380,6 +445,61 @@ final class SettingsAgentCardTests: XCTestCase {
         XCTAssertTrue(profiles.contains { profile in
             zip(first, profile).reduce(0.0) { $0 + abs($1.0 - $1.1) } > 0.1
         })
+    }
+
+    /// The orb is twice the size it was in a Workspace card: its faint edge
+    /// spans the card's width where the old fit left it at half of that.
+    func testOrbFillsAWorkspaceGridCard() throws {
+        let size = CGSize(width: 207, height: 330)
+        let host = NSView(frame: CGRect(origin: .zero, size: size))
+        host.wantsLayer = true
+        let renderer = ParticleFieldRenderer(coverage: .agentOrb)
+        renderer.attach(to: host)
+        renderer.layoutInBounds(host.bounds, backingScale: 1)
+        renderer.transition(to: .idle, reduceMotion: true)
+        defer { renderer.transition(to: nil) }
+        let pixels = try pixelSamples(XCTUnwrap(renderer.renderedParticleImage))
+        let width = try XCTUnwrap(pixels.map(\.x).max()) - XCTUnwrap(pixels.map(\.x).min())
+        XCTAssertGreaterThan(Double(width), size.width * 0.72)
+        XCTAssertLessThan(Double(width), size.width - 24)
+        // Clear of the name and picker along the card's top edge.
+        let top = SettingsAgentCardLayout.contentInset + SharedActionButtonMetrics.controlHeight
+        XCTAssertLessThan(Double(try XCTUnwrap(pixels.map(\.y).max())), size.height - top)
+    }
+
+    /// Each activity moves the same orb a little differently, and a change
+    /// of activity continues from the frame on screen.
+    func testOrbActivityVariesItsMotionWithoutJumping() throws {
+        func makeRenderer() -> ParticleFieldRenderer {
+            let host = NSView(frame: NSRect(x: 0, y: 0, width: 207, height: 330))
+            host.wantsLayer = true
+            let renderer = ParticleFieldRenderer(coverage: .agentOrb)
+            renderer.attach(to: host)
+            renderer.layoutInBounds(host.bounds, backingScale: 1)
+            renderer.transition(to: .idle, now: 10)
+            return renderer
+        }
+        func pixels(_ renderer: ParticleFieldRenderer, at time: CFTimeInterval) throws -> Data {
+            renderer.renderFrame(at: time)
+            return try XCTUnwrap(renderer.renderedParticleImage?.dataProvider?.data) as Data
+        }
+        let steady = makeRenderer()
+        let changing = makeRenderer()
+        defer { steady.transition(to: nil); changing.transition(to: nil) }
+        let shown = try pixels(changing, at: 12)
+        XCTAssertEqual(try pixels(steady, at: 12), shown)
+        changing.setOrbActivity(.responding, now: 12)
+        XCTAssertEqual(try pixels(changing, at: 12), shown)
+        XCTAssertNotEqual(try pixels(changing, at: 14), try pixels(steady, at: 14))
+
+        let motions = [ParticleFieldRenderer.OrbActivity.stopped, .standingBy, .listening, .thinking, .responding]
+            .map(\.motion)
+        XCTAssertEqual(Set(motions.map(\.speed)).count, motions.count)
+        XCTAssertGreaterThan(motions[0].speed, 1, "a stopped agent's orb still moves")
+        // Kept close: no state is more than about twice another.
+        for values in [motions.map(\.speed), motions.map(\.stretch), motions.map(\.wander), motions.map(\.spread)] {
+            XCTAssertLessThanOrEqual(values.max()! / values.min()!, 2.5)
+        }
     }
 
     func testBlobColourChangesContinueFromTheDisplayedFrameWithoutRestartingItsShape() throws {

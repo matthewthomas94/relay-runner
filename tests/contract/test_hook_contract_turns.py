@@ -7,8 +7,11 @@ Codex with `turn_id`; `Sandbox.payload` builds the matching shape.
 from __future__ import annotations
 
 import calendar
+import contextlib
+import http.server
 import json
 import os
+import threading
 import time
 import unittest
 
@@ -29,6 +32,48 @@ PRESERVE = {
     "authorization_effect": "preserve",
     "cancellation_scope": "none",
 }
+
+
+NOTICE = "Agent notice: George started working in relay-runner (dispatched RR-530)."
+
+
+@contextlib.contextmanager
+def notice_daemon(box, pending):
+    """A stand-in orchestrator daemon whose claim route hands out `pending` once.
+
+    Yields the claim bodies it received and the env pointing the hook at it.
+    """
+    claims = []
+    queue = list(pending)
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])) or b"{}")
+            answer = {"notices": [], "omitted_notices": 0}
+            if self.path == "/v1/agent-notices/claim":
+                claims.append(body)
+                answer["notices"] = [{"text": text} for text in queue]
+                queue.clear()
+            data = json.dumps(answer).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port_file = box.root / "notice-daemon.port"
+    port_file.write_text("%d\n" % server.server_address[1])
+    try:
+        yield claims, box.env(ORCHESTRATOR_PORT_FILE=port_file)
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 class TurnCase(ContractCase):
@@ -202,6 +247,35 @@ class TurnLifecycleContract:
                 self.assertNothingBound()
                 self.assertFalse(box.inbox_path.exists())
                 self.assertEqual(box.jsonl(box.compaction_events_path), [])
+
+    # -- Agent notices (RR-525) ----------------------------------------------
+
+    def test_prompt_submit_adds_pending_agent_notices_as_context_once(self):
+        box = self.box
+        box.claim(action="dispatch", target="relay-runner")
+        with notice_daemon(box, [NOTICE]) as (claims, env):
+            result = self.submit(env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            output = json.loads(result.stdout)
+            context = output["hookSpecificOutput"].pop("additionalContext")
+            self.assertEqual(output, {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit"}})
+            self.assertTrue(context.startswith("Agent notices ("), context)
+            self.assertTrue(context.endswith("\n- " + NOTICE), context)
+            self.assertNotIn(NOTICE, result.stderr)
+            # The prompt is still bound, and the notice goes nowhere else.
+            self.assertEqual(len(box.fifo_messages(PROVIDER_TURN_EVENT_PREFIX)), 1)
+            self.assertFalse(any("Agent notice" in line for line in box.fifo_lines()))
+            # The next turn does not repeat it.
+            self.assertQuietSuccess(self.submit(turn="turn-2", prompt="and then?", env=env))
+            self.assertEqual(claims, [{"relay_session_key": box.env()["RELAY_SESSION_KEY"]}] * 2)
+
+    def test_prompt_submit_without_foreground_ownership_claims_no_notices(self):
+        box = self.box
+        box.claim()
+        with notice_daemon(box, [NOTICE]) as (claims, env):
+            env["RELAY_ACTOR_ROLE"] = "voice_bridge"
+            self.assertQuietSuccess(self.submit(env=env))
+            self.assertEqual(claims, [])
 
     def test_prompt_submit_with_a_stale_claim_is_not_bound(self):
         box = self.box

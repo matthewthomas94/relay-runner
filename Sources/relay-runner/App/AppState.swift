@@ -361,6 +361,9 @@ final class AppState {
             tutorialRecordingProbe: { [weak self] in
                 self?.onboardingTutorialRecordingProbe() ?? OnboardingTutorialRecordingProbe()
             },
+            tutorialHoldsToTalk: { [weak self] in
+                self?.config.stt.holdsToTalk ?? false
+            },
             tutorialKeyMonitorAttached: { [weak self] in
                 self?.sttEngine?.isGlobalKeyMonitorAttached ?? false
             },
@@ -1412,6 +1415,29 @@ final class AppState {
     /// `app_status`: every agent, whether it runs and which is active.
     var agentStatuses: [SessionAgent.Status] {
         SessionAgent.statuses(liveContextIDs: sessionRegistry.liveContextIDs, activeContextID: activeContext.id)
+    }
+
+    /// Each agent's last project, for its card's "Last worked on" line.
+    var agentLastProjects: [SessionAgent: String] {
+        SettingsAgentPresentation.lastProjects(bindings: Array(assistantSessionStore.document.bindings.values))
+    }
+
+    /// What each agent last said it was working on, for its card.
+    var agentWorkDescriptions: [SessionAgent: String] {
+        var result: [SessionAgent: String] = [:]
+        for (slug, description) in assistantSessionStore.document.workDescriptions ?? [:] {
+            if let agent = SessionAgent(rawValue: slug) { result[agent] = description }
+        }
+        return result
+    }
+
+    func setRelayAppWorkingOn(_ agent: SessionAgent, _ description: String) -> String? {
+        do {
+            try assistantSessionStore.setWorkDescription(description, agent: agent)
+            return nil
+        } catch {
+            return "Relay Runner could not save the description: \(error.localizedDescription)"
+        }
     }
 
     /// RR-523: the agents the "+" menu lists: those with neither a tab in the
@@ -2503,6 +2529,7 @@ final class AppState {
         if oldConfig.awareness != newConfig.awareness {
             overlayController?.updateConfig(newConfig.awareness)
         }
+        overlayController?.holdsToTalk = newConfig.stt.holdsToTalk
 
         // Restart STT if settings changed, after any in-flight command capture.
         if Self.sttSettingsRequireRestart(old: oldConfig.stt, new: newConfig.stt) {
@@ -3349,9 +3376,10 @@ final class AppState {
             microphone: permissions.microphone,
             keyboardAccess: PermissionKind.keyMonitoringStatus(permissions.status(for:)),
             microphoneCaptureReady: sttEngine?.isMicrophoneCaptureReady ?? false,
-            capsLockOn: CapsLockGesture.isCapsLockOn(),
+            capsLockOn: activationKeyIsOn(),
             capsLockKeyEvents: sttEngine?.capsLockKeyEventCount ?? 0,
-            capsLock: CapsLockKeyboardConfiguration.current()
+            capsLock: CapsLockKeyboardConfiguration.current(),
+            holdsToTalk: config.stt.holdsToTalk
         )
     }
 
@@ -4563,6 +4591,23 @@ final class AppState {
         syncNotchActivitySurface()
     }
 
+    /// The activation key's state: Control and Option held, or Caps Lock on.
+    private func activationKeyIsOn() -> Bool {
+        config.stt.holdsToTalk
+            ? CapsLockGesture.isHoldChord(CapsLockGesture.modifiersDown())
+            : CapsLockGesture.isCapsLockOn()
+    }
+
+    /// Any Caps Lock toggle dismisses the prompt. Hold to talk dismisses it on
+    /// the next press, so releasing the hold that raised it leaves it showing.
+    private func sessionPromptDismissedByActivationKey() -> Bool {
+        let wasOn = sessionPromptCapsState
+        let isOn = activationKeyIsOn()
+        guard config.stt.holdsToTalk else { return isOn != wasOn }
+        sessionPromptCapsState = isOn
+        return isOn && !wasOn
+    }
+
     private func showSessionPromptIfAllowed(now: Date = Date()) {
         if case .sessionPrompt = stateMachine.state {
             return
@@ -4570,7 +4615,7 @@ final class AppState {
         guard sessionPromptGate.shouldShow(now: now) else {
             return
         }
-        sessionPromptCapsState = CapsLockGesture.isCapsLockOn()
+        sessionPromptCapsState = activationKeyIsOn()
         stateMachine.showSessionPrompt()
     }
 
@@ -4723,6 +4768,7 @@ final class AppState {
 
         // Overlay controller (panel + glow + pill)
         let oc = OverlayController(config: config.awareness)
+        oc.holdsToTalk = config.stt.holdsToTalk
         oc.start(stateMachine: stateMachine)
         overlayController = oc
 
@@ -4817,8 +4863,7 @@ final class AppState {
                     self.stateMachine.dismissSessionPrompt()
                     self.newSession(workingDirectory: self.activeContext.workingDirectory,
                                     agent: self.mostRecentlyActiveAgent)
-                } else if CapsLockGesture.isCapsLockOn() != self.sessionPromptCapsState {
-                    // Any Caps Lock toggle → dismiss prompt immediately
+                } else if self.sessionPromptDismissedByActivationKey() {
                     if engine.isRecording { engine.cancelRecording() }
                     self.stateMachine.dismissSessionPrompt()
                 }

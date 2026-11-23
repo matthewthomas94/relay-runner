@@ -48,7 +48,7 @@ final class AppMCPTests: XCTestCase {
             "app_status", "end_session", "get_relay_instructions", "get_settings", "keep_awake", "list_projects",
             "navigate", "relay_remote_approve", "relay_remote_begin_pairing", "relay_remote_deny",
             "relay_remote_devices", "relay_remote_pending_approval", "relay_remote_unpair", "select_project",
-            "set_settings", "start_session",
+            "set_settings", "set_working_on", "start_session",
         ])
         for tool in tools {
             XCTAssertFalse((tool["description"] as? String ?? "").isEmpty)
@@ -125,7 +125,9 @@ final class AppMCPTests: XCTestCase {
         let app = try FakeAppSocket(path: directory + "/app.sock")
         defer { app.close() }
         var fired: [String] = []
-        let server = MCPServer(client: AppControlClient(path: app.path), notify: { fired.append($0) })
+        let server = MCPServer(
+            client: AppControlClient(path: app.path), sessionAgent: "george", notify: { fired.append($0) }
+        )
         let calls: [(String, [String: Any])] = [
             ("app_status", [:]),
             ("navigate", ["destination": "settings", "settings_page": "relay_remote"]),
@@ -142,6 +144,7 @@ final class AppMCPTests: XCTestCase {
             ("relay_remote_approve", ["restrict_to_network": true]),
             ("relay_remote_deny", [:]),
             ("keep_awake", ["on": true]),
+            ("set_working_on", ["description": "Fixing the dividers"]),
         ]
         for (name, arguments) in calls {
             let result = try await call(server, name, arguments)
@@ -149,11 +152,21 @@ final class AppMCPTests: XCTestCase {
             let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.text.utf8)) as? [String: Any], name)
             XCTAssertEqual(json["echo"] as? String, name)
         }
+        // set_working_on speaks for the session's own agent, and only in an agent session.
+        XCTAssertEqual(
+            app.requests.last?["arguments"] as? NSDictionary, ["description": "Fixing the dividers", "agent": "george"]
+        )
+        let sent = app.requests.count
+        let outside = MCPServer(client: AppControlClient(path: app.path), sessionAgent: nil, notify: { _ in })
+        let refusal = try await call(outside, "set_working_on", ["description": "Fixing the dividers"])
+        XCTAssertTrue(refusal.isError)
+        XCTAssertEqual(app.requests.count, sent)
         XCTAssertEqual(app.requests.compactMap { $0["command"] as? String }, calls.map(\.0))
         XCTAssertEqual(fired, calls.map(\.0))
-        for (request, (_, arguments)) in zip(app.requests, calls) {
+        for (request, (name, arguments)) in zip(app.requests, calls) {
             XCTAssertEqual(request["type"] as? String, "app_command")
-            XCTAssertEqual(request["arguments"] as? NSDictionary, arguments as NSDictionary)
+            let sent = name == "set_working_on" ? arguments.merging(["agent": "george"]) { $1 } : arguments
+            XCTAssertEqual(request["arguments"] as? NSDictionary, sent as NSDictionary)
         }
         // Pushed session_state lines meant for the phone are skipped.
         XCTAssertGreaterThan(app.pushes, 0)

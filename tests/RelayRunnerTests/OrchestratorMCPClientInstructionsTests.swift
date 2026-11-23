@@ -3,8 +3,12 @@ import XCTest
 
 final class OrchestratorMCPClientInstructionsTests: XCTestCase {
     // tools/list digest shipped in v0.4.66, including the dependency-queue
-    // description (RR-410). Non-Claude clients must keep this same payload.
-    private let releasedToolsListSHA256 = "b855e00b80b75b569411c399155eb54a7f2ef655a531003e8ba12518a9383e0a"
+    // description (RR-410), plus the agent presence tools every client gets
+    // (RR-525: declare_repository_work, agent_presence; RR-526: its optional
+    // paths and shared-repository rules) and the checkout claim tools
+    // (RR-527: claim_checkout, release_checkout, checkout_claims). Non-Claude
+    // clients must keep this same payload.
+    private let releasedToolsListSHA256 = "06b4bff7f3e9d6fcc2a594a08de4c10d001beb8b29d0be80368b2ddd6290e466"
 
     private func initialize(_ server: MCPServer, client: String) async throws -> [String: Any] {
         let result = try await server.dispatch(

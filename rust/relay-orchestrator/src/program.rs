@@ -122,6 +122,15 @@ impl Daemon {
             capture_session_review(graph, &capture, authority.as_ref())
         })?;
         result.insert("ingest_counts", counts);
+        // RR-525: an optional relay_session_key attributes the capture.
+        if let Some(repo_path) = repo_path {
+            self.note_presence(
+                Self::request_session_key(request).as_deref(),
+                &repo_path.py_str(),
+                crate::presence::Source::SessionCapture,
+                "recorded session notes",
+            );
+        }
         reply(201, result)
     }
 }

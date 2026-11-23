@@ -50,7 +50,7 @@ enum ManagedPermissionRequest {
         lines += services.map { "- \($0.service) (\($0.name)): \($0.authorization)" }
         lines += [
             "",
-            "Input Monitoring lets Caps Lock and the hotkeys work in every app. The others are for computer control and screenshots; voice works without them.",
+            "Input Monitoring lets the record shortcut and the hotkeys work in every app. The others are for computer control and screenshots; voice works without them.",
         ]
         return lines.joined(separator: "\n")
     }
@@ -87,9 +87,9 @@ enum OnboardingPermissionTreatment {
         case .microphone:
             return "Relay Runner needs to hear you so it can transcribe your speech. Audio stays completely local — nothing is sent off your Mac."
         case .accessibility:
-            return "Accessibility lets Relay Runner host Relay Actions for clicking, typing, pressing keys, scrolling, and UI automation. Voice, Caps Lock and the hotkeys don't need it."
+            return "Accessibility lets Relay Runner host Relay Actions for clicking, typing, pressing keys, scrolling, and UI automation. Voice, the record shortcut and the hotkeys don't need it."
         case .inputMonitoring:
-            return "Input Monitoring lets Relay Runner notice Caps Lock and its hotkeys (double-tap Shift, Option and Control) in any app. It only listens to the keyboard; it can't type or click."
+            return "Input Monitoring lets Relay Runner notice the record shortcut and its hotkeys (double-tap Shift, Option and Control) in any app. It only listens to the keyboard; it can't type or click."
         case .screenRecording:
             return "Screen Recording lets Relay Vision capture screenshots for visual grounding. Voice transcription and speech don't need it."
         case .camera:
@@ -113,11 +113,11 @@ enum OnboardingPermissionTreatment {
         let impact: String
         switch kind {
         case .screenRecording:
-            impact = "Caps Lock and voice work without it; only screenshots need it."
+            impact = "The record shortcut and voice work without it; only screenshots need it."
         case .inputMonitoring:
-            impact = "Voice works without it, and you can click to record; Caps Lock and the hotkeys need it."
+            impact = "Voice works without it, and you can click to record; the record shortcut and the hotkeys need it."
         default:
-            impact = "Caps Lock and voice work without it; only computer control needs it."
+            impact = "The record shortcut and voice work without it; only computer control needs it."
         }
         let base = "If Relay Runner isn't listed under Privacy & Security > \(pane), or its switch can't be turned on, " +
             "your organisation manages this setting on this Mac. Ask IT to allow Relay Runner. " + impact

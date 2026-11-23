@@ -67,8 +67,12 @@ struct STTSettingsTab: View {
                     }
 
                     if config.input_mode == "caps_lock_toggle" {
-                        SettingsControlRow("Activation Key") {
-                            KeyCaptureView(label: "Activation Key", showsLabel: false, value: $config.activation_key)
+                        SettingsControlRow(
+                            "Record With",
+                            description: Self.activationDescription(holdsToTalk: config.holdsToTalk)
+                        ) {
+                            SettingsSegmentedPicker("Record With", selection: activationMode, options: Self.activationOptions)
+                                .notchHint("Choose record keys")
                         }
                         .transition(.relayReplacing(.element))
                     }
@@ -93,6 +97,29 @@ struct STTSettingsTab: View {
             )
         }
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: config.input_mode)
+    }
+
+    static let activationOptions: [(label: String, value: String)] = [
+        (label: "Hold ⌃ + ⌥", value: SttConfig.ActivationMode.hold),
+        (label: "Caps Lock", value: SttConfig.ActivationMode.capsLock),
+    ]
+
+    static func activationDescription(holdsToTalk: Bool) -> String {
+        holdsToTalk
+            ? "Hold Control and Option to record. Release to send."
+            : "Press Caps Lock to open the mic. Press it again to send."
+    }
+
+    /// Choosing Caps Lock also clears a custom activation key saved by an
+    /// earlier version, so the switch always means the key it names.
+    private var activationMode: Binding<String> {
+        Binding(
+            get: { config.holdsToTalk ? SttConfig.ActivationMode.hold : SttConfig.ActivationMode.capsLock },
+            set: { mode in
+                config.activation_mode = mode
+                if mode == SttConfig.ActivationMode.capsLock { config.activation_key = "Caps Lock" }
+            }
+        )
     }
 
     /// Models this Mac can load. Phonon 2 needs macOS 15, so macOS 14 only

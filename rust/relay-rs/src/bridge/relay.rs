@@ -15,10 +15,12 @@ use relay_intents::arbitration::{IntentRoute, WorkItemLifecycle};
 use relay_intents::pattern::{self, Regex};
 
 use super::authorization;
+use super::command_actions::ActionKind;
 use super::commands::{self, PublishPaths};
 use super::context::Bridge;
 use super::controls;
 use super::finals;
+use super::notices;
 use super::orchestrator::{LocalDaemon, stop_persistent_orchestrator_lifecycle};
 use super::remote_link::RemoteLink;
 use super::replies;
@@ -611,13 +613,16 @@ fn handle_entry(
         messenger.update_user_context(&relay_command);
     }
     traces::queue_voice_acknowledgement(&relay_command, Some(&text), bridge.inbox.is_none());
+    // RR-525: the target session's agent notices ride on the first item it
+    // receives this turn, once; never on a sidecar or a control.
+    let mut notices_claimed = false;
     for resolved_item in resolved {
         let commands::ResolvedItem {
             item,
             action,
             disposition,
             mut metadata,
-            prompt,
+            mut prompt,
         } = resolved_item;
         if let Some(target) = &voice_target {
             metadata.insert("voice_target_session_key", target.session_key.as_str());
@@ -713,6 +718,14 @@ fn handle_entry(
             }
             .to_string(),
         };
+        if !cancelled && !notices_claimed && action.kind != ActionKind::Control {
+            notices_claimed = true;
+            prompt = notices::prompt_with_agent_notices(
+                &prompt,
+                &targets::authorization_key_for_target(voice_target.as_ref()),
+                &LocalDaemon,
+            );
+        }
         {
             let inbox = bridge.inbox();
             commands::publish_command(&prompt, &metadata, &paths, inbox.as_deref());

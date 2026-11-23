@@ -1573,6 +1573,8 @@ private struct ProgramProjectsHeader: View {
 private enum ProgramAddProjectMenuMetrics {
     static let disclosureWidth: CGFloat = 32
     static let dividerWidth: CGFloat = 1
+    /// The divider is the label colour at this opacity, so it shows at rest.
+    static let dividerOpacity: Double = 0.14
 }
 
 private struct ProgramAddProjectMenu: View {
@@ -1606,11 +1608,7 @@ private struct ProgramAddProjectMenu: View {
                     .padding(.horizontal, SharedActionButtonMetrics.horizontalPadding)
                     .frame(height: SharedActionButtonMetrics.controlHeight)
                 Rectangle()
-                    .fill(
-                        palette.stroke.opacity(
-                            presentation.sharedStrokeOpacity(for: .secondary)
-                        )
-                    )
+                    .fill(palette.foreground.opacity(ProgramAddProjectMenuMetrics.dividerOpacity))
                     .frame(
                         width: ProgramAddProjectMenuMetrics.dividerWidth,
                         height: SharedActionButtonMetrics.controlHeight
@@ -4544,7 +4542,8 @@ enum ProgramNoteStartFailurePresentation {
 /// The Start/End session action: a white glass primary button. Each agent's
 /// work style is set on its card in Settings (RR-522). RR-523: with no
 /// session running, a click always opens the agent menu, as the Add project
-/// menu does; choosing an agent starts it.
+/// menu does; choosing an agent starts it. While it opens that menu it shows
+/// the Add project control's divider and chevron.
 struct ProgramSessionPrimaryButton: View {
     let presentation: ProgramSessionToolbarPresentation
     let isEnabled: Bool
@@ -4563,13 +4562,29 @@ struct ProgramSessionPrimaryButton: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: SharedActionButtonMetrics.cornerRadius, style: .continuous)
         Button(action: activate) {
-            RelaySwap(presentation.title, style: .text, alignment: .center) { title in
-                Text(title)
-                    .font(AppTypography.font(.primaryButton))
-                    .lineLimit(1)
+            HStack(alignment: .center, spacing: 0) {
+                RelaySwap(presentation.title, style: .text, alignment: .center) { title in
+                    Text(title)
+                        .font(AppTypography.font(.primaryButton))
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, SharedActionButtonMetrics.horizontalPadding)
+                .frame(height: SharedActionButtonMetrics.controlHeight)
+                if !action.agentOptions.isEmpty {
+                    Rectangle()
+                        .fill(GraphicalTheme.onPrimaryAction.opacity(ProgramAddProjectMenuMetrics.dividerOpacity))
+                        .frame(
+                            width: ProgramAddProjectMenuMetrics.dividerWidth,
+                            height: SharedActionButtonMetrics.controlHeight
+                        )
+                    LucideImage(.chevronDown, size: 12)
+                        .frame(
+                            width: ProgramAddProjectMenuMetrics.disclosureWidth,
+                            height: SharedActionButtonMetrics.controlHeight
+                        )
+                        .accessibilityHidden(true)
+                }
             }
-            .padding(.horizontal, SharedActionButtonMetrics.horizontalPadding)
-            .frame(height: SharedActionButtonMetrics.controlHeight)
             // The button lightens a little under the pointer.
             .background(Color.white.opacity(isHovered ? 0.2 : 0))
             .contentShape(Rectangle())

@@ -32,6 +32,7 @@ use relay_services::notes::util::{b64decode_strict, b64encode, utc_now_isoformat
 
 use crate::daemon::{Daemon, guard, read_json, registered_project_repo_paths};
 use crate::failure::{Failure, Outcome};
+use crate::presence::{Action, Source};
 use crate::request::Request;
 use crate::router::{Reply, reply};
 
@@ -662,8 +663,18 @@ impl Daemon {
         let token = body_token(request);
         let lifecycle = self.artifact_board_lifecycle(&repo_path, token.as_deref())?;
         let event_id = board_event_id("claim", request.get("request_id"));
-        let _board = guard(&self.board_lock);
-        reply(201, self.claim_artifact_board_id(&lifecycle, &event_id)?)
+        let claimed = {
+            let _board = guard(&self.board_lock);
+            self.claim_artifact_board_id(&lifecycle, &event_id)?
+        };
+        // RR-525: an optional relay_session_key attributes the claim.
+        self.note_presence(
+            Self::request_session_key(request).as_deref(),
+            &repo_path,
+            Source::TicketClaim,
+            &format!("claimed ticket id {}", claimed.text("ticket_id")),
+        );
+        reply(201, claimed)
     }
 
     /// `_claim_artifact_board_id`.
@@ -722,26 +733,59 @@ impl Daemon {
             ));
         }
         let event_id = board_event_id("ticket", request.get("request_id"));
-        let _board = guard(&self.board_lock);
-        reply(
-            200,
-            self.write_artifact_board_ticket(&lifecycle, &event_id, &ticket_id, &markdown)?,
-        )
+        let (written, created) = {
+            let _board = guard(&self.board_lock);
+            self.write_artifact_board_ticket(&lifecycle, &event_id, &ticket_id, &markdown)?
+        };
+        // RR-525: an optional relay_session_key attributes the write. RR-526:
+        // agents sharing the repository hear what changed, unless a replay
+        // changed nothing.
+        let session_key = Self::request_session_key(request);
+        let detail = format!("wrote ticket {ticket_id}");
+        if written.get("idempotent").is_some_and(Value::truthy) {
+            self.note_presence(
+                session_key.as_deref(),
+                &repo_path,
+                Source::TicketWrite,
+                &detail,
+            );
+        } else {
+            let action = if created {
+                Action::TicketCreated {
+                    ticket_id: &ticket_id,
+                    title: &parsed.title,
+                }
+            } else {
+                Action::TicketEdited {
+                    ticket_id: &ticket_id,
+                    title: &parsed.title,
+                }
+            };
+            self.note_action(
+                session_key.as_deref(),
+                &repo_path,
+                Source::TicketWrite,
+                &detail,
+                &action,
+            );
+        }
+        reply(200, written)
     }
 
-    /// `_write_artifact_board_ticket`.
+    /// `_write_artifact_board_ticket`, and whether the ticket is new.
     fn write_artifact_board_ticket(
         &self,
         lifecycle: &ArtifactLifecycleCoordinator,
         event_id: &str,
         ticket_id: &str,
         markdown: &[u8],
-    ) -> Outcome<Dict> {
+    ) -> Outcome<(Dict, bool)> {
         let path = format!(".orchestrator/{ticket_id}.md");
         let mut attempt = 0;
         loop {
             attempt += 1;
             let snapshot = lifecycle.store.snapshot()?;
+            let created = snapshot.file(&path).is_none();
             let artifact_id = snapshot
                 .file(&path)
                 .and_then(|existing| store::ticket_front_matter_value(existing, "artifact_id"))
@@ -770,7 +814,7 @@ impl Daemon {
                     body.insert("markdown_base64", b64encode(stored));
                     body.insert("artifact_commit", write.commit_id);
                     body.insert("idempotent", write.idempotent);
-                    return Ok(body);
+                    return Ok((body, created));
                 }
                 Err(error) if is_concurrent(&error) && attempt < ARTIFACT_BOARD_WRITE_ATTEMPTS => {}
                 Err(error) => return Err(error.into()),

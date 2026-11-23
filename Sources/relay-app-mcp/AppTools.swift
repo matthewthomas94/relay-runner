@@ -64,6 +64,10 @@ struct AppTool: MCPTool {
     var required: [String] = []
     /// Destructive tools refuse here, before anything reaches the app, unless `confirm` is true.
     var requiresConfirm = false
+    /// The tool acts for the calling agent: `agent` is the session's own
+    /// (`sessionAgent`), never an argument the caller chooses.
+    var forSessionAgent = false
+    var sessionAgent: String? = nil
     let client: AppControlClient
 
     var inputSchema: [String: Any] {
@@ -83,6 +87,13 @@ struct AppTool: MCPTool {
         if requiresConfirm, (arguments["confirm"] as? NSNumber).map({ CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue }) != true {
             throw MCPToolError(message: "Refused: \(name) is destructive. Ask the user if unsure, then pass confirm: true.")
         }
+        var arguments = arguments
+        if forSessionAgent {
+            guard let agent = sessionAgent, !agent.isEmpty else {
+                throw MCPToolError(message: "\(name) works only in an agent session Relay Runner started.")
+            }
+            arguments["agent"] = agent
+        }
         let result = try client.call(name, arguments: arguments)
         let data = try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         return [["type": "text", "text": String(decoding: data, as: UTF8.self)]]
@@ -90,9 +101,15 @@ struct AppTool: MCPTool {
 }
 
 enum AppTools {
+    /// `SessionAgent.workDescriptionLimit` in the app, which refuses longer text.
+    private static let workingOnLimit = 60
     private static let settingsPages = ["permissions", "speech_to_text", "text_to_speech", "general", "awareness", "relay_remote"]
 
-    static func all(client: AppControlClient) -> [AppTool] {
+    /// `sessionAgent` is the agent this server's session belongs to, if any.
+    static func all(
+        client: AppControlClient,
+        sessionAgent: String? = ProcessInfo.processInfo.environment["RELAY_SESSION_AGENT"]
+    ) -> [AppTool] {
         [
             AppTool(
                 name: "app_status",
@@ -193,6 +210,15 @@ enum AppTools {
                 name: "relay_remote_deny",
                 description: "Decline the phone waiting for approval, as the Settings Deny button does.",
                 properties: [:],
+                client: client
+            ),
+            AppTool(
+                name: "set_working_on",
+                description: "Set the line your agent card in Relay Runner shows under your orb: what you are working on, in at most \(workingOnLimit) characters, e.g. \"Fixing the Settings dropdown dividers\". Call it when you start a piece of work or move to a different one; not again while the work is the same, and not for questions or small talk. Longer text is refused.",
+                properties: ["description": ["type": "string", "maxLength": workingOnLimit]],
+                required: ["description"],
+                forSessionAgent: true,
+                sessionAgent: sessionAgent,
                 client: client
             ),
             AppTool(

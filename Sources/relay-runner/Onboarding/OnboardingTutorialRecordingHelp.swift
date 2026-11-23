@@ -78,9 +78,13 @@ struct OnboardingTutorialRecordingProbe: Equatable {
     /// Lock activity.
     var keyboardAccess: PermissionStatus = .granted
     var microphoneCaptureReady = true
+    /// The activation key's state: Caps Lock on, or with hold to talk,
+    /// Control and Option held.
     var capsLockOn = false
     var capsLockKeyEvents = 0
     var capsLock = CapsLockKeyboardConfiguration()
+    /// Recording is started by holding Control and Option, not by Caps Lock.
+    var holdsToTalk = false
 
     var logSummary: String {
         "speech=\(Self.speechLabel(speech)) microphone=\(microphone) " +
@@ -218,6 +222,7 @@ struct OnboardingTutorialRecordingHelp: Equatable {
             OnboardingTutorialRecordingHelp(symptom: symptom, reason: reason, message: message, fix: fix)
         }
         if symptom == .keyMonitorNotAttached { return keyMonitorWaiting }
+        let key = probe.holdsToTalk ? "Control and Option" : "Caps Lock"
         if probe.microphone != .granted {
             return help(.microphoneNotGranted,
                         "Relay Runner can't use the microphone yet.",
@@ -226,7 +231,7 @@ struct OnboardingTutorialRecordingHelp: Equatable {
         switch probe.speech {
         case .failed:
             return help(.speechModelFailed,
-                        "Speech recognition couldn't start, so Caps Lock can't record yet.",
+                        "Speech recognition couldn't start, so \(key) can't record yet.",
                         .retrySpeechSetup)
         case .preparing, .notStarted:
             return help(.speechModelPreparing,
@@ -235,12 +240,12 @@ struct OnboardingTutorialRecordingHelp: Equatable {
         case .ready:
             break
         }
-        if probe.capsLock.switchesInputSource {
+        if !probe.holdsToTalk, probe.capsLock.switchesInputSource {
             return help(.capsLockSwitchesInputSource,
                         "Caps Lock is set to switch input sources, so a short press changes your keyboard language. Hold it for a moment, or turn that off in Keyboard Settings.",
                         .openSettings(.keyboard))
         }
-        if probe.capsLock.remapped {
+        if !probe.holdsToTalk, probe.capsLock.remapped {
             return help(.capsLockRemapped,
                         "Caps Lock is remapped in Keyboard Settings > Modifier Keys.",
                         .openSettings(.keyboard))
@@ -253,13 +258,20 @@ struct OnboardingTutorialRecordingHelp: Equatable {
         case .pressedWithoutRecording:
             if !probe.microphoneCaptureReady {
                 return help(.microphoneUnavailable,
-                            "Caps Lock worked, but the microphone didn't open. Check your input device.",
+                            "\(key) worked, but the microphone didn't open. Check your input device.",
                             .openSettings(.sound))
             }
             return help(.recordingDidNotStart,
-                        "Caps Lock was pressed but recording didn't start. Click Start recording instead.",
+                        "\(key) \(probe.holdsToTalk ? "were" : "was") pressed but recording didn't start. Click Start recording instead.",
                         nil)
         case .noCapsLockEvents:
+            // Hold to talk reads the two keys directly, so a missing press is
+            // not a permission problem.
+            if probe.holdsToTalk {
+                return help(.keyMonitoringUnverified,
+                            "Relay Runner hasn't seen Control and Option held together. Hold both, or click Start recording.",
+                            nil)
+            }
             if probe.keyboardAccess != .granted {
                 return help(.keyboardAccessMissing,
                             "Relay Runner hasn't seen Caps Lock. Turn Relay Runner on in Privacy & Security > Input Monitoring, or click Start recording.",

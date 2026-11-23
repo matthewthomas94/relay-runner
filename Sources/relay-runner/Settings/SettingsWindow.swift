@@ -218,7 +218,9 @@ private struct SettingsContent: View {
                             statuses: appState.agentStatuses,
                             agents: appState.config.agents,
                             state: appState.stateMachine.state,
-                            hasWorkingProgress: appState.stateMachine.currentWorkingProgress(now: context.date) != nil
+                            hasWorkingProgress: appState.stateMachine.currentWorkingProgress(now: context.date) != nil,
+                            lastProjects: appState.agentLastProjects,
+                            workDescriptions: appState.agentWorkDescriptions
                         ),
                         theme: appState.stateMachine.state.particleTheme ?? .idle,
                         spacing: rowSpacing,

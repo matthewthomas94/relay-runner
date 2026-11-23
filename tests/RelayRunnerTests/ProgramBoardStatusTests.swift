@@ -305,10 +305,15 @@ final class ProgramBoardStatusTests: XCTestCase {
             contents.range(of: "private struct ProgramEditCapsuleButton", range: button.upperBound..<contents.endIndex)
         )
         let startButton = String(contents[button.lowerBound..<buttonEnd.lowerBound])
-        for removed in ["SessionWorkStyleStore", "ProjectWorkStyle", "chevronDown", "Work style"] {
+        for removed in ["SessionWorkStyleStore", "ProjectWorkStyle", "Work style"] {
             XCTAssertFalse(startButton.contains(removed), removed)
             XCTAssertFalse(terminal.contains(removed), removed)
         }
+        // While it opens the agent menu the button shows the Add project
+        // control's divider and chevron; while it ends the session it does not.
+        XCTAssertTrue(startButton.contains("if !action.agentOptions.isEmpty {"))
+        XCTAssertTrue(startButton.contains("LucideImage(.chevronDown, size: 12)"))
+        XCTAssertTrue(startButton.contains("ProgramAddProjectMenuMetrics.disclosureWidth"))
         // RR-523: the only menu behind the Start button is the agent menu.
         XCTAssertTrue(startButton.contains("SessionAgentMenuOptions(agents: agents, start: start)"))
         XCTAssertTrue(startButton.contains("case .chooseAgent: isChoosingAgent.toggle()"))

@@ -1,4 +1,12 @@
 {
+  "GET /v1/agent-presence": {
+    "keys": [
+      "agents",
+      "checkout_claims",
+      "startup_text"
+    ],
+    "status": 200
+  },
   "GET /v1/artifacts/dependencies/{ticket_id}": {
     "error": "project is not using the artifact-backed board writer",
     "status": 400
@@ -52,6 +60,12 @@
   "GET /v1/artifacts/storage": {
     "error": "project is not using the artifact-backed board writer",
     "status": 400
+  },
+  "GET /v1/checkout-claims": {
+    "keys": [
+      "checkout_claims"
+    ],
+    "status": 200
   },
   "GET /v1/continuity-reports/{report_id}": {
     "error": "continuity report 999 not found",
@@ -171,6 +185,28 @@
     "error": "unknown run_id 999",
     "status": 400
   },
+  "POST /v1/agent-notices/claim": {
+    "keys": [
+      "notice_block",
+      "notices",
+      "omitted_notices"
+    ],
+    "status": 200
+  },
+  "POST /v1/agent-presence": {
+    "keys": [
+      "agents",
+      "checkout_claims",
+      "notice_block",
+      "notices",
+      "omitted_notices"
+    ],
+    "status": 200
+  },
+  "POST /v1/agent-presence/declare": {
+    "error": "relay_session_key is required",
+    "status": 400
+  },
   "POST /v1/artifacts/attachments/write": {
     "error": "project is not using the artifact-backed board writer",
     "status": 400
@@ -226,6 +262,22 @@
   "POST /v1/artifacts/tickets/write": {
     "error": "project is not using the artifact-backed board writer",
     "status": 400
+  },
+  "POST /v1/checkout-claims/claim": {
+    "error": "relay_session_key is required",
+    "status": 400
+  },
+  "POST /v1/checkout-claims/release": {
+    "error": "relay_session_key is required",
+    "status": 400
+  },
+  "POST /v1/checkout-claims/write": {
+    "keys": [
+      "checkouts",
+      "claimed",
+      "decision"
+    ],
+    "status": 200
   },
   "POST /v1/continuity-reports/{report_id}/proposals/{proposal_id}/review": {
     "error": "decision must be 'edit', 'accept', or 'reject'",

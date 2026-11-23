@@ -46,6 +46,11 @@ final class MCPServer {
             ReadProjectNoteTool(),
             ProgramStatusTool(),
             SessionCaptureTool(),
+            DeclareRepositoryWorkTool(),
+            AgentPresenceTool(),
+            ClaimCheckoutTool(),
+            ReleaseCheckoutTool(),
+            CheckoutClaimsTool(),
         ]
         var byName: [String: any MCPTool] = [:]
         for tool in registered {

@@ -230,7 +230,7 @@ final class OnboardingManagedMacTests: XCTestCase {
         let notice = managed.managedNotice ?? ""
         XCTAssertTrue(notice.contains("your organisation manages this setting"))
         XCTAssertTrue(notice.contains("Ask IT"))
-        XCTAssertTrue(notice.contains("Caps Lock and voice work without it"))
+        XCTAssertTrue(notice.contains("The record shortcut and voice work without it"))
         XCTAssertEqual(managed.continueTitle, "Continue without Accessibility")
         XCTAssertNotNil(intro.managedActions)
 
@@ -662,11 +662,11 @@ final class OnboardingManagedMacTests: XCTestCase {
 
     func testSetupCopyNoLongerSaysAccessibilityCoversHotkeys() {
         let accessibility = OnboardingPermissionTreatment.explanation(for: .accessibility)
-        XCTAssertTrue(accessibility.contains("Voice, Caps Lock and the hotkeys don't need it"))
-        XCTAssertTrue(OnboardingPermissionTreatment.explanation(for: .inputMonitoring).contains("Caps Lock"))
+        XCTAssertTrue(accessibility.contains("Voice, the record shortcut and the hotkeys don't need it"))
+        XCTAssertTrue(OnboardingPermissionTreatment.explanation(for: .inputMonitoring).contains("the record shortcut"))
         XCTAssertTrue(OnboardingPermissionTreatment.managedNotice(for: .inputMonitoring, itRequestCopied: false)
-            .contains("Caps Lock and the hotkeys need it"))
-        XCTAssertTrue(ManagedPermissionRequest.text().contains("Input Monitoring lets Caps Lock and the hotkeys work"))
+            .contains("the record shortcut and the hotkeys need it"))
+        XCTAssertTrue(ManagedPermissionRequest.text().contains("Input Monitoring lets the record shortcut and the hotkeys work"))
     }
 
     private func capsLockEvent(on: Bool) -> NSEvent {

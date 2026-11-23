@@ -26,6 +26,7 @@ pub mod leftover_stop;
 pub mod leftovers;
 pub mod notes;
 pub mod personal;
+pub mod presence;
 pub(crate) mod process_tree;
 pub mod program;
 pub mod queue;

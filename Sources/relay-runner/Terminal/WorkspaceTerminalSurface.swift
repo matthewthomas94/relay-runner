@@ -176,8 +176,14 @@ private struct WorkspaceSessionTab: View {
         .foregroundStyle(ProgramBoardStyle.primaryText)
         .background {
             if !selected {
+                // The selected tab's surface, so every tab is one colour at rest.
                 RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.tabCornerRadius, style: .circular)
-                    .fill(isHovered ? BoardDarkSurfaceStyle.cardActiveFill : BoardDarkSurfaceStyle.cardFill)
+                    .fill(isHovered ? BoardDarkSurfaceStyle.cardActiveFill : BoardDarkSurfaceStyle.panelFill)
+                    .background {
+                        PanelGlassUnderlay().clipShape(
+                            RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.tabCornerRadius, style: .circular)
+                        )
+                    }
                     .overlay {
                         RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.tabCornerRadius, style: .circular)
                             .strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: 1)
@@ -212,7 +218,12 @@ private struct WorkspaceAddTabButton: View {
                 .background {
                     RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.addButtonCornerRadius, style: .continuous)
                         .fill(isHovered && isAvailable
-                            ? BoardDarkSurfaceStyle.tabActionHoverFill : BoardDarkSurfaceStyle.tabActionFill)
+                            ? BoardDarkSurfaceStyle.tabActionHoverFill : BoardDarkSurfaceStyle.panelFill)
+                        .background {
+                            PanelGlassUnderlay().clipShape(
+                                RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.addButtonCornerRadius, style: .continuous)
+                            )
+                        }
                         .overlay {
                             RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.addButtonCornerRadius, style: .continuous)
                                 .strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: 1)

@@ -55,6 +55,10 @@ struct SttConfig: Codable, Equatable {
     var input_mode: String = "caps_lock_toggle"
     var push_to_talk_key: String = ""
     var activation_key: String = "Caps Lock"
+    /// How the mic is opened: `ActivationMode.hold` or `.capsLock`. A config
+    /// written before the setting existed has no value and stays on Caps
+    /// Lock; `freshInstall` starts on hold.
+    var activation_mode: String = ActivationMode.capsLock
     var vad_sensitivity: String = "medium"
     /// One-time Phonon migration decision; see `PhononMigration`.
     var phonon_migration: String = PhononMigration.pending
@@ -63,6 +67,15 @@ struct SttConfig: Codable, Equatable {
     /// Experimental True Whisper lip reading. Takes effect only once at least
     /// two words are enrolled; templates live in `TemplateStore`, not here.
     var true_whisper: Bool = false
+
+    enum ActivationMode {
+        /// Hold Control and Option to record; release to send.
+        static let hold = "hold"
+        /// Press Caps Lock to open the mic and again to send.
+        static let capsLock = "caps_lock"
+    }
+
+    var holdsToTalk: Bool { activation_mode == ActivationMode.hold }
 
     enum PhononMigration {
         /// No decision recorded; an implicit v2 user may still be migrated.
@@ -81,6 +94,7 @@ struct SttConfig: Codable, Equatable {
         phononDefaultActive: Bool = STTModelPolicy.phononDefaultActive
     ) -> SttConfig {
         var stt = SttConfig()
+        stt.activation_mode = ActivationMode.hold
         let model = STTModelPolicy.defaultModel(
             operatingSystem: operatingSystem,
             phononDefaultActive: phononDefaultActive

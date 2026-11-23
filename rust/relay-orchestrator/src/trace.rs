@@ -55,6 +55,14 @@ impl Daemon {
         {
             eprintln!("[orchestrator] could not queue the messenger outcome: {error}");
         }
+        // RR-526: agents sharing the repository hear a merge or failure as a
+        // silent agent notice, never through the messenger or speech.
+        if let (Some(repo_path), Some(ticket_id)) = (
+            event.repo_path.filter(|repo| !repo.is_empty()),
+            event.ticket_id.filter(|ticket| !ticket.is_empty()),
+        ) {
+            self.note_run_ended(repo_path, ticket_id, event.kind);
+        }
         Some(payload)
     }
 

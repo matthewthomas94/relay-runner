@@ -713,6 +713,31 @@ impl Daemon {
             dispatcher_session_key: body.truthy("dispatcher_session_key").cloned(),
         };
         let result = self.dispatch(&dispatch)?;
+        // RR-525: the dispatching session is working in this repository.
+        // RR-526: agents sharing it hear of a new dispatch or queueing; an
+        // already-active run is not news.
+        let dispatcher = optional_relay_session_key(dispatch.dispatcher_session_key.as_ref())
+            .or_else(|| optional_relay_session_key(dispatch.voice.relay_session_key.as_ref()));
+        let detail = format!("dispatched {}", dispatch.ticket_id);
+        if result.get("already_active").is_some_and(Value::truthy) {
+            self.note_presence(
+                dispatcher.as_deref(),
+                &dispatch.repo_path,
+                crate::presence::Source::Dispatch,
+                &detail,
+            );
+        } else {
+            self.note_action(
+                dispatcher.as_deref(),
+                &dispatch.repo_path,
+                crate::presence::Source::Dispatch,
+                &detail,
+                &crate::presence::Action::TicketDispatched {
+                    ticket_id: &dispatch.ticket_id,
+                    queued: result.get("queued").is_some_and(Value::truthy),
+                },
+            );
+        }
         let status = if result.get("already_active").is_some_and(Value::truthy) {
             200
         } else {
