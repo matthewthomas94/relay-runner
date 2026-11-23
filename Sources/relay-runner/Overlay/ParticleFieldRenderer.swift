@@ -64,6 +64,31 @@ final class ParticleFieldRenderer {
         }
     }
 
+    /// How the card orb moves for what its agent is doing. It is one liquid
+    /// volume throughout: a little quicker and looser the more the agent does.
+    enum OrbActivity: Hashable {
+        case stopped, standingBy, listening, thinking, responding
+
+        var motion: OrbMotion {
+            switch self {
+            case .stopped: return OrbMotion(speed: 1.4, stretch: 0.9, wander: 0.9, spread: 0.85)
+            case .standingBy: return OrbMotion(speed: 1.8, stretch: 1.2, wander: 1.2, spread: 1)
+            case .listening: return OrbMotion(speed: 2.4, stretch: 1.6, wander: 1.1, spread: 0.95)
+            case .thinking: return OrbMotion(speed: 3.2, stretch: 1.1, wander: 2, spread: 1.12)
+            case .responding: return OrbMotion(speed: 2.8, stretch: 2, wander: 1.5, spread: 1.05)
+            }
+        }
+    }
+
+    /// Multipliers on the orb's resting motion: how fast its lobes cycle, how
+    /// far they stretch, how far their centres travel and how far apart they sit.
+    struct OrbMotion: Equatable {
+        var speed: Double
+        var stretch: Double
+        var wander: Double
+        var spread: Double
+    }
+
     private let gradientLayer = CAGradientLayer()
     private let particleLayer = CALayer()
     private let motionBlur = CIFilter(name: "CIGaussianBlur")!
@@ -118,6 +143,14 @@ final class ParticleFieldRenderer {
     private var displayedOrbColor: SIMD3<Double>?
     private var previousOrbColor: SIMD3<Double>?
     private var orbColorStartedAt: CFTimeInterval = 0
+    private var orbActivity: OrbActivity = .standingBy
+    /// The motion and phase the orb had when its activity last changed.
+    private var orbMotionFrom = OrbActivity.standingBy.motion
+    private var orbMotionChangedAt: CFTimeInterval = 0
+    private var orbPhaseAtChange: Double = 0
+    static let orbMotionBlendDuration: TimeInterval = 0.8
+    /// Card height the orb leaves free, half above it for the name and picker.
+    static let orbVerticalReserve: CGFloat = 150
     /// Screen fields crossfade from the theme they were showing.
     private var previousTheme: Theme?
     private var themeChangedAt: CFTimeInterval = 0
@@ -259,11 +292,53 @@ final class ParticleFieldRenderer {
         }
     }
 
+    /// Where in its cycle the orb starts, so neighbouring orbs do not move in step.
+    func setOrbPhase(_ phase: Double) {
+        orbPhaseAtChange = phase
+    }
+
+    /// The orb eases from the motion it is showing into the new activity's.
+    func setOrbActivity(_ activity: OrbActivity, now: CFTimeInterval = CACurrentMediaTime()) {
+        guard activity != orbActivity else { return }
+        if animationTimer != nil {
+            let shown = orbMotion(at: now)
+            orbMotionFrom = shown.motion
+            orbPhaseAtChange = shown.phase
+            orbMotionChangedAt = now
+        }
+        orbActivity = activity
+        if currentTheme != nil, reduceMotion { renderFrame(at: now) }
+    }
+
+    /// The orb's motion and phase at `now`. Speed ramps linearly over the
+    /// blend, so the phase it integrates to never jumps.
+    private func orbMotion(at now: CFTimeInterval) -> (motion: OrbMotion, phase: Double) {
+        let target = orbActivity.motion
+        guard !reduceMotion else { return (target, orbPhaseAtChange) }
+        let duration = Self.orbMotionBlendDuration
+        let since = max(0, now - orbMotionChangedAt)
+        let ramp = min(since, duration)
+        let progress = ramp / duration
+        let ease = progress * progress * (3 - 2 * progress)
+        func mix(_ from: Double, _ to: Double, _ amount: Double) -> Double { from + (to - from) * amount }
+        let phase = orbPhaseAtChange + orbMotionFrom.speed * ramp
+            + (target.speed - orbMotionFrom.speed) * ramp * ramp / (2 * duration)
+            + target.speed * (since - ramp)
+        return (OrbMotion(
+            speed: mix(orbMotionFrom.speed, target.speed, progress),
+            stretch: mix(orbMotionFrom.stretch, target.stretch, ease),
+            wander: mix(orbMotionFrom.wander, target.wander, ease),
+            spread: mix(orbMotionFrom.spread, target.spread, ease)
+        ), phase)
+    }
+
     // MARK: - Animation loop
 
     private func startAnimation(now: CFTimeInterval) {
         guard animationTimer == nil else { return }
         startTime = now
+        orbMotionFrom = orbActivity.motion
+        orbMotionChangedAt = now
         renderFrame(at: now)
         let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
             self?.renderFrame()
@@ -287,7 +362,7 @@ final class ParticleFieldRenderer {
 
         let grid: [Dot]
         if coverage == .agentOrb {
-            grid = buildOrbGrid(theme: theme, size: size, elapsed: elapsed, now: time)
+            grid = buildOrbGrid(theme: theme, size: size, now: time)
         } else {
             guard let cached = cachedGrid(for: theme, size: size) else { return }
             grid = cached
@@ -471,7 +546,7 @@ final class ParticleFieldRenderer {
 
     // MARK: - Dot grid generation
 
-    private func buildOrbGrid(theme: Theme, size: CGSize, elapsed: Double, now: CFTimeInterval) -> [Dot] {
+    private func buildOrbGrid(theme: Theme, size: CGSize, now: CFTimeInterval) -> [Dot] {
         let color = NSColor(hue: theme.baseHue, saturation: theme.baseSaturation,
                             brightness: 1, alpha: 1).usingColorSpace(.sRGB)!
         // The monochrome orb fades from a white core to the card's navy
@@ -488,15 +563,18 @@ final class ParticleFieldRenderer {
         // Overlapping, deforming lobes form one continuous liquid volume.
         // Opposing stretches redistribute its shape without a breathing scale
         // animation or moving the grid itself. Reduced Motion freezes this field.
-        let stretch = sin(elapsed * 0.72) * 0.10
-        let curl = sin(elapsed * 0.53) * 0.055
+        // The agent's activity sets how fast and how far the lobes move.
+        let (motion, phase) = orbMotion(at: now)
+        let spread = motion.spread
+        let stretch = sin(phase * 0.72) * 0.10 * motion.stretch
+        let curl = sin(phase * 0.53) * 0.055 * motion.wander
         let lobes: [(x: Double, y: Double, rx: Double, ry: Double)] = [
-            (-0.27 + curl, -0.15 + sin(elapsed * 0.61) * 0.055,
+            (-0.27 * spread + curl, -0.15 * spread + sin(phase * 0.61) * 0.055 * motion.wander,
              0.64 + stretch, 0.59 / (1 + stretch)),
-            (0.26 - curl, 0.28 + sin(elapsed * 0.47) * 0.055,
-             0.54 - stretch * 0.4, 0.57 + sin(elapsed * 0.58) * 0.045),
-            (0.20 + sin(elapsed * 0.43) * 0.065, -0.26 - curl * 0.5,
-             0.50 + sin(elapsed * 0.67) * 0.035, 0.47 + stretch * 0.4)
+            (0.26 * spread - curl, 0.28 * spread + sin(phase * 0.47) * 0.055 * motion.wander,
+             0.54 - stretch * 0.4, 0.57 + sin(phase * 0.58) * 0.045 * motion.stretch),
+            (0.20 * spread + sin(phase * 0.43) * 0.065 * motion.wander, -0.26 * spread - curl * 0.5,
+             0.50 + sin(phase * 0.67) * 0.035 * motion.stretch, 0.47 + stretch * 0.4)
         ]
         // Keep the changing volume centred and clear of the title and card edges.
         let left = lobes.map { $0.x - $0.rx * 1.3 }.min()!
@@ -504,7 +582,7 @@ final class ParticleFieldRenderer {
         let bottom = lobes.map { $0.y - $0.ry * 1.3 }.min()!
         let top = lobes.map { $0.y + $0.ry * 1.3 }.max()!
         let scale = min(max(1, size.width - 24) / (right - left),
-                        max(1, size.height - 240) / (top - bottom))
+                        max(1, size.height - Self.orbVerticalReserve) / (top - bottom))
         let step: CGFloat = 10
         let cols = Int(size.width / step)
         let rows = Int(size.height / step)

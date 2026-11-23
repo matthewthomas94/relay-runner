@@ -24,10 +24,11 @@ final class MCPServer {
 
     init(
         client: AppControlClient = AppControlClient(),
+        sessionAgent: String? = ProcessInfo.processInfo.environment["RELAY_SESSION_AGENT"],
         notify: @escaping (String) -> Void = { ConfirmationClient.notifyToolFired(toolName: $0) }
     ) {
         var byName: [String: any MCPTool] = [:]
-        let registered: [any MCPTool] = AppTools.all(client: client).map { $0 as any MCPTool } + [GetRelayInstructionsTool()]
+        let registered: [any MCPTool] = AppTools.all(client: client, sessionAgent: sessionAgent).map { $0 as any MCPTool } + [GetRelayInstructionsTool()]
         for tool in registered {
             byName[tool.name] = tool
         }

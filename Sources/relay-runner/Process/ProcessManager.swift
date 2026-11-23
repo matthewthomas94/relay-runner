@@ -2183,6 +2183,7 @@ final class ProcessManager {
         var instructions = appOwnedRelayInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
         if let sessionContext {
             instructions += "\n" + SessionAgent(context: sessionContext).startupInstruction
+            instructions += "\n" + SessionAgent.workDescriptionInstruction
             instructions += "\nActive context: \(sessionContext.displayName) (\(sessionContext.kind.rawValue)). Execution is bound to \(sessionContext.workingDirectory). A context change requires Relay Runner to replace or resume the provider; never claim that a chat instruction changed your cwd or project mutation authority."
             if reachesRegisteredProjects {
                 instructions += "\n" + generalSessionReachInstructions

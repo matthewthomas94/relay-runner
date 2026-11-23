@@ -25,6 +25,7 @@ The `relay-app-mcp` server exposes these tools (namespace `mcp__relay-app__*`). 
 | `relay_remote_approve` | `restrict_to_network` | Sets the "Only from my home network and Tailscale" option and allows the waiting phone, as the Settings Allow button; `true` writes a `from=` clause into its `authorized_keys` line. |
 | `relay_remote_deny` | — | Declines the waiting phone, as the Settings Deny button. |
 | `keep_awake` | `on` | `KeepAwakeController.toggle()` only when the request differs from the current state. |
+| `set_working_on` | `description` | Saves the line the calling agent's card shows under its orb: at most 60 characters, collapsed to one line; longer text is refused. The agent is the session's own (`RELAY_SESSION_AGENT`), so the tool refuses outside an agent session. Until an agent has set one, its card shows "Last worked on" and its last project. |
 
 Every client also sees `get_relay_instructions`, which returns the full rules; it is read-only and never pulses ActionGlow.
 

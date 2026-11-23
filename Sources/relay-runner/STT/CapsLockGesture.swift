@@ -5,7 +5,8 @@ import Foundation
 /// Activation key gesture detection state machine.
 ///
 /// Gesture vocabulary:
-///   - Caps Lock (or configured key): toggle recording
+///   - Hold Control and Option: record while held, send on release
+///   - or Caps Lock (or configured key): toggle recording
 ///   - Double-tap Option: play queued TTS / replay last
 ///   - Double-tap Control: cancel recording / dismiss TTS
 ///   - Double-tap Shift: toggle the routed board surface
@@ -25,11 +26,17 @@ final class CapsLockGesture {
     /// Lock key events the monitors receive also count (RR-517), so a read
     /// that misses the key cannot leave the toggle dead.
     typealias CapsLockStateReader = () -> Bool
+    /// Reads which modifier keys are down. Hold to talk polls this the way
+    /// the Caps Lock toggle polls its state, so it needs no key monitor.
+    typealias ModifierStateReader = () -> NSEvent.ModifierFlags
 
     enum Event: Equatable {
         case startRecording
         case stopRecording(text: String)
         case cancel
+        /// The hold turned out to be a keyboard shortcut: drop the recording
+        /// without sending it and without cancelling the agent.
+        case discard
         case interrupt
         case play
         case boardToggle
@@ -43,6 +50,17 @@ final class CapsLockGesture {
     private var prevKeyOn: Bool
     private var recording = false
     private var transitions: [Date] = []
+
+    /// The activation key string that selects hold to talk.
+    static let holdActivationKey = "Ctrl+Alt"
+    private static let holdModifiers: NSEvent.ModifierFlags = [.control, .option]
+    private static let chordModifiers: NSEvent.ModifierFlags = [.control, .option, .command, .shift]
+    /// Recording runs while Control and Option, and no other modifier, are held.
+    private let holdToTalk: Bool
+    private let modifierState: ModifierStateReader
+    /// Another key was pressed during the hold, so it is a shortcut such as
+    /// Control-Option-Arrow. Ignored until both keys are released.
+    private var holdBroken = false
 
     // Custom key support
     private let useCapsLock: Bool
@@ -113,12 +131,19 @@ final class CapsLockGesture {
             NSEvent.removeMonitor(monitor)
         },
         diagnosticLogger: @escaping DiagnosticLogger = RelayUnifiedLog.sink(category: "CapsLockGesture"),
-        capsLockState: @escaping CapsLockStateReader = CapsLockGesture.isCapsLockOn
+        capsLockState: @escaping CapsLockStateReader = CapsLockGesture.isCapsLockOn,
+        modifierState: @escaping ModifierStateReader = CapsLockGesture.modifiersDown
     ) {
+        holdToTalk = activationKey == Self.holdActivationKey
+        self.modifierState = modifierState
         let isCapsLock = activationKey.isEmpty
             || activationKey.lowercased() == "caps lock"
             || activationKey.lowercased() == "capslock"
-        if isCapsLock {
+        if holdToTalk {
+            useCapsLock = false
+            targetKeyCode = 0
+            targetModifiers = []
+        } else if isCapsLock {
             useCapsLock = true
             targetKeyCode = 0
             targetModifiers = []
@@ -139,11 +164,11 @@ final class CapsLockGesture {
         prevKeyOn = useCapsLock ? latestCapsLockOn : false
 
         startModifierMonitor()
-        if !useCapsLock {
+        if usesCustomKey {
             startKeyMonitor()
         }
         diagnosticLogger(
-            "[CapsLockGesture] armed key=\(useCapsLock ? "caps-lock" : "custom") " +
+            "[CapsLockGesture] armed key=\(holdToTalk ? "hold" : useCapsLock ? "caps-lock" : "custom") " +
             "monitors=\(keyMonitors.count) global=\(modifierGlobalMonitor != nil)"
         )
     }
@@ -153,8 +178,25 @@ final class CapsLockGesture {
         return flags.contains(.maskAlphaShift)
     }
 
+    static func modifiersDown() -> NSEvent.ModifierFlags {
+        NSEvent.ModifierFlags(rawValue: UInt(CGEventSource.flagsState(.combinedSessionState).rawValue))
+    }
+
+    /// Control and Option are held, with neither Command nor Shift.
+    static func isHoldChord(_ flags: NSEvent.ModifierFlags) -> Bool {
+        flags.intersection(chordModifiers) == holdModifiers
+    }
+
+    private var usesCustomKey: Bool { !useCapsLock && !holdToTalk }
+
     private var isKeyOn: Bool {
         if let manual = manualKeyDown { return manual }
+        return hardwareKeyOn
+    }
+
+    /// The activation key's own state, ignoring the menu override.
+    private var hardwareKeyOn: Bool {
+        if holdToTalk { return !holdBroken && Self.isHoldChord(modifierState()) }
         return useCapsLock ? capsLockOn : customKeyDown
     }
 
@@ -179,8 +221,7 @@ final class CapsLockGesture {
         if manualKeyDown != nil {
             manualKeyDown = nil
         } else {
-            let current = useCapsLock ? capsLockOn : customKeyDown
-            manualKeyDown = !current
+            manualKeyDown = !hardwareKeyOn
         }
     }
 
@@ -199,6 +240,17 @@ final class CapsLockGesture {
         if pendingBoardToggle {
             pendingBoardToggle = false
             return .boardToggle
+        }
+
+        if holdBroken {
+            let wasOn = prevKeyOn && !suppressed && manualKeyDown == nil
+            if !Self.isHoldChord(modifierState()) { holdBroken = false }
+            if wasOn {
+                recording = false
+                transitions.removeAll()
+                prevKeyOn = false
+                return .discard
+            }
         }
 
         let keyOn = isKeyOn
@@ -326,6 +378,9 @@ final class CapsLockGesture {
                 controlTaps.removeAll()
                 pendingCancel = false
             }
+            if holdToTalk, Self.isHoldChord(flags) {
+                holdBroken = true
+            }
             boardHotkeyGesture.handleKeyDown()
         default:
             break
@@ -368,6 +423,14 @@ final class CapsLockGesture {
         }
         controlWasDown = controlDown
 
+        // Pressing the two keys to talk is not a tap of either one.
+        if holdToTalk, optionDown, controlDown {
+            optionTaps.removeAll()
+            controlTaps.removeAll()
+            pendingPlay = false
+            pendingCancel = false
+        }
+
         if boardHotkeyGesture.handleFlagsChanged(event.modifierFlags, at: now) {
             pendingBoardToggle = true
         }
@@ -404,7 +467,7 @@ final class CapsLockGesture {
     func retryMissingGlobalMonitors() {
         guard !stoppingMonitors else { return }
         installModifierGlobalMonitor()
-        if !useCapsLock {
+        if usesCustomKey {
             installCustomKeyGlobalMonitor()
         }
         updateGlobalMonitorRetry()
@@ -412,7 +475,7 @@ final class CapsLockGesture {
 
     private var hasAllGlobalMonitors: Bool {
         modifierGlobalMonitor != nil
-            && (useCapsLock || customKeyGlobalMonitor != nil)
+            && (!usesCustomKey || customKeyGlobalMonitor != nil)
     }
 
     private func updateGlobalMonitorRetry() {

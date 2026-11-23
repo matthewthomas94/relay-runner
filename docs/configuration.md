@@ -26,7 +26,7 @@ The legacy `working_directory` key can still be read for migration, but registry
 - **Model** — Phonon 2 (English, requires macOS 15 or later), Parakeet TDT v2 (English), or Parakeet TDT v3 (larger, multilingual). macOS 14 offers only the two Parakeet models; choose v3 for languages other than English.
 - **Input device** — system default or a selected microphone.
 - **Input mode** — toggle, push-to-talk, or always-on behavior exposed by the current UI.
-- **Activation key** — Caps Lock by default; non-modifier global keys can require Input Monitoring.
+- **Record With** — how the mic opens, saved as `[stt] activation_mode`. `hold` (the default on a new install): hold Control and Option to record and release to send; pressing another key during the hold makes it a shortcut and drops the recording. `caps_lock`: press Caps Lock to open the mic and again to send. An install that predates the setting stays on Caps Lock until changed.
 - **VAD sensitivity** — Low, Medium, or High voice-activity sensitivity.
 
 Models download on first use and are cached locally by FluidAudio; switching models never deletes another model's cache. A model change applies from the next recording: a command still being captured, an active note, and a pending note recovery keep the model they started with.

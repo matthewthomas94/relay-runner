@@ -107,6 +107,9 @@ final class OnboardingController {
     private let tutorialSpeechReadiness: () -> SetupRuntimeReadiness
     /// Nil turns the recording step's Caps Lock diagnostics off.
     private let tutorialRecordingProbe: (() -> OnboardingTutorialRecordingProbe)?
+    /// The mic opens by holding Control and Option, so the recording steps
+    /// teach that in place of Caps Lock.
+    private let tutorialHoldsToTalk: () -> Bool
     /// The Caps Lock gesture's global key monitor is installed. The recording
     /// step waits visibly until it is, then carries on by itself (RR-517).
     private let tutorialKeyMonitorAttached: () -> Bool
@@ -232,6 +235,7 @@ final class OnboardingController {
          openWorkspaceAfterCompletion: @escaping () -> Void = {},
          tutorialSpeechReadiness: @escaping () -> SetupRuntimeReadiness = { .ready },
          tutorialRecordingProbe: (() -> OnboardingTutorialRecordingProbe)? = nil,
+         tutorialHoldsToTalk: @escaping () -> Bool = { false },
          tutorialKeyMonitorAttached: @escaping () -> Bool = { true },
          toggleTutorialRecording: @escaping () -> Void = {},
          retryTutorialSpeechSetup: @escaping () -> Void = {},
@@ -279,6 +283,7 @@ final class OnboardingController {
         self.openWorkspaceAfterCompletion = openWorkspaceAfterCompletion
         self.tutorialSpeechReadiness = tutorialSpeechReadiness
         self.tutorialRecordingProbe = tutorialRecordingProbe
+        self.tutorialHoldsToTalk = tutorialHoldsToTalk
         self.tutorialKeyMonitorAttached = tutorialKeyMonitorAttached
         self.toggleTutorialRecording = toggleTutorialRecording
         self.retryTutorialSpeechSetup = retryTutorialSpeechSetup
@@ -1347,7 +1352,8 @@ final class OnboardingController {
                 screen: screen,
                 reduceMotion: reduceMotion(),
                 message: message,
-                recordingHelp: help
+                recordingHelp: help,
+                holdsToTalk: tutorialHoldsToTalk()
             ),
             retryAction: { [weak self] in
                 guard let self else { return }
@@ -1520,7 +1526,9 @@ final class OnboardingController {
             diagnosticLog("[OnboardingTutorial] speech setup failed before the recording step")
             presentTutorial(
                 screen: .sessionRetry,
-                message: "Speech recognition couldn't start, so Caps Lock can't record yet. Retry to set it up again."
+                message: "Speech recognition couldn't start, so "
+                    + (tutorialHoldsToTalk() ? "Control and Option" : "Caps Lock")
+                    + " can't record yet. Retry to set it up again."
             )
         case .preparing, .notStarted:
             if !tutorialIntroSpeechWaitLogged {

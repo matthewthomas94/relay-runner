@@ -212,7 +212,7 @@ If you need user permission for a risky screen action:
 
 ## Naming notes
 
-- **Relay App** = *first-party control of Relay Runner itself* and its MCP tool family (`mcp__relay-app__*`): app_status, navigate, get_settings, set_settings, list_projects, select_project, start_session, end_session, relay_remote_devices, relay_remote_unpair, relay_remote_begin_pairing, relay_remote_pending_approval, relay_remote_approve, relay_remote_deny, keep_awake. Served by `relay-app-mcp` over the app's owner-only command socket (`/tmp/relay_session_control.sock`).
+- **Relay App** = *first-party control of Relay Runner itself* and its MCP tool family (`mcp__relay-app__*`): app_status, navigate, get_settings, set_settings, list_projects, select_project, start_session, end_session, relay_remote_devices, relay_remote_unpair, relay_remote_begin_pairing, relay_remote_pending_approval, relay_remote_approve, relay_remote_deny, keep_awake, set_working_on. Served by `relay-app-mcp` over the app's owner-only command socket (`/tmp/relay_session_control.sock`).
 - **Relay Desktop** = the *accessibility-tree* feature and its MCP tool family (`mcp__relay-desktop__*`): snapshot, find, act, press, get, wait, list_apps, list_windows, focus_window, launch, status. Backed by the bundled agent-desktop CLI, run inside Relay Runner.app.
 - **Relay Actions** = the *physical* screen-manipulation feature and its MCP tool family (`mcp__relay-actions__*`): click, type, scroll, key, list_windows, frontmost_app.
 - **Relay Vision** = the screen-*observation* feature and its MCP tool family (`mcp__relay-vision__*`): screenshot, record. Split out of Relay Actions in RR-10.

@@ -135,7 +135,9 @@ final class STTEngine: @unchecked Sendable {
         self.modelName = config.model
         self.inputMode = config.input_mode
         self.vadSensitivity = config.vad_sensitivity
-        self.gesture = dependencies.makeGesture(config.activation_key)
+        self.gesture = dependencies.makeGesture(
+            config.holdsToTalk ? CapsLockGesture.holdActivationKey : config.activation_key
+        )
         self.minSamples = sampleRate      // 1 second
         self.keepSamples = sampleRate * 200 / 1000  // 200ms
         self.recordingChunkSamples = sampleRate * 25
@@ -830,13 +832,18 @@ final class STTEngine: @unchecked Sendable {
                     partialTranscription = ""
                     mediaSettleDeadline = nil
 
-                case .cancel:
+                case .cancel, .discard:
                     if let capture = lipCapture {
                         _ = stopLipCapture(capture)
                         lipCapture = nil
                     }
-                    writeVoiceOutput("__CANCEL__")
-                    NSLog("[STTEngine] Cancelled (2x Ctrl)")
+                    if event == .cancel {
+                        writeVoiceOutput("__CANCEL__")
+                        NSLog("[STTEngine] Cancelled (2x Ctrl)")
+                    } else {
+                        // Only the recording is dropped; the agent keeps working.
+                        NSLog("[STTEngine] Hold discarded (keyboard shortcut)")
+                    }
                     transcript.reset()
                     resetRecordingBuffer()
                     isRecording = false

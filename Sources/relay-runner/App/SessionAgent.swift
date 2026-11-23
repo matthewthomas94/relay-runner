@@ -77,6 +77,12 @@ enum SessionAgent: String, CaseIterable, Codable, Identifiable {
         "You are \(name) in this session; the user may address you by that name. Relay Runner runs up to four named agents (Puck, Isabella, George and Sky), each with its own conversation."
     }
 
+    /// The longest line an agent's card shows about its work: two short lines.
+    static let workDescriptionLimit = 60
+
+    /// The startup instruction that has the agent keep its card's line current.
+    static let workDescriptionInstruction = "Agent card: your card in Relay Runner shows one short line about your work. When you start a piece of work or move to a different one, call mcp__relay-app__set_working_on with what you are working on in at most \(workDescriptionLimit) characters, for example \"Fixing the Settings dropdown dividers\". Do not call it again while the work is the same, and not for questions or small talk."
+
     /// RR-523: an agent named by slug or name, ignoring case and spaces; nil
     /// for anything else.
     init?(choice: String) {

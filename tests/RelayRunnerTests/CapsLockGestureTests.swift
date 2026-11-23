@@ -157,6 +157,109 @@ final class CapsLockGestureTests: XCTestCase {
         XCTAssertNil(gesture.poll(currentSegment: ""))
     }
 
+    // MARK: - Hold Control and Option to talk
+
+    private func holdGesture(
+        flags: @escaping () -> NSEvent.ModifierFlags,
+        local: @escaping (@escaping (NSEvent) -> NSEvent?) -> Void = { _ in }
+    ) -> CapsLockGesture {
+        CapsLockGesture(
+            activationKey: CapsLockGesture.holdActivationKey,
+            globalMonitorInstaller: { _, _ in NSObject() },
+            localMonitorInstaller: { _, handler in local(handler); return NSObject() },
+            monitorRemover: { _ in },
+            diagnosticLogger: { _ in },
+            modifierState: flags
+        )
+    }
+
+    func testHoldingControlAndOptionRecordsAndReleasingSends() {
+        var flags: NSEvent.ModifierFlags = []
+        let gesture = holdGesture(flags: { flags })
+        XCTAssertNil(gesture.poll(currentSegment: ""))
+        // Neither key alone, nor the pair with Command or Shift, opens the mic.
+        for other: NSEvent.ModifierFlags in [[.control], [.option], [.control, .option, .command], [.control, .option, .shift]] {
+            flags = other
+            XCTAssertNil(gesture.poll(currentSegment: ""), "\(other)")
+        }
+        flags = [.control, .option, .capsLock]
+        XCTAssertEqual(gesture.poll(currentSegment: ""), .startRecording)
+        XCTAssertTrue(gesture.isActivationHeld)
+        XCTAssertNil(gesture.poll(currentSegment: ""))
+        Thread.sleep(forTimeInterval: 0.55)
+        XCTAssertNil(gesture.poll(currentSegment: ""))
+        XCTAssertTrue(gesture.isRecording)
+        flags = [.option]
+        XCTAssertEqual(gesture.poll(currentSegment: "hello"), .stopRecording(text: "hello"))
+        XCTAssertFalse(gesture.isRecording)
+    }
+
+    func testAKeyPressedDuringTheHoldDiscardsItUntilBothKeysAreReleased() {
+        var flags: NSEvent.ModifierFlags = []
+        var localHandler: ((NSEvent) -> NSEvent?)?
+        let gesture = holdGesture(flags: { flags }, local: { localHandler = $0 })
+        flags = [.control, .option]
+        XCTAssertEqual(gesture.poll(currentSegment: ""), .startRecording)
+        // Control-Option-Left is a shortcut, not a message.
+        _ = localHandler?(keyDownEvent(flags: [.control, .option], keyCode: 123))
+        XCTAssertEqual(gesture.poll(currentSegment: "spoken"), .discard)
+        XCTAssertFalse(gesture.isRecording)
+        XCTAssertNil(gesture.poll(currentSegment: "spoken"), "still held: nothing restarts")
+        flags = []
+        XCTAssertNil(gesture.poll(currentSegment: "spoken"), "released: nothing is sent")
+        flags = [.control, .option]
+        XCTAssertEqual(gesture.poll(currentSegment: ""), .startRecording)
+    }
+
+    func testHoldingTheTwoKeysRepeatedlyIsNotADoubleTapOfEither() {
+        var localHandler: ((NSEvent) -> NSEvent?)?
+        let gesture = holdGesture(flags: { [] }, local: { localHandler = $0 })
+        for _ in 0..<3 {
+            _ = localHandler?(modifierEvent(flags: [.option], keyCode: 58))
+            _ = localHandler?(modifierEvent(flags: [.option, .control], keyCode: 59))
+            _ = localHandler?(modifierEvent(flags: [.option], keyCode: 59))
+            _ = localHandler?(modifierEvent(flags: [], keyCode: 58))
+        }
+        XCTAssertNil(gesture.poll(currentSegment: ""))
+        // Each key alone still double-taps.
+        sendDoubleTap(.option, keyCode: 58, to: localHandler)
+        XCTAssertEqual(gesture.poll(currentSegment: ""), .play)
+        sendDoubleTap(.control, keyCode: 59, to: localHandler)
+        XCTAssertEqual(gesture.poll(currentSegment: ""), .cancel)
+    }
+
+    /// Hold to talk is the default on a new install; a config written before
+    /// the setting existed keeps Caps Lock.
+    func testActivationModeDefaultsToHoldOnlyOnAFreshInstall() {
+        XCTAssertTrue(SttConfig.freshInstall().holdsToTalk)
+        XCTAssertFalse(SttConfig().holdsToTalk)
+        XCTAssertEqual(STTSettingsTab.activationOptions.map(\.value), [
+            SttConfig.ActivationMode.hold, SttConfig.ActivationMode.capsLock,
+        ])
+        XCTAssertEqual(OverlayController.sendHint(holdsToTalk: true), "Release Control and Option to send")
+        XCTAssertEqual(OverlayController.sendHint(holdsToTalk: false), "Press Caps Lock to stop and send")
+        XCTAssertTrue(OverlayController.sessionPromptBody(holdsToTalk: true).hasSuffix("Hold Control and Option to dismiss"))
+        XCTAssertTrue(OverlayController.sessionPromptBody(holdsToTalk: false).hasSuffix("Press Caps Lock to dismiss"))
+    }
+
+    /// The tutorial's help names the keys the user was asked to hold, and a
+    /// press that never arrived is not blamed on a permission.
+    func testTutorialRecordingHelpNamesTheHoldKeys() {
+        var probe = OnboardingTutorialRecordingProbe()
+        probe.holdsToTalk = true
+        probe.keyboardAccess = .denied
+        probe.capsLock = CapsLockKeyboardConfiguration(switchesInputSource: true, remapped: true)
+        let silent = OnboardingTutorialRecordingHelp.diagnose(.noCapsLockEvents, probe: probe)
+        XCTAssertTrue(silent.message.contains("Control and Option held together"))
+        XCTAssertNil(silent.fix)
+        let pressed = OnboardingTutorialRecordingHelp.diagnose(.pressedWithoutRecording, probe: probe)
+        XCTAssertTrue(pressed.message.hasPrefix("Control and Option were pressed"))
+        XCTAssertFalse(pressed.message.contains("Caps Lock"))
+        let hold = OnboardingSessionControlsTutorial.keycapPhase(for: .holdControl, at: 1)
+        XCTAssertEqual(hold.scale, 0.94, "the key stays down through the hold")
+        XCTAssertEqual(OnboardingSessionControlsTutorial.keycapPhase(for: .holdOption, at: 2.5).scale, 1)
+    }
+
     func testOptionModifiedTypingDoesNotEmitPlayback() {
         var localHandler: ((NSEvent) -> NSEvent?)?
         let gesture = CapsLockGesture(

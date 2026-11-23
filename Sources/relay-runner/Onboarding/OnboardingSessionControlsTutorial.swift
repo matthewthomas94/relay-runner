@@ -20,6 +20,8 @@ struct OnboardingTutorialPresentation: Equatable {
     let message: String?
     /// Why Caps Lock hasn't started recording, shown on the recording step.
     var recordingHelp: OnboardingTutorialRecordingHelp? = nil
+    /// The recording steps teach holding Control and Option, not Caps Lock.
+    var holdsToTalk = false
 }
 
 enum OnboardingSessionControlsTutorial {
@@ -176,24 +178,36 @@ struct OnboardingTutorialView: View {
         case .recording:
             VStack(spacing: 28) {
                 HStack(alignment: .center, spacing: 30) {
-                    tutorialText("Turn")
-                    OnboardingTutorialKeycap(
-                        animation: .capsLock,
-                        reduceMotion: presentation.reduceMotion
-                    )
-                    tutorialText("on & say hi /")
+                    if presentation.holdsToTalk {
+                        tutorialText("Hold")
+                        holdKeycaps
+                        tutorialText("& say hi /")
+                    } else {
+                        tutorialText("Turn")
+                        OnboardingTutorialKeycap(
+                            animation: .capsLock,
+                            reduceMotion: presentation.reduceMotion
+                        )
+                        tutorialText("on & say hi /")
+                    }
                 }
                 recordingControls(toggleTitle: OnboardingTutorialRecordingHelp.startRecordingTitle)
             }
         case .recordingActive:
             VStack(spacing: 28) {
                 HStack(alignment: .center, spacing: 30) {
-                    tutorialText("Now turn")
-                    OnboardingTutorialKeycap(
-                        animation: .capsLock,
-                        reduceMotion: presentation.reduceMotion
-                    )
-                    tutorialText("off to send the message /")
+                    if presentation.holdsToTalk {
+                        tutorialText("Now release")
+                        holdKeycaps
+                        tutorialText("to send the message /")
+                    } else {
+                        tutorialText("Now turn")
+                        OnboardingTutorialKeycap(
+                            animation: .capsLock,
+                            reduceMotion: presentation.reduceMotion
+                        )
+                        tutorialText("off to send the message /")
+                    }
                 }
                 recordingControls(toggleTitle: OnboardingTutorialRecordingHelp.stopRecordingTitle)
             }
@@ -245,6 +259,14 @@ struct OnboardingTutorialView: View {
         }
     }
 
+    /// Control and Option, pressed and held together.
+    private var holdKeycaps: some View {
+        HStack(alignment: .center, spacing: 14) {
+            OnboardingTutorialKeycap(animation: .holdControl, reduceMotion: presentation.reduceMotion)
+            OnboardingTutorialKeycap(animation: .holdOption, reduceMotion: presentation.reduceMotion)
+        }
+    }
+
     /// When Caps Lock isn't working: the reason, its fix and the click
     /// fallback. A working step shows none of it, since the step's own title
     /// already says what is happening.
@@ -264,7 +286,7 @@ struct OnboardingTutorialView: View {
                     .buttonStyle(.graphicalPress)
                     .font(AppTypography.font(.body))
                     .foregroundStyle(.white.opacity(0.72))
-                    .accessibilityHint("Records without Caps Lock")
+                    .accessibilityHint("Records without the keyboard")
             }
         }
     }
@@ -290,9 +312,11 @@ struct OnboardingTutorialView: View {
         case .intro:
             return "Great, now lets learn the basics"
         case .recording:
-            return "Turn Caps Lock on and say hi"
+            return presentation.holdsToTalk ? "Hold Control and Option and say hi" : "Turn Caps Lock on and say hi"
         case .recordingActive:
-            return "Now turn Caps Lock off to send the message"
+            return presentation.holdsToTalk
+                ? "Now release Control and Option to send the message"
+                : "Now turn Caps Lock off to send the message"
         case .playback:
             return "Wait for a reply then double tap Option to play or replay"
         case .cancellation:
@@ -366,6 +390,8 @@ enum OnboardingTutorialKeycapKind {
 
 enum OnboardingTutorialKeycapAnimation {
     case capsLock
+    case holdControl
+    case holdOption
     case playbackOption
     case playbackControl
     case shift
@@ -374,9 +400,9 @@ enum OnboardingTutorialKeycapAnimation {
         switch self {
         case .capsLock:
             return .capsLock
-        case .playbackOption:
+        case .playbackOption, .holdOption:
             return .option
-        case .playbackControl:
+        case .playbackControl, .holdControl:
             return .control
         case .shift:
             return .shift
@@ -387,6 +413,8 @@ enum OnboardingTutorialKeycapAnimation {
         switch self {
         case .capsLock:
             return 1.6
+        case .holdControl, .holdOption:
+            return 2.6
         case .playbackOption, .playbackControl:
             return 2.92
         case .shift:
@@ -475,6 +503,8 @@ extension OnboardingSessionControlsTutorial {
         switch animation {
         case .capsLock:
             return capsLockPhase(at: time, cycleDuration: animation.cycleDuration)
+        case .holdControl, .holdOption:
+            return holdPhase(at: time, cycleDuration: animation.cycleDuration)
         case .playbackOption:
             return doubleTapPhase(
                 at: time,
@@ -510,6 +540,24 @@ extension OnboardingSessionControlsTutorial {
         let scale = easedScale(at: cycle, tapStarts: [0.0])
         let capsLightOn = cycle >= 0.14 ? !lightStartsOn : lightStartsOn
         return OnboardingTutorialKeycapPhase(scale: scale, capsLightOn: capsLightOn)
+    }
+
+    /// Pressed, held down for most of the cycle, then released.
+    private static func holdPhase(at time: TimeInterval,
+                                  cycleDuration: TimeInterval) -> OnboardingTutorialKeycapPhase {
+        let cycle = max(0, time).truncatingRemainder(dividingBy: cycleDuration)
+        let releaseStart = cycleDuration - 0.8
+        let value: CGFloat
+        if cycle < 0.14 {
+            value = scale(from: 1.0, to: 0.94, progress: cycle / 0.14)
+        } else if cycle < releaseStart {
+            value = 0.94
+        } else if cycle < releaseStart + 0.18 {
+            value = scale(from: 0.94, to: 1.0, progress: (cycle - releaseStart) / 0.18)
+        } else {
+            value = 1.0
+        }
+        return OnboardingTutorialKeycapPhase(scale: value, capsLightOn: false)
     }
 
     private static func doubleTapPhase(at time: TimeInterval,

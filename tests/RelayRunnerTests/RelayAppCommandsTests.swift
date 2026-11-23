@@ -30,6 +30,8 @@ final class RelayAppCommandsTests: XCTestCase {
         var selected: [String] = []
         var keepAwake = KeepAwakeState.off
         var toggles = 0
+        var workingOn: [SessionAgent: String] = [:]
+        var workingOnRefusal: String?
         var onToggle: (KeepAwakeState) -> KeepAwakeState = { state in
             switch state {
             case .off, .failed: return .enabling
@@ -88,7 +90,12 @@ final class RelayAppCommandsTests: XCTestCase {
                     self.keepAwake = self.onToggle(self.keepAwake)
                     return true
                 },
-                agents: { self.agents }
+                agents: { self.agents },
+                setWorkingOn: { agent, description in
+                    if let refusal = self.workingOnRefusal { return refusal }
+                    self.workingOn[agent] = description
+                    return nil
+                }
             )
         }
     }
@@ -239,6 +246,11 @@ final class RelayAppCommandsTests: XCTestCase {
         var relayAppKeepAwakeState = KeepAwakeState.off
         func toggleRelayAppKeepAwake() -> Bool { true }
         var relayAppAgents: [SessionAgent.Status] { SessionAgent.statuses(liveContextIDs: [], activeContextID: nil) }
+        var workingOn: [SessionAgent: String] = [:]
+        func setRelayAppWorkingOn(_ agent: SessionAgent, _ description: String) -> String? {
+            workingOn[agent] = description
+            return nil
+        }
     }
 
     private func bind(_ owner: WeakOwner) {
@@ -331,6 +343,31 @@ final class RelayAppCommandsTests: XCTestCase {
 
     /// RR-522: every agent's work style reads as Auto until one is chosen;
     /// set_settings changes one agent's and refuses invalid values.
+    /// An agent sets the line its card shows: one line of at most
+    /// `SessionAgent.workDescriptionLimit` characters, saved for that agent only.
+    func testSetWorkingOnSavesOneShortLineForTheNamedAgent() async throws {
+        let set = try await ok("set_working_on", ["agent": "george", "description": "  Fixing the\n Settings   dividers "])
+        XCTAssertEqual(set["working_on"] as? String, "Fixing the Settings dividers")
+        XCTAssertEqual(set["agent"] as? String, "george")
+        XCTAssertEqual(app.workingOn, [.george: "Fixing the Settings dividers"])
+
+        let limit = SessionAgent.workDescriptionLimit
+        try await ok("set_working_on", ["agent": "Sky", "description": String(repeating: "a", count: limit)])
+        let tooLong = await refused("set_working_on", ["agent": "sky", "description": String(repeating: "a", count: limit + 1)])
+        XCTAssertTrue(tooLong.contains("at most \(limit)"), tooLong)
+        let unknown = await refused("set_working_on", ["agent": "nobody", "description": "Fixing"])
+        XCTAssertEqual(unknown, "Unknown agent 'nobody'.")
+        let empty = await refused("set_working_on", ["agent": "sky", "description": "  "])
+        XCTAssertEqual(empty, "description must be a non-empty string.")
+        let missing = await refused("set_working_on", ["description": "Fixing"])
+        XCTAssertEqual(missing, "set_working_on needs agent.")
+        XCTAssertEqual(app.workingOn.count, 2)
+
+        app.workingOnRefusal = "Relay Runner could not save the description."
+        let unsaved = await refused("set_working_on", ["agent": "sky", "description": "Fixing"])
+        XCTAssertEqual(unsaved, "Relay Runner could not save the description.")
+    }
+
     func testAgentWorkStylesReadAndSetOneAgentAtATime() async throws {
         func styles(_ result: [String: Any]) -> [String?] {
             let agents = (result["settings"] as? [String: Any])?["agents"] as? [String: Any]

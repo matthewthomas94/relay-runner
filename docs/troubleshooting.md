@@ -20,7 +20,7 @@ After an upgrade from a release that used Python, setup removes the old Python e
 
 - Confirm Relay Runner is enabled in **System Settings → Privacy & Security → Microphone**.
 - Use the menu-bar record control to separate microphone behavior from global-shortcut behavior.
-- Caps Lock can operate with reduced permissions. Non-modifier global activation keys and the Workspace shortcut can require Input Monitoring or Accessibility.
+- Holding Control and Option, or Caps Lock, can operate with reduced permissions. Non-modifier global activation keys and the Workspace shortcut can require Input Monitoring or Accessibility.
 - After changing a TCC grant, follow macOS's relaunch request and recheck Settings.
 
 ## Relay Actions cannot click, type, or inspect windows

@@ -111,6 +111,19 @@ final class OverlayController {
         previewsParticles = active
     }
 
+    /// Hold Control and Option to talk, rather than the Caps Lock toggle.
+    /// Only changes the key the pill's hints name.
+    var holdsToTalk = false
+
+    static func sendHint(holdsToTalk: Bool) -> String {
+        holdsToTalk ? "Release Control and Option to send" : "Press Caps Lock to stop and send"
+    }
+
+    static func sessionPromptBody(holdsToTalk: Bool) -> String {
+        "Double tap Option to start a new session\n"
+            + (holdsToTalk ? "Hold Control and Option to dismiss" : "Press Caps Lock to dismiss")
+    }
+
     func updateConfig(_ newConfig: AwarenessConfig) {
         config = newConfig
         particleField.setIntensity(newConfig.glow_intensity)
@@ -431,7 +444,7 @@ final class OverlayController {
                 }
             } else if !partial.isEmpty, config.live_transcription, partial != lastPartial {
                 // Only expand to full once transcription arrives
-                if let title = Self.fullPillTitle(for: state, actionHint: "Press Caps Lock to stop and send") {
+                if let title = Self.fullPillTitle(for: state, actionHint: Self.sendHint(holdsToTalk: holdsToTalk)) {
                     pill.showFull(title: title, body: partial, theme: .stt)
                 }
             }
@@ -541,7 +554,7 @@ final class OverlayController {
             if state != lastAppliedState {
                 pill.showFull(
                     title: "No session running",
-                    body: "Double tap Option to start a new session\nPress Caps Lock to dismiss",
+                    body: Self.sessionPromptBody(holdsToTalk: holdsToTalk),
                     theme: .stt,
                     suppressShadow: true
                 )

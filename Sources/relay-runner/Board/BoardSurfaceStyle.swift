@@ -46,8 +46,7 @@ enum BoardDarkSurfaceStyle {
     /// leaves the backdrop mid-animation never lets the desktop through.
     static let wheelTileFill = Color(.sRGB, red: 11.5 / 255, green: 13 / 255, blue: 15 / 255, opacity: 1)
     static let wheelTileActiveFill = Color(.sRGB, red: 16.5 / 255, green: 18.5 / 255, blue: 20.5 / 255, opacity: 1)
-    /// The terminal's New tab button, a surface-level square.
-    static let tabActionFill = GraphicalTheme.neutral3.opacity(surfaceOpacity)
+    /// The terminal's New tab button under the pointer; at rest it is a panel.
     static let tabActionHoverFill = GraphicalTheme.neutral4.opacity(surfaceOpacity)
     static let contentFill = Color(nsColor: contentFillNSColor)
     static let hoverFill = Color(nsColor: hoverFillNSColor)

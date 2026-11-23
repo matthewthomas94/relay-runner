@@ -31,6 +31,8 @@ struct RelayAppCommandHost {
     var toggleKeepAwake: () -> Bool
     /// RR-519: the four named agents in table order, whether each runs and which is active.
     var agents: () -> [SessionAgent.Status] = { [] }
+    /// Saves the line an agent's card shows about its work. Returns why it could not, or nil.
+    var setWorkingOn: (SessionAgent, String) -> String? = { _, _ in nil }
     /// False once the app that supplies these closures is gone; every command then refuses.
     var isAvailable: () -> Bool = { true }
 }
@@ -47,6 +49,8 @@ protocol RelayAppCommandOwner: AnyObject {
     var relayAppKeepAwakeState: KeepAwakeState { get }
     func toggleRelayAppKeepAwake() -> Bool
     var relayAppAgents: [SessionAgent.Status] { get }
+    /// Why the line could not be saved, or nil once it is.
+    func setRelayAppWorkingOn(_ agent: SessionAgent, _ description: String) -> String?
 }
 
 extension RelayAppCommandHost {
@@ -70,6 +74,10 @@ extension RelayAppCommandHost {
             keepAwakeState: { [weak owner] in owner?.relayAppKeepAwakeState ?? .off },
             toggleKeepAwake: { [weak owner] in owner?.toggleRelayAppKeepAwake() ?? false },
             agents: { [weak owner] in owner?.relayAppAgents ?? [] },
+            setWorkingOn: { [weak owner] agent, description in
+                guard let owner else { return Self.quittingMessage }
+                return owner.setRelayAppWorkingOn(agent, description)
+            },
             isAvailable: { [weak owner] in owner != nil }
         )
     }
@@ -88,7 +96,7 @@ final class RelayAppCommands {
         "list_projects", "select_project", "start_session", "end_session",
         "relay_remote_devices", "relay_remote_unpair", "relay_remote_begin_pairing",
         "relay_remote_pending_approval", "relay_remote_approve", "relay_remote_deny",
-        "keep_awake",
+        "keep_awake", "set_working_on",
     ]
 
     static let settingsPages: [String: SettingsCategory] = [
@@ -222,6 +230,21 @@ final class RelayAppCommands {
         case "relay_remote_deny":
             try a.only([])
             return try await decide(allow: false, restrictToNetwork: false)
+        case "set_working_on":
+            try a.only(["agent", "description"])
+            let given = try a.requiredString("agent")
+            guard let agent = SessionAgent(choice: given) else {
+                throw RelayAppCommandError("Unknown agent '\(given)'.")
+            }
+            let description = try a.requiredString("description")
+                .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            guard description.count <= SessionAgent.workDescriptionLimit else {
+                throw RelayAppCommandError(
+                    "description is \(description.count) characters; the card fits at most \(SessionAgent.workDescriptionLimit). Shorten it."
+                )
+            }
+            if let failure = host.setWorkingOn(agent, description) { throw RelayAppCommandError(failure) }
+            return ["agent": agent.slug, "working_on": description]
         case "keep_awake":
             try a.only(["on"])
             guard let on = try a.bool("on") else { throw RelayAppCommandError("keep_awake needs on: true or false.") }

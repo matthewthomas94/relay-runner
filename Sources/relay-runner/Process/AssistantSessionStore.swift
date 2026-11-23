@@ -110,6 +110,8 @@ final class AssistantSessionStore {
         var bindings: [String: Binding] = [:]
         var history: [AssistantConversationEntry] = []
         var continuations: [String: Continuation]? = nil
+        /// What each agent last said it was working on, by agent slug.
+        var workDescriptions: [String: String]? = nil
     }
     struct NativeBinding: Decodable {
         let context_id: String
@@ -305,6 +307,12 @@ final class AssistantSessionStore {
     }
 
     static let activityRecordingGranularity: TimeInterval = 10
+
+    /// The line an agent's card shows about its work, kept after its session ends.
+    func setWorkDescription(_ description: String, agent: SessionAgent) throws {
+        guard document.workDescriptions?[agent.slug] != description else { return }
+        try update { $0.workDescriptions = ($0.workDescriptions ?? [:]).merging([agent.slug: description]) { $1 } }
+    }
 
     /// The provider refused to resume this context's conversation (Claude's "No conversation
     /// found"), so the next launch starts fresh instead of failing the same way. The provider's
