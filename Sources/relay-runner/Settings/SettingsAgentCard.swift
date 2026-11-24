@@ -278,6 +278,7 @@ struct SettingsAgentCard: View {
                 theme: theme,
                 activity: presentation.activity,
                 phase: Double(presentation.agent.order) * 2.3,
+                temperament: presentation.agent.orbTemperament,
                 reduceMotion: reduceMotion
             )
             .allowsHitTesting(false)
@@ -478,10 +479,12 @@ private struct SettingsAgentParticleView: NSViewRepresentable {
     let activity: ParticleFieldRenderer.OrbActivity
     /// Where this agent's orb starts in its cycle, so the four do not move in step.
     let phase: Double
+    /// How this agent's orb swims around its card.
+    let temperament: ParticleFieldRenderer.OrbTemperament
     let reduceMotion: Bool
 
     func makeNSView(context: Context) -> SettingsAgentParticleHostView {
-        SettingsAgentParticleHostView(phase: phase)
+        SettingsAgentParticleHostView(phase: phase, temperament: temperament)
     }
 
     func updateNSView(_ nsView: SettingsAgentParticleHostView, context: Context) {
@@ -500,12 +503,13 @@ final class SettingsAgentParticleHostView: NSView {
     private var reduceMotion = false
     private(set) var showsField = false
 
-    init(phase: Double = 0) {
+    init(phase: Double = 0, temperament: ParticleFieldRenderer.OrbTemperament = .still) {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.masksToBounds = true
         renderer.attach(to: self)
         renderer.setOrbPhase(phase)
+        renderer.setOrbTemperament(temperament)
         // The card's white core is opaque; overlay intensity applies to the screen field.
         renderer.setIntensity(1)
     }
@@ -580,4 +584,17 @@ final class SettingsAgentParticleHostView: NSView {
     }
 
     var isAnimationRunning: Bool { renderer.isAnimationRunning }
+}
+
+extension SessionAgent {
+    /// Each agent's orb has its own temperament: Puck darts, Isabella glides,
+    /// George drifts low and steady and Sky floats high.
+    var orbTemperament: ParticleFieldRenderer.OrbTemperament {
+        switch self {
+        case .puck: return .darting
+        case .isabella: return .gliding
+        case .george: return .steady
+        case .sky: return .floating
+        }
+    }
 }
