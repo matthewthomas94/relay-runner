@@ -325,11 +325,35 @@ struct GeneralSettingsTab: View {
     }
 }
 
+private struct ButtonColumnWidthsKey: PreferenceKey {
+    static let defaultValue: [Int: CGFloat] = [:]
+    static func reduce(value: inout [Int: CGFloat], nextValue: () -> [Int: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: max)
+    }
+}
+
+/// Reports a button's width under its column so the column can share the
+/// widest one.
+private struct ButtonColumnWidth: ViewModifier {
+    let column: Int
+
+    func body(content: Content) -> some View {
+        content.background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: ButtonColumnWidthsKey.self, value: [column: proxy.size.width])
+            }
+        )
+    }
+}
+
 private struct RegisteredProjectsSettingsView: View {
     @Bindable var appState: AppState
     @State private var projects: [RegisteredProjectV2] = []
     @State private var statusText: String?
     @State private var projectPendingRemoval: RegisteredProjectV2?
+    /// The widest button in each column, so the header's buttons line up
+    /// with every project row's.
+    @State private var buttonColumnWidths: [Int: CGFloat] = [:]
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -340,20 +364,24 @@ private struct RegisteredProjectsSettingsView: View {
                 HStack(spacing: 8) {
                     SettingsActionButton(
                         title: "Add project",
-                        icon: .folderPlus
+                        icon: .folderPlus,
+                        labelMinWidth: labelMinWidth(column: 0)
                     ) {
                         appState.addExistingProject(resumeInSettings: true) { result in
                             handle(result)
                         }
                     }
+                    .modifier(ButtonColumnWidth(column: 0))
                     SettingsActionButton(
                         title: "Create",
-                        icon: .plus
+                        icon: .plus,
+                        labelMinWidth: labelMinWidth(column: 1)
                     ) {
                         appState.createProject(resumeInSettings: true) { result in
                             handle(result)
                         }
                     }
+                    .modifier(ButtonColumnWidth(column: 1))
                 }
             }
 
@@ -392,6 +420,7 @@ private struct RegisteredProjectsSettingsView: View {
                 .transition(.relayElement)
             }
         }
+        .onPreferenceChange(ButtonColumnWidthsKey.self) { buttonColumnWidths = $0 }
         .onAppear(perform: reload)
         // Availability refreshes on its own once the rows are up; there is no
         // per-row Refresh button.
@@ -445,23 +474,31 @@ private struct RegisteredProjectsSettingsView: View {
                 }
             }
             Spacer(minLength: 12)
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 SettingsActionButton(
                     title: project.availability == .accessRequiresRegrant ? "Regrant" : "Locate folder",
-                    icon: .locate
+                    icon: .locate,
+                    labelMinWidth: labelMinWidth(column: 0)
                 ) {
                     appState.locateRegisteredProject(project.projectID) { result in
                         handle(result)
                     }
                 }
+                .modifier(ButtonColumnWidth(column: 0))
                 SettingsActionButton(
                     title: "Remove",
-                    icon: .circleMinus
+                    icon: .circleMinus,
+                    labelMinWidth: labelMinWidth(column: 1)
                 ) {
                     projectPendingRemoval = project
                 }
+                .modifier(ButtonColumnWidth(column: 1))
             }
         }
+    }
+
+    private func labelMinWidth(column: Int) -> CGFloat? {
+        buttonColumnWidths[column].map { $0 - 2 * SharedActionButtonMetrics.horizontalPadding }
     }
 
     private func handle(_ result: Result<RegisteredProjectV2, Error>) {
