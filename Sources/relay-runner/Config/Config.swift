@@ -213,9 +213,9 @@ struct GeneralConfig: Codable, Equatable {
 
     static let codexPlanAccessNote = "Codex family availability and Ultra effort depend on your Codex plan."
     static let claudeFableAccessNote = "Fable requires an eligible Claude plan or usage credits and is unavailable with zero data retention."
+    /// Model kinds only: each is a Claude Code alias for that kind's newest
+    /// model, so a new release needs no app update.
     static let claudeModelOptions: [ModelOption] = [
-        ModelOption(label: "Fable 5.2", value: "claude-fable-5-2"),
-        ModelOption(label: "Fable 5.1", value: "claude-fable-5-1"),
         ModelOption(label: "Fable", value: "fable"),
         ModelOption(label: "Opus", value: "opus"),
         ModelOption(label: "Sonnet", value: "sonnet"),
@@ -371,8 +371,19 @@ struct GeneralConfig: Codable, Equatable {
             if normalized == "best" || normalized == Self.defaultReasoningEffort || normalized.isEmpty {
                 return Self.defaultClaudeModel
             }
-            return Self.isModel(normalized, validFor: provider) ? normalized : Self.defaultClaudeModel
+            let kind = claudeModelKind(normalized)
+            return Self.isModel(kind, validFor: provider) ? kind : Self.defaultClaudeModel
         }
+    }
+
+    /// A pinned Claude model saved by an earlier version, such as
+    /// `claude-fable-5-2`, becomes its kind's alias (`fable`), which always
+    /// runs that kind's newest model. Anything else is returned unchanged.
+    static func claudeModelKind(_ model: String) -> String {
+        let parts = model.split(separator: "-").map(String.init)
+        guard parts.count >= 2, parts[0] == "claude",
+              claudeModelOptions.contains(where: { $0.value == parts[1] }) else { return model }
+        return parts[1]
     }
 
     static func defaultModel(for provider: AgentProvider) -> String {
@@ -438,8 +449,9 @@ struct GeneralConfig: Codable, Equatable {
             }
             return defaultMessengerModel
         case .claude:
-            return (normalized == "best" || isModel(normalized, validFor: .claude))
-                ? normalized
+            let kind = claudeModelKind(normalized)
+            return (kind == "best" || isModel(kind, validFor: .claude))
+                ? kind
                 : "haiku"
         }
     }

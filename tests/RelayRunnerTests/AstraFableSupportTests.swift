@@ -32,8 +32,7 @@ final class AstraFableSupportTests: XCTestCase {
         XCTAssertEqual(GeneralConfig.defaultClaudeModel, "opus")
         XCTAssertEqual(GeneralConfig.defaultMessengerModel, "luna")
         for (provider, model, effort): (GeneralConfig.AgentProvider, String, String) in [
-            (.codex, "astra", "ultra"), (.claude, "claude-fable-5-1", "max"),
-            (.claude, "claude-fable-5-2", "max"), (.claude, "sonnet", "xhigh"),
+            (.codex, "astra", "ultra"), (.claude, "fable", "max"), (.claude, "sonnet", "xhigh"),
         ] {
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: directory) }
@@ -67,9 +66,8 @@ final class AstraFableSupportTests: XCTestCase {
             )
             XCTAssertEqual(selected, model)
         }
-        XCTAssertFalse(GeneralConfig.isEffort("ultra", validFor: .claude, model: "claude-fable-5-1"))
-        XCTAssertFalse(GeneralConfig.isEffort("ultra", validFor: .claude, model: "claude-fable-5-2"))
-        XCTAssertEqual(GeneralConfig.accessNote(for: "claude-fable-5-2", effort: "max", provider: .claude),
+        XCTAssertFalse(GeneralConfig.isEffort("ultra", validFor: .claude, model: "fable"))
+        XCTAssertEqual(GeneralConfig.accessNote(for: "fable", effort: "max", provider: .claude),
                        GeneralConfig.claudeFableAccessNote)
     }
 

@@ -8,7 +8,7 @@ final class SettingsWindowTests: XCTestCase {
     func testSettingsCategoriesExposeExpectedNavigationOrder() {
         XCTAssertEqual(
             SettingsCategory.allCases.map(\.title),
-            ["General", "Permissions", "Hearing", "Speech", "Sight", "Relay Remote"]
+            ["General", "Permissions", "Transcription", "Speech", "Interface", "Relay Remote"]
         )
         XCTAssertEqual(
             SettingsCategory.allCases.map(\.rawValue),
@@ -20,8 +20,8 @@ final class SettingsWindowTests: XCTestCase {
         )
         XCTAssertEqual(
             SettingsCategory.allCases.map(\.hoverAction),
-            ["Open general settings", "Open permission settings", "Open hearing settings",
-             "Open speech settings", "Open sight settings", "Open remote settings"]
+            ["Open general settings", "Open permission settings", "Open transcription settings",
+             "Open speech settings", "Open interface settings", "Open remote settings"]
         )
     }
 
