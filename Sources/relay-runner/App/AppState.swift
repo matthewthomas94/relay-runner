@@ -3174,6 +3174,12 @@ final class AppState {
                 }
                 voiceContextID = context.id
                 syncVoiceFocus(force: joinsVoiceBridge)
+                // The bridge greets only the session that starts it; one that
+                // joins it asks for its own greeting, in its agent's voice.
+                if joinsVoiceBridge, !suppressesStartupGreeting,
+                   let key = sessionRegistry.spool(for: context.id)?.key {
+                    _ = SocketClient.bridgeSend("__GREET__:" + key)
+                }
             } catch {
                 guard pendingSessionLaunchID == launchID else { return }
                 saveAssistantSession(lifecycle: .interrupted, context: context)

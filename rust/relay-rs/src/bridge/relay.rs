@@ -295,6 +295,20 @@ struct Entry {
     remote: Option<super::remote_link::RemoteItem>,
 }
 
+/// Greets in the voice of the agent that owns `session_key`, so each agent
+/// that starts says hello as itself.
+pub fn queue_startup_greeting(bridge: &'static Bridge, session_key: Option<String>) {
+    speech::queue_tts_text(
+        bridge.speech(),
+        STARTUP_GREETING,
+        TtsOptions {
+            allow_pending_command: true,
+            session_key,
+            ..TtsOptions::default()
+        },
+    );
+}
+
 /// `_run_relay`: write voice commands for the active agent and read speech
 /// from the TTS FIFO. `false` when the bridge could not start.
 pub fn run_relay(
@@ -363,14 +377,7 @@ pub fn run_relay(
         }
     }
     if !suppress_startup_greeting {
-        speech::queue_tts_text(
-            bridge.speech(),
-            STARTUP_GREETING,
-            TtsOptions {
-                allow_pending_command: true,
-                ..TtsOptions::default()
-            },
-        );
+        queue_startup_greeting(bridge, targets::startup_key());
     }
     start_tts_fifo_reader(bridge);
     commands::warm_up();
