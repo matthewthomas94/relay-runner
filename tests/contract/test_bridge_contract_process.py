@@ -81,6 +81,20 @@ class ProcessContract:
         self.assertNotIn("command_seq", greeting)
         self.assertStays(lambda: len(self.box.spoken(text=STARTUP_GREETING)) == 1)
 
+    def test_startup_greeting_speaks_for_the_starting_session(self):
+        """Process: the greeting names the session that started the bridge, so
+        its agent's voice says it."""
+        greeting = self.box.wait_spoken(text=STARTUP_GREETING)
+        self.assertEqual(greeting["session_key"], self.session.key)
+
+    def test_a_joining_session_is_greeted_in_its_own_voice(self):
+        """Process: `__GREET__:<session key>` speaks the greeting again for that
+        session."""
+        self.box.wait_spoken(text=STARTUP_GREETING)
+        self.box.control("__GREET__:session-2")
+        greeting = self.box.wait_spoken(text=STARTUP_GREETING, session_key="session-2")
+        self.assertEqual(greeting["kind"], "fallback")
+
     def test_readiness_is_recorded_in_the_support_journal(self):
         """Process: once the FIFO is open the bridge records `bridge_readiness`
         `ready` for its provider in `RELAY_DIAGNOSTICS_DIR`."""

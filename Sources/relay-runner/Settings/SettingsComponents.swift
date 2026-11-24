@@ -525,6 +525,8 @@ struct SettingsActionButton: View {
     var isEnabled = true
     var accessibilityLabel: String?
     var helpText: String?
+    /// Widens the label so stacked buttons can share one width.
+    var labelMinWidth: CGFloat?
     let action: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -552,6 +554,7 @@ struct SettingsActionButton: View {
                     }
                 }
             }
+            .frame(minWidth: labelMinWidth)
             }
         )
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: title)

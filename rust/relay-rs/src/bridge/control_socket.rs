@@ -21,6 +21,8 @@ use crate::json::{self, Dict, Value};
 const VOICE_FOCUS_PREFIX: &str = "__FOCUS__:";
 const VOICE_REPLAY_PREFIX: &str = "__REPLAY__:";
 const VOICE_SESSION_PLAYBACK_PREFIX: &str = "__SESSION_PLAYBACK__:";
+/// A session that joined the running bridge greets in its agent's voice.
+const VOICE_GREET_PREFIX: &str = "__GREET__:";
 
 static RECOVERY_REPLY_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
     pattern::compile_full(r"/tmp/relay_recovery_recovery_[0-9a-f]{24}\.json", false)
@@ -82,6 +84,13 @@ fn handle(bridge: &'static Bridge, command: &str) {
             if let Some(messenger) = bridge.messenger() {
                 messenger.focus(&targets::focused_key().unwrap_or_default());
             }
+        }
+        return;
+    }
+    if let Some(session_key) = command.strip_prefix(VOICE_GREET_PREFIX) {
+        let session_key = session_key.trim();
+        if !session_key.is_empty() {
+            super::relay::queue_startup_greeting(bridge, Some(session_key.to_string()));
         }
         return;
     }
