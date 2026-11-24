@@ -112,6 +112,9 @@ final class AssistantSessionStore {
         var continuations: [String: Continuation]? = nil
         /// What each agent last said it was working on, by agent slug.
         var workDescriptions: [String: String]? = nil
+        /// RR-528: when each agent set that description, by agent slug. A
+        /// description saved before this field existed has no date.
+        var workDescriptionDates: [String: Date]? = nil
     }
     struct NativeBinding: Decodable {
         let context_id: String
@@ -308,10 +311,14 @@ final class AssistantSessionStore {
 
     static let activityRecordingGranularity: TimeInterval = 10
 
-    /// The line an agent's card shows about its work, kept after its session ends.
-    func setWorkDescription(_ description: String, agent: SessionAgent) throws {
-        guard document.workDescriptions?[agent.slug] != description else { return }
-        try update { $0.workDescriptions = ($0.workDescriptions ?? [:]).merging([agent.slug: description]) { $1 } }
+    /// The description an agent's card shows about its work, kept after its
+    /// session ends, and when it was set, so the card can tell whether the
+    /// agent's current session set it.
+    func setWorkDescription(_ description: String, agent: SessionAgent, at date: Date = Date()) throws {
+        try update {
+            $0.workDescriptions = ($0.workDescriptions ?? [:]).merging([agent.slug: description]) { $1 }
+            $0.workDescriptionDates = ($0.workDescriptionDates ?? [:]).merging([agent.slug: date]) { $1 }
+        }
     }
 
     /// The provider refused to resume this context's conversation (Claude's "No conversation

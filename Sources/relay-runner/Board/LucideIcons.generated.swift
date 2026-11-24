@@ -31,7 +31,6 @@ enum LucideIcon: String, CaseIterable {
     case download = "download"
     case ellipsis = "ellipsis"
     case externalLink = "external-link"
-    case eye = "eye"
     case fastForward = "fast-forward"
     case fileText = "file-text"
     case folder = "folder"
@@ -50,6 +49,7 @@ enum LucideIcon: String, CaseIterable {
     case keyRound = "key-round"
     case keyboard = "keyboard"
     case laptop = "laptop"
+    case laptopMinimal = "laptop-minimal"
     case layers = "layers"
     case link = "link"
     case list = "list"
@@ -229,11 +229,6 @@ enum LucideIcon: String, CaseIterable {
                 .path("M10 14 21 3"),
                 .path("M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"),
             ]
-        case .eye:
-            return [
-                .path("M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"),
-                .circle(cx: 12, cy: 12, r: 3),
-            ]
         case .fastForward:
             return [
                 .path("M12 6a2 2 0 0 1 3.414-1.414l6 6a2 2 0 0 1 0 2.828l-6 6A2 2 0 0 1 12 18z"),
@@ -347,6 +342,11 @@ enum LucideIcon: String, CaseIterable {
             return [
                 .path("M18 5a2 2 0 0 1 2 2v8.526a2 2 0 0 0 .212.897l1.068 2.127a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45l1.068-2.127A2 2 0 0 0 4 15.526V7a2 2 0 0 1 2-2z"),
                 .path("M20.054 15.987H3.946"),
+            ]
+        case .laptopMinimal:
+            return [
+                .rect(x: 3, y: 4, width: 18, height: 12, rx: 2, ry: 2),
+                .line(x1: 2, y1: 20, x2: 22, y2: 20),
             ]
         case .layers:
             return [

@@ -4,11 +4,30 @@ import XCTest
 
 final class SettingsWindowTests: XCTestCase {
 
+    /// RR-528: the new order and names; the cases keep their identifiers.
     func testSettingsCategoriesExposeExpectedNavigationOrder() {
         XCTAssertEqual(
             SettingsCategory.allCases.map(\.title),
-            ["Permissions", "Speech-to-Text", "Text-to-Speech", "General", "Awareness", "Relay Remote"]
+            ["General", "Permissions", "Hearing", "Speech", "Sight", "Relay Remote"]
         )
+        XCTAssertEqual(
+            SettingsCategory.allCases.map(\.rawValue),
+            ["general", "permissions", "speechToText", "textToSpeech", "awareness", "relayRemote"]
+        )
+        XCTAssertEqual(
+            SettingsCategory.allCases.map(\.icon),
+            [.settings, .shieldCheck, .mic, .volume2, .laptopMinimal, .smartphone]
+        )
+        XCTAssertEqual(
+            SettingsCategory.allCases.map(\.hoverAction),
+            ["Open general settings", "Open permission settings", "Open hearing settings",
+             "Open speech settings", "Open sight settings", "Open remote settings"]
+        )
+    }
+
+    /// Settings opens on General unless a category was requested.
+    func testSettingsOpensOnGeneral() {
+        XCTAssertEqual(SettingsCategory.initial, .general)
     }
 
     func testSettingsCategorySelectionIncludesNavigationLabelAndIcon() {
@@ -19,9 +38,11 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     func testSettingsCategoryKeyboardMovementClampsAtEnds() {
+        XCTAssertEqual(SettingsCategory.category(after: .general), .permissions)
         XCTAssertEqual(SettingsCategory.category(after: .permissions), .speechToText)
-        XCTAssertEqual(SettingsCategory.category(before: .speechToText), .permissions)
-        XCTAssertEqual(SettingsCategory.category(before: .permissions), .permissions)
+        XCTAssertEqual(SettingsCategory.category(after: .textToSpeech), .awareness)
+        XCTAssertEqual(SettingsCategory.category(before: .permissions), .general)
+        XCTAssertEqual(SettingsCategory.category(before: .general), .general)
         XCTAssertEqual(SettingsCategory.category(after: .awareness), .relayRemote)
         XCTAssertEqual(SettingsCategory.category(after: .relayRemote), .relayRemote)
     }

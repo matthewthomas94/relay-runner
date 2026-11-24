@@ -77,11 +77,24 @@ enum SessionAgent: String, CaseIterable, Codable, Identifiable {
         "You are \(name) in this session; the user may address you by that name. Relay Runner runs up to four named agents (Puck, Isabella, George and Sky), each with its own conversation."
     }
 
-    /// The longest line an agent's card shows about its work: two short lines.
-    static let workDescriptionLimit = 60
+    /// RR-528: the card shows its own state line ("Currently working on")
+    /// above the agent's description, which names the work in two to four
+    /// words and fits one line.
+    static let workDescriptionWordLimit = 4
+    static let workDescriptionLimit = 40
+    static let workDescriptionExample = "Settings dropdown dividers"
 
-    /// The startup instruction that has the agent keep its card's line current.
-    static let workDescriptionInstruction = "Agent card: your card in Relay Runner shows one short line about your work. When you start a piece of work or move to a different one, call mcp__relay-app__set_working_on with what you are working on in at most \(workDescriptionLimit) characters, for example \"Fixing the Settings dropdown dividers\". Do not call it again while the work is the same, and not for questions or small talk."
+    /// The startup instruction that has the agent keep its card's description current.
+    static let workDescriptionInstruction = "Agent card: your card in Relay Runner shows \"Currently working on\" above a short description of your work. When you start a piece of work or move to a different one, call mcp__relay-app__set_working_on with two to four words naming the work, at most \(workDescriptionLimit) characters, for example \"\(workDescriptionExample)\". Do not repeat \"Currently working on\" or start with a verb such as \"Working on\". If set_working_on refuses the description, shorten it to two to four words and call it again straight away. Do not call it again while the work is the same, and not for questions or small talk."
+
+    /// Why `set_working_on` refuses a description, which is already collapsed
+    /// to single spaces; nil when the card can show it. Fewer than two words
+    /// is accepted. The message has the agent send a shorter one at once.
+    static func workDescriptionRefusal(_ description: String) -> String? {
+        let words = description.split(separator: " ").count
+        guard words > workDescriptionWordLimit || description.count > workDescriptionLimit else { return nil }
+        return "description is \(words) words and \(description.count) characters; the card shows two to four words, at most \(workDescriptionLimit) characters. Call set_working_on again now with two to four words naming the work, for example \"\(workDescriptionExample)\"."
+    }
 
     /// RR-523: an agent named by slug or name, ignoring case and spaces; nil
     /// for anything else.

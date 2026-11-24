@@ -343,25 +343,40 @@ final class RelayAppCommandsTests: XCTestCase {
 
     /// RR-522: every agent's work style reads as Auto until one is chosen;
     /// set_settings changes one agent's and refuses invalid values.
-    /// An agent sets the line its card shows: one line of at most
-    /// `SessionAgent.workDescriptionLimit` characters, saved for that agent only.
+    /// An agent sets the description its card shows: collapsed to one line,
+    /// saved for that agent only. RR-528: two to four words, at most
+    /// `SessionAgent.workDescriptionLimit` characters.
     func testSetWorkingOnSavesOneShortLineForTheNamedAgent() async throws {
-        let set = try await ok("set_working_on", ["agent": "george", "description": "  Fixing the\n Settings   dividers "])
-        XCTAssertEqual(set["working_on"] as? String, "Fixing the Settings dividers")
+        let set = try await ok("set_working_on", ["agent": "george", "description": "  Settings\n dropdown   dividers "])
+        XCTAssertEqual(set["working_on"] as? String, "Settings dropdown dividers")
         XCTAssertEqual(set["agent"] as? String, "george")
-        XCTAssertEqual(app.workingOn, [.george: "Fixing the Settings dividers"])
+        XCTAssertEqual(app.workingOn, [.george: "Settings dropdown dividers"])
 
+        // One word and exactly the limit are accepted.
+        try await ok("set_working_on", ["agent": "Sky", "description": "Release"])
         let limit = SessionAgent.workDescriptionLimit
         try await ok("set_working_on", ["agent": "Sky", "description": String(repeating: "a", count: limit)])
+        XCTAssertEqual(app.workingOn.count, 2)
+        let saved = app.workingOn
+
+        // A refusal states the rule, asks for another call now, and changes nothing.
+        let fiveWords = await refused("set_working_on", ["agent": "george", "description": "Fixing the Settings dropdown dividers"])
+        XCTAssertTrue(fiveWords.contains("5 words"), fiveWords)
         let tooLong = await refused("set_working_on", ["agent": "sky", "description": String(repeating: "a", count: limit + 1)])
-        XCTAssertTrue(tooLong.contains("at most \(limit)"), tooLong)
+        XCTAssertTrue(tooLong.contains("at most \(limit) characters"), tooLong)
+        for refusal in [fiveWords, tooLong] {
+            XCTAssertTrue(refusal.contains("two to four words"), refusal)
+            XCTAssertTrue(refusal.contains("Call set_working_on again now"), refusal)
+        }
+        XCTAssertEqual(app.workingOn, saved, "a refused description leaves the stored one")
+
         let unknown = await refused("set_working_on", ["agent": "nobody", "description": "Fixing"])
         XCTAssertEqual(unknown, "Unknown agent 'nobody'.")
         let empty = await refused("set_working_on", ["agent": "sky", "description": "  "])
         XCTAssertEqual(empty, "description must be a non-empty string.")
         let missing = await refused("set_working_on", ["description": "Fixing"])
         XCTAssertEqual(missing, "set_working_on needs agent.")
-        XCTAssertEqual(app.workingOn.count, 2)
+        XCTAssertEqual(app.workingOn, saved)
 
         app.workingOnRefusal = "Relay Runner could not save the description."
         let unsaved = await refused("set_working_on", ["agent": "sky", "description": "Fixing"])

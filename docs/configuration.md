@@ -21,7 +21,7 @@ Prefer the UI: it validates provider/model combinations, permissions, audio devi
 
 The legacy `working_directory` key can still be read for migration, but registry v2 uses an explicitly selected project for session mutation authority.
 
-## Speech to text
+## Hearing (`[stt]`)
 
 - **Model** — Phonon 2 (English, requires macOS 15 or later), Parakeet TDT v2 (English), or Parakeet TDT v3 (larger, multilingual). macOS 14 offers only the two Parakeet models; choose v3 for languages other than English.
 - **Input device** — system default or a selected microphone.
@@ -41,7 +41,7 @@ Once switched on, a user still on the implicit Parakeet v2 default is migrated o
 
 The decision is recorded in `[stt] phonon_migration` (`completed`, `rolled_back`, or `explicit`) with the previous model in `phonon_migration_previous_model`. Choosing a model in Settings, including Parakeet v3, records it as explicit, and choosing Parakeet after the migration is a rollback. Neither is overridden by a relaunch or a later macOS upgrade.
 
-## Text to speech
+## Speech (`[tts]`)
 
 - **Voice** — installed Kokoro English voice.
 - **Auto-play** — speak completed responses immediately or retain them for replay.
@@ -51,7 +51,7 @@ The decision is recorded in `[stt] phonon_migration` (`completed`, `rolled_back`
 
 Kokoro model and voice files download during setup to `~/.local/share/kokoro/`.
 
-## Awareness
+## Sight (`[awareness]`)
 
 - Screen glow and particle intensity (also adjustable from the session wheel's Settings submenu)
 - Live transcription

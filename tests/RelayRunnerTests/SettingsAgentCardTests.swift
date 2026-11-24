@@ -71,9 +71,9 @@ final class SettingsAgentCardTests: XCTestCase {
         )
     }
 
-    /// Under the orb each card shows what its agent last said it was working
-    /// on, or its last project until it has said; an agent that has never
-    /// had a session shows nothing.
+    /// Each card shows what its agent last said it was working on, or its
+    /// last project until it has said; an agent that has never had a
+    /// session shows nothing.
     func testCardsShowEachAgentsWorkOrItsLastProject() throws {
         func binding(_ context: AssistantSessionContext, _ agent: SessionAgent, at seconds: TimeInterval)
             -> AssistantSessionStore.Binding {
@@ -90,35 +90,127 @@ final class SettingsAgentCardTests: XCTestCase {
             binding(cad, .george, at: 5), binding(relay, .george, at: 6),
         ])
         XCTAssertEqual(projects, [.puck: "general", .george: "relay-runner"])
+        let started = Date(timeIntervalSince1970: 100)
+        let george = AssistantSessionContext.general.inTab(SessionAgent.george.tab).id
         let cards = SettingsAgentPresentation.cards(
-            statuses: SessionAgent.statuses(liveContextIDs: [], activeContextID: nil),
+            statuses: SessionAgent.statuses(liveContextIDs: [george], activeContextID: george),
             agents: AgentsConfig(), state: .idle, hasWorkingProgress: false, lastProjects: projects,
-            workDescriptions: [.george: "Fixing the Settings dividers", .sky: "Reviewing the ring layout"]
+            workDescriptions: [
+                .george: SettingsAgentWorkDescription(text: "Settings dividers", setAt: started.addingTimeInterval(5)),
+                .sky: SettingsAgentWorkDescription(text: "Ring layout", setAt: started.addingTimeInterval(5)),
+            ],
+            sessionStarts: [.george: started]
         )
-        XCTAssertEqual(cards.map(\.workLine), [
-            "Last worked on general", nil, "Fixing the Settings dividers", "Reviewing the ring layout",
+        XCTAssertEqual(cards.map(\.work), [
+            SettingsAgentWorkBlock(state: "Last worked on", description: "general"),
+            nil,
+            SettingsAgentWorkBlock(state: "Currently working on", description: "Settings dividers"),
+            SettingsAgentWorkBlock(state: "Last worked on", description: "Ring layout"),
         ])
 
-        // The store keeps each agent's line across launches, one per agent.
+        // The store keeps each agent's description and when it was set across
+        // launches, one per agent.
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = AssistantSessionStore(directory: directory)
-        try store.setWorkDescription("Fixing the dividers", agent: .george)
-        try store.setWorkDescription("Reviewing the ring layout", agent: .sky)
-        try store.setWorkDescription("Fixing the Settings dividers", agent: .george)
-        XCTAssertEqual(
-            AssistantSessionStore(directory: directory).document.workDescriptions,
-            ["george": "Fixing the Settings dividers", "sky": "Reviewing the ring layout"]
-        )
-        XCTAssertLessThanOrEqual(SessionAgent.workDescriptionLimit, 60, "two short lines on a card")
-        XCTAssertTrue(SessionAgent.workDescriptionInstruction.contains("mcp__relay-app__set_working_on"))
+        try store.setWorkDescription("Dividers", agent: .george, at: Date(timeIntervalSince1970: 1))
+        try store.setWorkDescription("Ring layout", agent: .sky, at: Date(timeIntervalSince1970: 2))
+        try store.setWorkDescription("Settings dividers", agent: .george, at: Date(timeIntervalSince1970: 3))
+        let reloaded = AssistantSessionStore(directory: directory).document
+        XCTAssertEqual(reloaded.workDescriptions, ["george": "Settings dividers", "sky": "Ring layout"])
+        XCTAssertEqual(reloaded.workDescriptionDates, [
+            "george": Date(timeIntervalSince1970: 3), "sky": Date(timeIntervalSince1970: 2),
+        ])
+    }
 
-        // The line starts under the orb and stays inside the card, whichever
-        // of the card's width and height limits the orb.
-        for size in [CGSize(width: 206, height: 325), CGSize(width: 236, height: 220), CGSize(width: 106, height: 500)] {
-            let top = SettingsAgentCardLayout.workLineTop(cardSize: size)
-            XCTAssertGreaterThan(top, size.height / 2)
-            XCTAssertLessThanOrEqual(top, size.height - ParticleFieldRenderer.orbVerticalReserve / 2)
+    /// RR-528: the app, not the agent, chooses the state line.
+    func testWorkBlockStateLine() {
+        let started = Date(timeIntervalSince1970: 100)
+        func block(running: Bool, setAt: Date?, description: String? = "Settings dividers", project: String? = "relay-runner")
+            -> SettingsAgentWorkBlock? {
+            SettingsAgentPresentation.workBlock(
+                isRunning: running,
+                sessionStartedAt: running ? started : nil,
+                description: description.map { SettingsAgentWorkDescription(text: $0, setAt: setAt) },
+                lastProject: project
+            )
+        }
+        // Running, and it set the description this session.
+        XCTAssertEqual(block(running: true, setAt: started.addingTimeInterval(1)),
+                       SettingsAgentWorkBlock(state: "Currently working on", description: "Settings dividers"))
+        // Running, but the description is from an earlier session or has no date.
+        XCTAssertEqual(block(running: true, setAt: started.addingTimeInterval(-1)),
+                       SettingsAgentWorkBlock(state: "Last worked on", description: "Settings dividers"))
+        XCTAssertEqual(block(running: true, setAt: nil)?.state, "Last worked on")
+        // Running with no known session start.
+        XCTAssertEqual(SettingsAgentPresentation.workBlock(
+            isRunning: true, sessionStartedAt: nil,
+            description: SettingsAgentWorkDescription(text: "Settings dividers", setAt: started), lastProject: nil
+        )?.state, "Last worked on")
+        // Not running, with a description.
+        XCTAssertEqual(block(running: false, setAt: started.addingTimeInterval(1)),
+                       SettingsAgentWorkBlock(state: "Last worked on", description: "Settings dividers"))
+        // No description, but a last project.
+        XCTAssertEqual(block(running: true, setAt: nil, description: nil),
+                       SettingsAgentWorkBlock(state: "Last worked on", description: "relay-runner"))
+        // Neither: no block.
+        XCTAssertNil(block(running: false, setAt: nil, description: nil, project: nil))
+        // A longer description from an earlier version still shows.
+        let old = "Fixing the Settings dropdown dividers and the ring layout too"
+        XCTAssertEqual(block(running: false, setAt: nil, description: old)?.description, old)
+    }
+
+    /// RR-528: the agent is asked for two to four words under the card's
+    /// own state line, and to resend a refused description at once.
+    func testWorkDescriptionInstructionAndLimits() {
+        let instruction = SessionAgent.workDescriptionInstruction
+        for phrase in ["mcp__relay-app__set_working_on", "two to four words", "\"Settings dropdown dividers\"",
+                       "\"Currently working on\"", "\"Working on\"", "call it again straight away"] {
+            XCTAssertTrue(instruction.contains(phrase), phrase)
+        }
+        XCTAssertEqual(SessionAgent.workDescriptionLimit, 40)
+        XCTAssertEqual(SessionAgent.workDescriptionWordLimit, 4)
+        XCTAssertNil(SessionAgent.workDescriptionRefusal("Settings dropdown dividers"))
+        XCTAssertNil(SessionAgent.workDescriptionRefusal("Release"))
+        XCTAssertNotNil(SessionAgent.workDescriptionRefusal("Fixing the Settings dropdown dividers"))
+        XCTAssertNotNil(SessionAgent.workDescriptionRefusal("Internationalisation reconfiguration work"))
+        let refusal = SessionAgent.workDescriptionRefusal(String(repeating: "a", count: 41)) ?? ""
+        XCTAssertTrue(refusal.contains("Call set_working_on again now with two to four words"), refusal)
+    }
+
+    /// RR-528: the block sits at the card's bottom-left, in line with the name
+    /// and as far from the bottom and trailing edges, below the orb, in the
+    /// Settings window's cards and the Workspace's.
+    func testWorkBlockFrameInWindowAndWorkspaceCards() throws {
+        let block = NSHostingView(rootView: SettingsAgentWorkBlockView(
+            block: SettingsAgentWorkBlock(state: "Currently working on", description: "Settings dropdown dividers")
+        ))
+        let blockHeight = block.fittingSize.height
+        XCTAssertGreaterThan(blockHeight, GraphicalTheme.textXS * 2 + SettingsAgentCardLayout.workBlockLineSpacing)
+
+        let window = SettingsAgentCardLayout.gridFrames(
+            in: CGSize(width: SettingsAgentCardLayout.windowWidth, height: 640), spacing: SettingsAgentCardLayout.spacing
+        )[0].size
+        let workspace = SettingsAgentCardLayout.gridFrames(
+            in: CGSize(width: SettingsAgentCardLayout.width(availableWidth: 1672), height: BoardSurfaceLayout.columnHeight),
+            spacing: BoardSurfaceLayout.columnSpacing
+        )[0].size
+        for card in [window, workspace] {
+            let frame = SettingsAgentCardLayout.workBlockFrame(cardSize: card, blockHeight: blockHeight)
+            let name = SettingsAgentCardLayout.contentFrames(
+                cardSize: card, textSize: CGSize(width: 60, height: 22), pickerSize: CGSize(width: 90, height: 28)
+            ).text
+            let inset = SettingsAgentCardLayout.contentInset
+            XCTAssertEqual(frame.minX, name.minX, "\(card)")
+            XCTAssertEqual(card.height - frame.maxY, inset, accuracy: 0.001, "\(card)")
+            XCTAssertEqual(card.width - frame.maxX, inset, accuracy: 0.001, "\(card)")
+            XCTAssertEqual(frame.height, blockHeight)
+            XCTAssertLessThanOrEqual(SettingsAgentCardLayout.orbBottom(cardSize: card), frame.minY, "\(card)")
+        }
+        // The orb also stays clear of the block on a short or narrow card.
+        for card in [CGSize(width: 236, height: 220), CGSize(width: 106, height: 500), CGSize(width: 233, height: 332)] {
+            let frame = SettingsAgentCardLayout.workBlockFrame(cardSize: card, blockHeight: blockHeight)
+            XCTAssertLessThanOrEqual(SettingsAgentCardLayout.orbBottom(cardSize: card), frame.minY, "\(card)")
         }
     }
 
