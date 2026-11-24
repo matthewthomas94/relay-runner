@@ -1,4 +1,3 @@
-import simd
 import AppKit
 import CoreImage
 import QuartzCore
@@ -90,103 +89,6 @@ final class ParticleFieldRenderer {
         var spread: Double
     }
 
-    /// How an agent's orb carries itself. A roaming orb is smaller than the
-    /// card and swims around all of it along its own path, reaching every
-    /// wall; its lobes follow the leading one a beat behind, so it trails like
-    /// a body in water. It passes behind the card's name, picker and work
-    /// lines rather than avoiding them, without settling there. The agent's
-    /// activity still sets the pace: a thinking orb swims faster.
-    enum OrbTemperament: Hashable {
-        /// Centred and as large as the card allows; it does not roam.
-        case still
-        /// Puck: quick and impish. Darts to a new spot, pauses, darts again.
-        case darting
-        /// Isabella: graceful. Long, slow figure-eights across the whole card.
-        case gliding
-        /// George: steady. A large body on a slow, unhurried wander.
-        case steady
-        /// Sky: airy. A small body that floats and bobs as it drifts.
-        case floating
-
-        /// Its size, as a share of the largest orb the card fits.
-        var size: Double {
-            switch self {
-            case .still: return 1
-            case .darting: return 0.6
-            case .gliding: return 0.66
-            case .steady: return 0.78
-            case .floating: return 0.56
-            }
-        }
-
-        /// Multipliers on the activity's motion, so each body moves in its own way.
-        var body: OrbMotion {
-            switch self {
-            case .still: return OrbMotion(speed: 1, stretch: 1, wander: 1, spread: 1)
-            case .darting: return OrbMotion(speed: 1.35, stretch: 0.8, wander: 1.5, spread: 0.9)
-            case .gliding: return OrbMotion(speed: 0.85, stretch: 1.7, wander: 0.8, spread: 1.05)
-            case .steady: return OrbMotion(speed: 0.6, stretch: 0.6, wander: 0.6, spread: 1)
-            case .floating: return OrbMotion(speed: 1, stretch: 1.2, wander: 1.4, spread: 1.15)
-            }
-        }
-
-        /// How far behind the leading lobe each of the three lobes swims, in
-        /// cycle phase. The larger the lag, the longer the trailing body.
-        var trail: [Double] {
-            switch self {
-            case .still: return [0, 0, 0]
-            case .darting: return [0, 0.35, 0.7]
-            case .gliding: return [0, 0.4, 0.75]
-            case .steady: return [0, 0.25, 0.5]
-            case .floating: return [0, 0.5, 0.9]
-            }
-        }
-
-        /// Where the orb is at `phase`, each axis from -1 to 1 across the
-        /// room it has to roam; y is up.
-        func position(at phase: Double) -> SIMD2<Double> {
-            switch self {
-            case .still:
-                return .zero
-            case .darting:
-                // Hold near one spot, then dart to the next.
-                let beat = phase * 0.42
-                let step = beat.rounded(.down)
-                let travel = beat - step
-                let dart = travel < 0.55 ? 0 : (travel - 0.55) / 0.45
-                let eased = dart * dart * dart * (dart * (dart * 6 - 15) + 10)
-                let from = Self.dartTarget(Int(step)), to = Self.dartTarget(Int(step) + 1)
-                let hover = SIMD2(sin(phase * 2.3), cos(phase * 1.9)) * 0.06
-                return Self.clamped(from + (to - from) * eased + hover)
-            case .gliding:
-                return SIMD2(sin(phase * 0.34), sin(phase * 0.68 + 0.4))
-            case .steady:
-                return SIMD2(sin(phase * 0.19), sin(phase * 0.13 + 1))
-            case .floating:
-                return Self.clamped(SIMD2(sin(phase * 0.27) * 0.92 + sin(phase * 0.71) * 0.08,
-                                          sin(phase * 0.23) * 0.78 + sin(phase * 0.9) * 0.22))
-            }
-        }
-
-        /// A spot to dart to, spread across the card and different each beat.
-        private static func dartTarget(_ beat: Int) -> SIMD2<Double> {
-            func unit(_ salt: Int) -> Double {
-                var value = UInt64(bitPattern: Int64(beat &* 7919 &+ salt))
-                value = (value ^ (value >> 30)) &* 0xbf58476d1ce4e5b9
-                value = (value ^ (value >> 27)) &* 0x94d049bb133111eb
-                value ^= value >> 31
-                return Double(value % 10_000) / 5_000 - 1
-            }
-            // Most spots sit against a wall or in a corner.
-            func pushed(_ value: Double) -> Double { value < 0 ? -pow(-value, 0.45) : pow(value, 0.45) }
-            return SIMD2(pushed(unit(1)), pushed(unit(2)))
-        }
-
-        private static func clamped(_ point: SIMD2<Double>) -> SIMD2<Double> {
-            simd_clamp(point, SIMD2(repeating: -1), SIMD2(repeating: 1))
-        }
-    }
-
     private let gradientLayer = CAGradientLayer()
     private let particleLayer = CALayer()
     private let motionBlur = CIFilter(name: "CIGaussianBlur")!
@@ -246,14 +148,9 @@ final class ParticleFieldRenderer {
     private var orbMotionFrom = OrbActivity.standingBy.motion
     private var orbMotionChangedAt: CFTimeInterval = 0
     private var orbPhaseAtChange: Double = 0
-    private var orbTemperament: OrbTemperament = .still
     static let orbMotionBlendDuration: TimeInterval = 0.8
     /// Card height the orb leaves free, half above it for the name and picker.
     static let orbVerticalReserve: CGFloat = 150
-    /// How far, in the orb's own units, a trailing lobe may fall behind.
-    static let orbTrailLimit = 0.32
-    /// How far inside the card's edges a roaming orb's body turns back.
-    static let orbRoamInset = CGSize(width: 4, height: 4)
     /// Screen fields crossfade from the theme they were showing.
     private var previousTheme: Theme?
     private var themeChangedAt: CFTimeInterval = 0
@@ -398,11 +295,6 @@ final class ParticleFieldRenderer {
     /// Where in its cycle the orb starts, so neighbouring orbs do not move in step.
     func setOrbPhase(_ phase: Double) {
         orbPhaseAtChange = phase
-    }
-
-    /// How the orb carries itself and roams its card.
-    func setOrbTemperament(_ temperament: OrbTemperament) {
-        orbTemperament = temperament
     }
 
     /// The orb eases from the motion it is showing into the new activity's.
@@ -672,56 +564,25 @@ final class ParticleFieldRenderer {
         // Opposing stretches redistribute its shape without a breathing scale
         // animation or moving the grid itself. Reduced Motion freezes this field.
         // The agent's activity sets how fast and how far the lobes move.
-        let (activityMotion, phase) = orbMotion(at: now)
-        let temperament = orbTemperament
-        let motion = OrbMotion(
-            speed: activityMotion.speed * temperament.body.speed,
-            stretch: activityMotion.stretch * temperament.body.stretch,
-            wander: activityMotion.wander * temperament.body.wander,
-            spread: activityMotion.spread * temperament.body.spread
-        )
-        let bodyPhase = phase * temperament.body.speed
+        let (motion, phase) = orbMotion(at: now)
         let spread = motion.spread
-        let stretch = sin(bodyPhase * 0.72) * 0.10 * motion.stretch
-        let curl = sin(bodyPhase * 0.53) * 0.055 * motion.wander
-        var lobes: [(x: Double, y: Double, rx: Double, ry: Double)] = [
-            (-0.27 * spread + curl, -0.15 * spread + sin(bodyPhase * 0.61) * 0.055 * motion.wander,
+        let stretch = sin(phase * 0.72) * 0.10 * motion.stretch
+        let curl = sin(phase * 0.53) * 0.055 * motion.wander
+        let lobes: [(x: Double, y: Double, rx: Double, ry: Double)] = [
+            (-0.27 * spread + curl, -0.15 * spread + sin(phase * 0.61) * 0.055 * motion.wander,
              0.64 + stretch, 0.59 / (1 + stretch)),
-            (0.26 * spread - curl, 0.28 * spread + sin(bodyPhase * 0.47) * 0.055 * motion.wander,
-             0.54 - stretch * 0.4, 0.57 + sin(bodyPhase * 0.58) * 0.045 * motion.stretch),
-            (0.20 * spread + sin(bodyPhase * 0.43) * 0.065 * motion.wander, -0.26 * spread - curl * 0.5,
-             0.50 + sin(bodyPhase * 0.67) * 0.035 * motion.stretch, 0.47 + stretch * 0.4)
+            (0.26 * spread - curl, 0.28 * spread + sin(phase * 0.47) * 0.055 * motion.wander,
+             0.54 - stretch * 0.4, 0.57 + sin(phase * 0.58) * 0.045 * motion.stretch),
+            (0.20 * spread + sin(phase * 0.43) * 0.065 * motion.wander, -0.26 * spread - curl * 0.5,
+             0.50 + sin(phase * 0.67) * 0.035 * motion.stretch, 0.47 + stretch * 0.4)
         ]
         // Keep the changing volume centred and clear of the title and card edges.
         let left = lobes.map { $0.x - $0.rx * 1.3 }.min()!
         let right = lobes.map { $0.x + $0.rx * 1.3 }.max()!
         let bottom = lobes.map { $0.y - $0.ry * 1.3 }.min()!
         let top = lobes.map { $0.y + $0.ry * 1.3 }.max()!
-        let fit = min(max(1, size.width - 24) / (right - left),
-                      max(1, size.height - Self.orbVerticalReserve) / (top - bottom))
-        let scale = fit * temperament.size
-        if temperament != .still {
-            // The orb swims in the room the card leaves around its smaller
-            // body; at the end of its path the body meets the card's edge.
-            // Each lobe follows the leading one's path a beat behind, so the
-            // body trails out behind it as it turns and darts.
-            // The lobe bounds include the orb's faint halo; its visible body is
-            // about three quarters of them, and only that needs to stay clear.
-            let freeWidth: Double = Double(size.width - Self.orbRoamInset.width) - (right - left) * scale * 0.75
-            let freeHeight: Double = Double(size.height - Self.orbRoamInset.height) - (top - bottom) * scale * 0.75
-            let room = SIMD2<Double>(max(0, freeWidth), max(0, freeHeight)) / (2 * scale)
-            let roamPhase = phase * temperament.body.speed
-            let lead = temperament.position(at: roamPhase) * room
-            for index in lobes.indices {
-                // A trailing lobe never falls so far behind that the body
-                // parts in two.
-                var lag = temperament.position(at: roamPhase - temperament.trail[index]) * room - lead
-                let distance = simd_length(lag)
-                if distance > Self.orbTrailLimit { lag *= Self.orbTrailLimit / distance }
-                lobes[index].x += lead.x + lag.x
-                lobes[index].y += lead.y + lag.y
-            }
-        }
+        let scale = min(max(1, size.width - 24) / (right - left),
+                        max(1, size.height - Self.orbVerticalReserve) / (top - bottom))
         let step: CGFloat = 10
         let cols = Int(size.width / step)
         let rows = Int(size.height / step)
