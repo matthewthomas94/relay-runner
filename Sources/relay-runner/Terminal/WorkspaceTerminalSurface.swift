@@ -178,7 +178,7 @@ private struct WorkspaceSessionTab: View {
             if !selected {
                 // The selected tab's surface, so every tab is one colour at rest.
                 RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.tabCornerRadius, style: .circular)
-                    .fill(isHovered ? BoardDarkSurfaceStyle.cardActiveFill : BoardDarkSurfaceStyle.panelFill)
+                    .fill(isHovered ? BoardDarkSurfaceStyle.tabActionHoverFill : BoardDarkSurfaceStyle.panelFill)
                     .background {
                         PanelGlassUnderlay().clipShape(
                             RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.tabCornerRadius, style: .circular)
