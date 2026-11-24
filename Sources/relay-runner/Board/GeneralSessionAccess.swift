@@ -72,12 +72,64 @@ struct GeneralSessionAccess: Equatable {
     /// registry. No-op when general-tasks is not registered.
     static func syncClaudeSettings(registry: ProjectRegistryV2Service) throws {
         guard let general = try registry.projects().first(where: registry.isGeneralTasksProject) else { return }
+        let directories = make(registry: registry, sessionProject: general).additionalDirectories
+        ClaudeFolderTrust.trust(directories: directories)
         try ClaudeGeneralSettings.sync(
-            directories: make(registry: registry, sessionProject: general).additionalDirectories,
+            directories: directories,
             projectRoot: URL(fileURLWithPath: general.lastResolvedPath, isDirectory: true),
             manifest: registry.generalTasksDirectory.deletingLastPathComponent()
                 .appendingPathComponent("projects/general-claude-directories.json")
         )
+    }
+}
+
+/// Claude Code asks before a session uses a directory it was never started
+/// in, and the dialog holds the terminal until someone answers it there. It
+/// skips the dialog for a path whose `projects` entry in its user config has
+/// `hasTrustDialogAccepted`, which is how the Claude Code docs say to trust a
+/// folder ahead of time. Registering a project in Relay Runner is the user
+/// choosing that folder, so Relay Runner records it as trusted.
+enum ClaudeFolderTrust {
+    /// Claude Code's user config; nil outside the app bundle, so tests and
+    /// command-line tools never write the real one.
+    static var userConfigURL: URL? {
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return nil }
+        if let directory = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"], !directory.isEmpty {
+            return URL(fileURLWithPath: directory, isDirectory: true).appendingPathComponent(".claude.json")
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json")
+    }
+
+    /// Mark each directory trusted. The file is rewritten only when a
+    /// directory is not trusted yet, and left alone when it is missing or is
+    /// not the JSON this expects: the dialog then shows as it always did.
+    @discardableResult
+    static func trust(directories: [String], config: URL? = userConfigURL, fileManager: FileManager = .default) -> Bool {
+        guard let config, !directories.isEmpty,
+              let data = try? Data(contentsOf: config),
+              var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              root["projects"] == nil || root["projects"] is [String: Any] else { return false }
+        var projects = root["projects"] as? [String: Any] ?? [:]
+        var changed = false
+        for directory in directories {
+            guard projects[directory] == nil || projects[directory] is [String: Any] else { continue }
+            var entry = projects[directory] as? [String: Any] ?? [:]
+            guard entry["hasTrustDialogAccepted"] as? Bool != true else { continue }
+            entry["hasTrustDialogAccepted"] = true
+            projects[directory] = entry
+            changed = true
+        }
+        guard changed else { return false }
+        root["projects"] = projects
+        guard let updated = try? JSONSerialization.data(
+            withJSONObject: root, options: [.prettyPrinted, .withoutEscapingSlashes]
+        ) else { return false }
+        let permissions = (try? fileManager.attributesOfItem(atPath: config.path))?[.posixPermissions]
+        guard (try? updated.write(to: config, options: .atomic)) != nil else { return false }
+        if let permissions {
+            try? fileManager.setAttributes([.posixPermissions: permissions], ofItemAtPath: config.path)
+        }
+        return true
     }
 }
 

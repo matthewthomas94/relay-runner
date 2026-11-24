@@ -246,16 +246,12 @@ struct SessionWheelView: View {
         }
     }
 
-    /// RR-521, from the user's mockup: labels use the primary text colour and
-    /// the active agent's is orange. A stopped agent keeps full colour: its plus,
-    /// in the primary text colour, marks it. A running agent's X is the
-    /// secondary text colour, brightening while hovered.
+    /// The active agent's label is orange, another running agent's is the
+    /// primary text colour and a stopped agent's is grey. The plus and the X
+    /// are always the primary text colour.
     static func agentLabelColor(_ item: SessionWheelAgent) -> Color {
-        item.isActive ? ProgramBoardStyle.activeTrayOrange : ProgramBoardStyle.primaryText
-    }
-
-    static func agentGlyphColor(_ item: SessionWheelAgent, hovered: Bool) -> Color {
-        item.isRunning && !hovered ? ProgramBoardStyle.mutedText : ProgramBoardStyle.primaryText
+        if item.isActive { return ProgramBoardStyle.activeTrayOrange }
+        return item.isRunning ? ProgramBoardStyle.primaryText : ProgramBoardStyle.mutedText
     }
 
     /// RR-521: an agent segment shows its two-letter label then its plus or X.
@@ -267,16 +263,18 @@ struct SessionWheelView: View {
                              destructive: false,
                              labelGlyphs: geometry.sessionAgentLayout(index, label: item.label).glyphs,
                              selected: item.isActive, labelColor: Self.agentLabelColor(item),
+                             attention: item.needsAttention,
                              arc: geometry.sessionItemArc(index)) {
             guard model.isHoveringSession else { return }
             performAgentAction(action)
         }
+        .accessibilityValue(item.needsAttention ? "Needs attention" : "")
         .accessibilityAddTraits(item.isActive ? .isSelected : [])
     }
 
     /// The plus that starts a stopped agent, or the X that stops a running
-    /// one. The plus is in the primary text colour and the X in the
-    /// secondary; the glyph swaps in place, and hovering fills a circle behind it.
+    /// one, both in the primary text colour; the glyph swaps in place, and
+    /// hovering fills a circle behind it.
     private func agentGlyphButton(_ item: SessionWheelAgent, index: Int) -> some View {
         let placement = geometry.sessionAgentLayout(index, label: item.label).glyph
         let hovered = model.hoveredGlyph == item
@@ -288,7 +286,7 @@ struct SessionWheelView: View {
         } label: {
             LucideImage(item.glyph, size: Self.submenuIconSize)
                 .contentTransition(.opacity)
-                .foregroundStyle(Self.agentGlyphColor(item, hovered: hovered))
+                .foregroundStyle(ProgramBoardStyle.primaryText)
                 .animation(RelayMotion.change(reduceMotion: reduceMotion), value: item.isRunning)
                 .frame(width: size, height: size)
                 .background(Circle().fill(GraphicalTheme.neutral5).opacity(hovered ? 1 : 0))
@@ -429,6 +427,7 @@ struct SessionWheelView: View {
                                isOn: Bool? = nil, subdivisions: Int = 3,
                                labelGlyphs: [SessionWheelGeometry.Glyph]? = nil,
                                selected: Bool = false, labelColor: Color? = nil,
+                               attention: Bool? = nil,
                                arc: (start: CGFloat, width: CGFloat)? = nil,
                                perform: @escaping () -> Void) -> some View {
         let presentation = ProgramBoardInteractionPresentation.resolve(
@@ -449,6 +448,12 @@ struct SessionWheelView: View {
         return Button(action: perform) {
             ZStack {
                 controlBackground(shape, presentation: presentation)
+                if let attention {
+                    // An agent that wants attention shimmers, as its Workspace
+                    // tab does, until it is switched to.
+                    FluxDotsBackground(cornerRadius: 0, style: .standard, isVisible: attention)
+                        .clipShape(shape)
+                }
                 if let labelGlyphs {
                     // The label curves with its cell: one shape of its letters'
                     // outlines, so no letter snaps to the pixel grid off the arc.

@@ -176,6 +176,14 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertEqual(model.sessionItems.count, 4)
     }
 
+    func testOnlyARunningAgentShimmersForAttention() {
+        let model = SessionWheelModel()
+        model.runningAgents = [.puck, .isabella]
+        model.activeAgent = .puck
+        model.attentionAgents = [.isabella, .sky]
+        XCTAssertEqual(model.sessionItems.filter(\.needsAttention).map(\.agent), [.isabella])
+    }
+
     /// The segments are labelled PK, IS, GE and SK from the agent definition.
     func testAgentSegmentsUseTheTwoLetterLabels() {
         XCTAssertEqual(SessionAgent.allCases.map(\.shortLabel), ["PK", "IS", "GE", "SK"])
@@ -201,19 +209,16 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertTrue(model.sessionItems[3].isActive)
     }
 
-    /// RR-521, from the mockup: grey X for running, primary plus for stopped,
-    /// orange label for the active agent, and no dimmed labels.
+    /// An orange label for the active agent, a primary one for another
+    /// running agent and a grey one for a stopped agent; the X and the plus
+    /// are always the primary text colour.
     func testAgentLabelAndGlyphColoursFollowTheMockup() {
         let model = SessionWheelModel()
         mockupAgents(model)
         let items = model.sessionItems
         XCTAssertEqual(items.map(SessionWheelView.agentLabelColor),
                        [ProgramBoardStyle.activeTrayOrange, ProgramBoardStyle.primaryText,
-                        ProgramBoardStyle.primaryText, ProgramBoardStyle.primaryText])
-        XCTAssertEqual(items.map { SessionWheelView.agentGlyphColor($0, hovered: false) },
-                       [ProgramBoardStyle.mutedText, ProgramBoardStyle.mutedText,
-                        ProgramBoardStyle.mutedText, ProgramBoardStyle.primaryText])
-        XCTAssertEqual(SessionWheelView.agentGlyphColor(items[1], hovered: true), ProgramBoardStyle.primaryText)
+                        ProgramBoardStyle.primaryText, ProgramBoardStyle.mutedText])
         let source = try? String(contentsOfFile: #filePath
             .replacingOccurrences(of: "tests/RelayRunnerTests/SessionWheelTests.swift",
                                   with: "Sources/relay-runner/Board/SessionWheelView.swift"), encoding: .utf8)

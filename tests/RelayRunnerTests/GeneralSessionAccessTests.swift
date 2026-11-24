@@ -186,6 +186,40 @@ final class GeneralSessionAccessTests: XCTestCase {
                        "A removed project is no longer granted; the user's own entry stays")
     }
 
+    func testRegisteredFoldersAreTrustedInClaudesConfigWithoutTouchingTheRest() throws {
+        let config = root.appendingPathComponent(".claude.json")
+        try Data(#"{"numStartups":7,"projects":{"/repo/a":{"hasTrustDialogAccepted":true,"lastCost":1.5},"/repo/b":{"allowedTools":[]}}}"#.utf8)
+            .write(to: config)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: config.path)
+
+        XCTAssertTrue(ClaudeFolderTrust.trust(directories: ["/repo/a", "/repo/b", "/repo/c"], config: config))
+        let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: config)) as? [String: Any])
+        XCTAssertEqual(saved["numStartups"] as? Int, 7)
+        let projects = try XCTUnwrap(saved["projects"] as? [String: [String: Any]])
+        XCTAssertEqual(Set(projects.keys), ["/repo/a", "/repo/b", "/repo/c"])
+        for (path, entry) in projects { XCTAssertEqual(entry["hasTrustDialogAccepted"] as? Bool, true, path) }
+        XCTAssertEqual(projects["/repo/a"]?["lastCost"] as? Double, 1.5)
+        XCTAssertNotNil(projects["/repo/b"]?["allowedTools"])
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: config.path)[.posixPermissions] as? Int, 0o600)
+
+        // Nothing left to trust: the file is not rewritten.
+        XCTAssertFalse(ClaudeFolderTrust.trust(directories: ["/repo/a", "/repo/c"], config: config))
+    }
+
+    func testClaudesConfigIsLeftAloneWhenMissingUnreadableOrOutsideTheApp() throws {
+        let missing = root.appendingPathComponent("missing.json")
+        XCTAssertFalse(ClaudeFolderTrust.trust(directories: ["/repo/a"], config: missing))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: missing.path))
+
+        let broken = root.appendingPathComponent("broken.json")
+        try Data("not json".utf8).write(to: broken)
+        XCTAssertFalse(ClaudeFolderTrust.trust(directories: ["/repo/a"], config: broken))
+        XCTAssertEqual(try String(contentsOf: broken, encoding: .utf8), "not json")
+
+        // Tests run outside the app bundle, so the real config is never the default.
+        XCTAssertNil(ClaudeFolderTrust.userConfigURL)
+    }
+
     func testClaudeSettingsSyncNeverOverwritesAnUnreadableFile() throws {
         let fixture = try makeFixture()
         let settings = ClaudeGeneralSettings.settingsURL(projectRoot: URL(fileURLWithPath: fixture.general.lastResolvedPath))

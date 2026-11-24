@@ -157,7 +157,8 @@ private struct WorkspaceSessionTab: View {
             }
             .buttonStyle(.graphicalPress)
             .notchHint(tab.isLive ? (selected ? "\(tab.name) active" : "Make \(tab.name) active") : "Start \(tab.name)")
-            .accessibilityLabel(tab.isLive ? tab.name : "\(tab.name), off")
+            .accessibilityLabel(tab.isLive ? (tab.needsAttention ? "\(tab.name), needs attention" : tab.name)
+                                : "\(tab.name), off")
             .accessibilityHint(tab.isLive ? "Make \(tab.name) the active agent; voice and replies follow it."
                                : "Start \(tab.name) again, resuming its conversation, and make it active.")
             Button(action: close) {
@@ -178,10 +179,18 @@ private struct WorkspaceSessionTab: View {
             if !selected {
                 // The selected tab's surface, so every tab is one colour at rest.
                 RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.tabCornerRadius, style: .circular)
-                    .fill(isHovered ? BoardDarkSurfaceStyle.cardActiveFill : BoardDarkSurfaceStyle.panelFill)
+                    .fill(isHovered ? BoardDarkSurfaceStyle.tabActionHoverFill : BoardDarkSurfaceStyle.panelFill)
                     .background {
                         PanelGlassUnderlay().clipShape(
                             RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.tabCornerRadius, style: .circular)
+                        )
+                    }
+                    .overlay {
+                        // A tab whose agent wants attention shimmers until it is opened.
+                        FluxDotsBackground(
+                            cornerRadius: WorkspaceTerminalLayout.tabCornerRadius,
+                            style: .standard,
+                            isVisible: tab.needsAttention
                         )
                     }
                     .overlay {

@@ -28,6 +28,8 @@ protocol EmbeddedTerminalProcess: AnyObject {
     /// screens such as folder trust.
     var onInteractive: (() -> Void)? { get set }
     var onTitle: ((String) -> Void)? { get set }
+    /// The provider finished a turn, rang the bell or posted a notification.
+    var onAttention: (() -> Void)? { get set }
     var onDeliveryBlocked: ((Bool) -> Void)? { get set }
     var onInboxRecoveryBlocked: ((InboxRecoveryBlocker?) -> Void)? { get set }
     func submitContextContinuation(_ continuation: AssistantSessionStore.Continuation) -> Bool
@@ -45,6 +47,7 @@ extension EmbeddedTerminalProcess {
     func cancelContextContinuation(id: String) {}
     var hasUnsubmittedInput: Bool { false }
     var lastUserInputAt: Date? { nil }
+    var onAttention: (() -> Void)? { get { nil } set {} }
 }
 
 enum EmbeddedTerminalProcessError: LocalizedError, Equatable {
@@ -101,6 +104,7 @@ final class EmbeddedTerminalSession {
     @ObservationIgnored private var process: EmbeddedTerminalProcess?
     @ObservationIgnored private var exitHandler: ((Int32?) -> Void)?
     @ObservationIgnored private var readyHandler: (() -> Void)?
+    @ObservationIgnored private var attentionHandler: (() -> Void)?
     @ObservationIgnored private var diagnostics: EmbeddedAgentDiagnostics?
     @ObservationIgnored private var providerKey: String?
     @ObservationIgnored private var supportCorrelationID: String?
@@ -163,6 +167,10 @@ final class EmbeddedTerminalSession {
         readyHandler = handler
     }
 
+    func setAttentionHandler(_ handler: @escaping () -> Void) {
+        attentionHandler = handler
+    }
+
     func beginPreparing(
         providerName: String,
         providerKey: String? = nil,
@@ -216,6 +224,12 @@ final class EmbeddedTerminalSession {
         next.onTitle = { [weak self, weak next] title in
             guard let self, let next, self.process === next else { return }
             self.terminalTitle = title
+        }
+        next.onAttention = { [weak self, weak next] in
+            DispatchQueue.main.async {
+                guard let self, let next, self.process === next else { return }
+                self.attentionHandler?()
+            }
         }
         next.onInteractive = { [weak self, weak next] in
             let applyInteractive = { [weak self, weak next] in
@@ -319,6 +333,7 @@ final class EmbeddedTerminalSession {
         process?.onReady = nil
         process?.onInteractive = nil
         process?.onTitle = nil
+        process?.onAttention = nil
         if process?.isRunning == true {
             process?.terminate()
         }
@@ -338,6 +353,7 @@ final class EmbeddedTerminalSession {
             next.onReady = nil
             next.onInteractive = nil
             next.onTitle = nil
+            next.onAttention = nil
             next.terminate()
             diagnostics?.markSetupFailed(message: error.localizedDescription)
             RelayDiagnostics.shared.record(
@@ -376,6 +392,7 @@ final class EmbeddedTerminalSession {
         process?.onReady = nil
         process?.onInteractive = nil
         process?.onTitle = nil
+        process?.onAttention = nil
         if process?.isRunning == true {
             diagnostics?.markAppRequestedStop()
             process?.terminate()
@@ -392,6 +409,7 @@ final class EmbeddedTerminalSession {
         process?.onReady = nil
         process?.onInteractive = nil
         process?.onTitle = nil
+        process?.onAttention = nil
         if process?.isRunning == true {
             diagnostics?.markAppRequestedStop()
             process?.terminate()
@@ -1377,6 +1395,7 @@ final class RelayVoiceCommandDelivery {
     private let recoveryTimeout: TimeInterval
     private let onDeliveryBlocked: (Bool) -> Void
     private let onInboxRecoveryBlocked: (InboxRecoveryBlocker?) -> Void
+    private let onProviderTurnFinished: () -> Void
     private var inboxRecoveryBlocker: InboxRecoveryBlocker?
     private let clearedDraftSafetyDelay: TimeInterval
     private let deferralDiagnosticInterval: TimeInterval
@@ -1406,6 +1425,7 @@ final class RelayVoiceCommandDelivery {
     private var deliveryOrder = 0
     private var lastProviderProgressAt: Date?
     private var lastProviderOutputAt: Date?
+    private var providerTurnWasActive = false
     private var heartbeatTouchedAt: Date?
     private var pendingInterruptRelease: (nonce: String, sentAt: Date, turns: [[String: Any]])?
     private var interruptedTurnIdentities: Set<[String]> = []
@@ -1428,6 +1448,7 @@ final class RelayVoiceCommandDelivery {
         recoveryTimeout: TimeInterval = 10.0,
         onDeliveryBlocked: @escaping (Bool) -> Void = { _ in },
         onInboxRecoveryBlocked: @escaping (InboxRecoveryBlocker?) -> Void = { _ in },
+        onProviderTurnFinished: @escaping () -> Void = {},
         clearedDraftSafetyDelay: TimeInterval = 0.25,
         deferralDiagnosticInterval: TimeInterval = 5.0,
         commandStateSyncGrace: TimeInterval = 2.0,
@@ -1463,6 +1484,7 @@ final class RelayVoiceCommandDelivery {
         self.recoveryTimeout = max(0, recoveryTimeout)
         self.onDeliveryBlocked = onDeliveryBlocked
         self.onInboxRecoveryBlocked = onInboxRecoveryBlocked
+        self.onProviderTurnFinished = onProviderTurnFinished
         self.clearedDraftSafetyDelay = max(0, clearedDraftSafetyDelay)
         self.deferralDiagnosticInterval = max(0.25, deferralDiagnosticInterval)
         self.commandStateSyncGrace = max(0, commandStateSyncGrace)
@@ -1766,6 +1788,9 @@ final class RelayVoiceCommandDelivery {
     @discardableResult
     func claimAndSendIfPossible() -> Bool {
         touchHeartbeat()
+        let turnActive = providerTurnActive()
+        if providerTurnWasActive, !turnActive { onProviderTurnFinished() }
+        providerTurnWasActive = turnActive
         releaseInterruptedProviderTurnsIfIdle()
         let blocker = readInboxRecoveryBlocker()
         if blocker != inboxRecoveryBlocker {
@@ -3542,6 +3567,7 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
     var onReady: (() -> Void)?
     var onInteractive: (() -> Void)?
     var onTitle: ((String) -> Void)?
+    var onAttention: (() -> Void)?
     var onDeliveryBlocked: ((Bool) -> Void)?
     var onInboxRecoveryBlocked: ((InboxRecoveryBlocker?) -> Void)?
 
@@ -3745,6 +3771,9 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
                 onInboxRecoveryBlocked: { [weak self] blocker in
                     self?.onInboxRecoveryBlocked?(blocker)
                 },
+                onProviderTurnFinished: { [weak self] in
+                    self?.onAttention?()
+                },
                 isRunning: { [weak self] in
                     self?.localProcess.running == true
                 },
@@ -3901,6 +3930,7 @@ final class SwiftTermEmbeddedProcess: EmbeddedTerminalProcess, TerminalViewDeleg
     private var attentionLimiter = RelayTerminalAttention.RateLimiter()
 
     private func attention(_ notification: RelayTerminalAttention.Notification) {
+        onAttention?()
         let window = terminalView.window
         let focused = window?.isVisible == true && window?.isKeyWindow == true
         if focused {

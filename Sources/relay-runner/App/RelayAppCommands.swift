@@ -238,10 +238,8 @@ final class RelayAppCommands {
             }
             let description = try a.requiredString("description")
                 .split(whereSeparator: \.isWhitespace).joined(separator: " ")
-            guard description.count <= SessionAgent.workDescriptionLimit else {
-                throw RelayAppCommandError(
-                    "description is \(description.count) characters; the card fits at most \(SessionAgent.workDescriptionLimit). Shorten it."
-                )
+            if let refusal = SessionAgent.workDescriptionRefusal(description) {
+                throw RelayAppCommandError(refusal)
             }
             if let failure = host.setWorkingOn(agent, description) { throw RelayAppCommandError(failure) }
             return ["agent": agent.slug, "working_on": description]

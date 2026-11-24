@@ -9,9 +9,9 @@ struct SettingsAgentPresentation: Equatable {
     let activity: ParticleFieldRenderer.OrbActivity
     let workStyle: ProjectWorkStyle
     let isActive: Bool
-    /// The line under the orb: what the agent last said it was working on,
-    /// or its last project until it has said. Nil before its first session.
-    var workLine: String? = nil
+    /// The state and description at the card's bottom-left. Nil before the
+    /// agent's first session.
+    var work: SettingsAgentWorkBlock? = nil
 
     /// From the agent definition, not the voice setting.
     var name: String { agent.name }
@@ -23,7 +23,8 @@ struct SettingsAgentPresentation: Equatable {
         state: OverlayState,
         hasWorkingProgress: Bool,
         lastProjects: [SessionAgent: String] = [:],
-        workDescriptions: [SessionAgent: String] = [:]
+        workDescriptions: [SessionAgent: SettingsAgentWorkDescription] = [:],
+        sessionStarts: [SessionAgent: Date] = [:]
     ) -> [SettingsAgentPresentation] {
         statuses.map { agentStatus in
             SettingsAgentPresentation(
@@ -32,10 +33,37 @@ struct SettingsAgentPresentation: Equatable {
                 activity: activity(agentStatus, state: state, hasWorkingProgress: hasWorkingProgress),
                 workStyle: agents[agentStatus.agent].workStyle,
                 isActive: agentStatus.isActive,
-                workLine: workDescriptions[agentStatus.agent]
-                    ?? lastProjects[agentStatus.agent].map { "Last worked on \($0)" }
+                work: workBlock(
+                    isRunning: agentStatus.isRunning,
+                    sessionStartedAt: sessionStarts[agentStatus.agent],
+                    description: workDescriptions[agentStatus.agent],
+                    lastProject: lastProjects[agentStatus.agent]
+                )
             )
         }
+    }
+
+    /// RR-528: the card's state line is the app's, never the agent's: it is
+    /// "Currently working on" only while the agent runs and it set its
+    /// description during that session. The description is what the agent
+    /// said, else its last project; with neither the card shows no block.
+    /// A description too long for `set_working_on` today, saved by an
+    /// earlier version, is not shown.
+    static func workBlock(
+        isRunning: Bool,
+        sessionStartedAt: Date?,
+        description: SettingsAgentWorkDescription?,
+        lastProject: String?
+    ) -> SettingsAgentWorkBlock? {
+        if let description, SessionAgent.workDescriptionRefusal(description.text) == nil {
+            var current = false
+            if isRunning, let setAt = description.setAt, let start = sessionStartedAt { current = setAt >= start }
+            return SettingsAgentWorkBlock(
+                state: current ? SettingsAgentWorkBlock.currentState : SettingsAgentWorkBlock.lastState,
+                description: description.text
+            )
+        }
+        return lastProject.map { SettingsAgentWorkBlock(state: SettingsAgentWorkBlock.lastState, description: $0) }
     }
 
     /// Each agent's last project: the one its most recently active session
@@ -100,6 +128,23 @@ struct SettingsAgentPresentation: Equatable {
     }
 }
 
+/// What an agent said it is working on, and when it said it (nil for a
+/// description saved before the date was recorded).
+struct SettingsAgentWorkDescription: Equatable {
+    let text: String
+    var setAt: Date? = nil
+}
+
+/// The two lines at a card's bottom-left: the app's state line above the
+/// agent's description.
+struct SettingsAgentWorkBlock: Equatable {
+    static let currentState = "Currently working on"
+    static let lastState = "Last worked on"
+
+    let state: String
+    let description: String
+}
+
 enum SettingsAgentCardLayout {
     static let spacing: CGFloat = 8
     /// The Settings panels' radius, so the card's corners line up with theirs.
@@ -138,15 +183,29 @@ enum SettingsAgentCardLayout {
         }
     }
 
-    /// The top of the line about the agent's work: just under the orb, which is
-    /// centred in the card and as large as the card's width or height allows
-    /// (`ParticleFieldRenderer.buildOrbGrid`).
-    static func workLineTop(cardSize: CGSize) -> CGFloat {
+    /// The bottom of the orb, which is centred in the card and as large as
+    /// the card's width or height allows (`ParticleFieldRenderer.buildOrbGrid`).
+    /// Half its height reserve lies below it, clear of the work block.
+    static func orbBottom(cardSize: CGSize) -> CGFloat {
         let orb = min(
             max(1, cardSize.width - 24),
             max(1, cardSize.height - ParticleFieldRenderer.orbVerticalReserve)
         )
         return cardSize.height / 2 + orb / 2
+    }
+
+    /// Between the work block's state line and description.
+    static let workBlockLineSpacing: CGFloat = 2
+
+    /// The work block at the card's bottom-left: in line with the name, and
+    /// as far from the bottom and trailing edges as the name is from the leading one.
+    static func workBlockFrame(cardSize: CGSize, blockHeight: CGFloat) -> CGRect {
+        CGRect(
+            x: contentInset,
+            y: cardSize.height - contentInset - blockHeight,
+            width: max(0, cardSize.width - contentInset * 2),
+            height: blockHeight
+        )
     }
 
     /// Inside every card, whichever column: the name at the left and the
@@ -224,8 +283,10 @@ struct SettingsAgentCard: View {
             .allowsHitTesting(false)
             .accessibilityHidden(true)
 
-            if let line = presentation.workLine {
-                SettingsAgentWorkLineLabel(line: line)
+            if let work = presentation.work {
+                SettingsAgentWorkBlockLayout {
+                    SettingsAgentWorkBlockView(block: work)
+                }
             }
 
             SettingsAgentCardContentLayout {
@@ -283,23 +344,49 @@ private struct SettingsAgentCardContentLayout: Layout {
     }
 }
 
-/// The line about the agent's work, centred under the card's orb on at
-/// most two lines.
-private struct SettingsAgentWorkLineLabel: View {
-    let line: String
+/// Places the work block by `SettingsAgentCardLayout.workBlockFrame`.
+private struct SettingsAgentWorkBlockLayout: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        proposal.replacingUnspecifiedDimensions()
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let block = subviews.first else { return }
+        let width = SettingsAgentCardLayout.workBlockFrame(cardSize: bounds.size, blockHeight: 0).width
+        let height = block.sizeThatFits(ProposedViewSize(width: width, height: nil)).height
+        let frame = SettingsAgentCardLayout.workBlockFrame(cardSize: bounds.size, blockHeight: height)
+        block.place(
+            at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+            anchor: .topLeading,
+            proposal: ProposedViewSize(width: frame.width, height: frame.height)
+        )
+    }
+}
+
+/// The state line and the agent's description, one left-aligned line each.
+/// VoiceOver reads them together as part of the card.
+struct SettingsAgentWorkBlockView: View {
+    let block: SettingsAgentWorkBlock
 
     var body: some View {
-        GeometryReader { geometry in
-            Text(line)
-                .font(AppTypography.font(.caption))
-                .foregroundStyle(SettingsSurfaceColor.secondaryText)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, SettingsAgentCardLayout.contentInset)
-                .frame(width: geometry.size.width)
-                .offset(y: SettingsAgentCardLayout.workLineTop(cardSize: geometry.size))
+        VStack(alignment: .leading, spacing: SettingsAgentCardLayout.workBlockLineSpacing) {
+            RelaySwap(block.state, style: .text, alignment: .leading) { state in
+                Text(state)
+                    .foregroundStyle(SettingsSurfaceColor.secondaryText)
+            }
+            RelaySwap(block.description, style: .text, alignment: .leading) { description in
+                Text(description)
+                    .foregroundStyle(SettingsSurfaceColor.primaryText)
+            }
         }
+        .font(AppTypography.font(.caption))
+        .lineLimit(1)
+        .truncationMode(.tail)
+        .multilineTextAlignment(.leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .allowsHitTesting(false)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(block.state) \(block.description)")
     }
 }
 

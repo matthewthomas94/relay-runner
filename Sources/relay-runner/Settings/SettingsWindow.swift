@@ -107,22 +107,24 @@ enum SettingsContentStyle {
 }
 
 enum SettingsCategory: String, CaseIterable, Identifiable {
+    case general
     case permissions
     case speechToText
     case textToSpeech
-    case general
     case awareness
     case relayRemote
 
     var id: String { rawValue }
 
+    /// RR-528: the names the user sees; the cases and raw values keep the
+    /// config and `navigate` identifiers.
     var title: String {
         switch self {
-        case .permissions: return "Permissions"
-        case .speechToText: return "Speech-to-Text"
-        case .textToSpeech: return "Text-to-Speech"
         case .general: return "General"
-        case .awareness: return "Awareness"
+        case .permissions: return "Permissions"
+        case .speechToText: return "Hearing"
+        case .textToSpeech: return "Speech"
+        case .awareness: return "Sight"
         case .relayRemote: return "Relay Remote"
         }
     }
@@ -132,25 +134,28 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
     /// The notch hover descriptor for this category's sidebar row.
     var hoverAction: String {
         switch self {
-        case .permissions: return "Open permission settings"
-        case .speechToText: return "Open speech settings"
-        case .textToSpeech: return "Open voice settings"
         case .general: return "Open general settings"
-        case .awareness: return "Open awareness settings"
+        case .permissions: return "Open permission settings"
+        case .speechToText: return "Open hearing settings"
+        case .textToSpeech: return "Open speech settings"
+        case .awareness: return "Open sight settings"
         case .relayRemote: return "Open remote settings"
         }
     }
 
     var icon: LucideIcon {
         switch self {
+        case .general: return .settings
         case .permissions: return .shieldCheck
         case .speechToText: return .mic
         case .textToSpeech: return .volume2
-        case .general: return .settings
-        case .awareness: return .eye
+        case .awareness: return .laptopMinimal
         case .relayRemote: return .smartphone
         }
     }
+
+    /// The page Settings opens on when no category was requested.
+    static var initial: SettingsCategory { allCases[0] }
 
     static func category(after category: SettingsCategory) -> SettingsCategory {
         let all = Self.allCases
@@ -176,8 +181,8 @@ private struct SettingsContent: View {
     let onOpenExternalWindow: () -> Void
 
     @State private var autoSave: SettingsAutoSave
-    @State private var selectedCategory: SettingsCategory = .permissions
-    @State private var scrollTarget: SettingsCategory = .permissions
+    @State private var selectedCategory: SettingsCategory = .initial
+    @State private var scrollTarget: SettingsCategory = .initial
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(
@@ -220,7 +225,8 @@ private struct SettingsContent: View {
                             state: appState.stateMachine.state,
                             hasWorkingProgress: appState.stateMachine.currentWorkingProgress(now: context.date) != nil,
                             lastProjects: appState.agentLastProjects,
-                            workDescriptions: appState.agentWorkDescriptions
+                            workDescriptions: appState.agentWorkDescriptions,
+                            sessionStarts: appState.agentSessionStarts
                         ),
                         theme: appState.stateMachine.state.particleTheme ?? .idle,
                         spacing: rowSpacing,
