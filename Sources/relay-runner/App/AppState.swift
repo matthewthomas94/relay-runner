@@ -1382,6 +1382,8 @@ final class AppState {
         let name: String
         let isLive: Bool
         let isActive: Bool
+        /// Its agent finished a turn or asked for attention while another tab was showing.
+        var needsAttention = false
     }
 
     /// The agent tabs started in this session, in the order they started. A
@@ -1401,7 +1403,8 @@ final class AppState {
         Self.stripOrder(pmTabIDs).map { id in
             let live = sessionRegistry.isLive(id)
             return PMTab(id: id, agent: SessionAgent(contextID: id) ?? .puck, name: sessionLabel(contextID: id),
-                         isLive: live, isActive: live && id == activeContext.id)
+                         isLive: live, isActive: live && id == activeContext.id,
+                         needsAttention: live && sessionRegistry.attentionContextIDs.contains(id))
         }
     }
 
@@ -3524,6 +3527,7 @@ final class AppState {
         let statuses = agentStatuses
         model.runningAgents = Set(statuses.filter(\.isRunning).map(\.agent))
         model.activeAgent = statuses.first(where: \.isActive)?.agent
+        model.attentionAgents = Set(sessionRegistry.attentionContextIDs.compactMap { SessionAgent(contextID: $0) })
         model.refresh(sessions: sessionRegistry.hasLiveSessions
             ? [SessionWheelSession(id: Self.wheelSessionID, name: sessionLabel(contextID: activeContext.id),
                                    isFocused: true)]

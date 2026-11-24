@@ -155,16 +155,17 @@ final class SettingsAgentCardTests: XCTestCase {
                        SettingsAgentWorkBlock(state: "Last worked on", description: "relay-runner"))
         // Neither: no block.
         XCTAssertNil(block(running: false, setAt: nil, description: nil, project: nil))
-        // A longer description from an earlier version still shows.
+        // A longer description from an earlier version gives way to the last project.
         let old = "Fixing the Settings dropdown dividers and the ring layout too"
-        XCTAssertEqual(block(running: false, setAt: nil, description: old)?.description, old)
+        XCTAssertEqual(block(running: false, setAt: nil, description: old)?.description, "relay-runner")
+        XCTAssertNil(block(running: false, setAt: nil, description: old, project: nil))
     }
 
-    /// RR-528: the agent is asked for two to four words under the card's
+    /// RR-528: the agent is asked for three or four words under the card's
     /// own state line, and to resend a refused description at once.
     func testWorkDescriptionInstructionAndLimits() {
         let instruction = SessionAgent.workDescriptionInstruction
-        for phrase in ["mcp__relay-app__set_working_on", "two to four words", "\"Settings dropdown dividers\"",
+        for phrase in ["mcp__relay-app__set_working_on", "three or four words", "\"Settings dropdown dividers\"",
                        "\"Currently working on\"", "\"Working on\"", "call it again straight away"] {
             XCTAssertTrue(instruction.contains(phrase), phrase)
         }
@@ -175,7 +176,7 @@ final class SettingsAgentCardTests: XCTestCase {
         XCTAssertNotNil(SessionAgent.workDescriptionRefusal("Fixing the Settings dropdown dividers"))
         XCTAssertNotNil(SessionAgent.workDescriptionRefusal("Internationalisation reconfiguration work"))
         let refusal = SessionAgent.workDescriptionRefusal(String(repeating: "a", count: 41)) ?? ""
-        XCTAssertTrue(refusal.contains("Call set_working_on again now with two to four words"), refusal)
+        XCTAssertTrue(refusal.contains("Call set_working_on again now with three or four words"), refusal)
     }
 
     /// RR-528: the block sits at the card's bottom-left, in line with the name

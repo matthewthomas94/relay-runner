@@ -214,7 +214,7 @@ enum AppTools {
             ),
             AppTool(
                 name: "set_working_on",
-                description: "Set the description your agent card in Relay Runner shows: two to four words naming what you are working on, at most \(workingOnLimit) characters, e.g. \"Settings dropdown dividers\". The card already shows \"Currently working on\" above it, so do not repeat that or start with a verb like \"Working on\". Call it when you start a piece of work or move to a different one; not again while the work is the same, and not for questions or small talk. More than four words or more than \(workingOnLimit) characters is refused: shorten it to two to four words and call set_working_on again straight away.",
+                description: "Set the description your agent card in Relay Runner shows: three or four words naming what you are working on, at most \(workingOnLimit) characters, e.g. \"Settings dropdown dividers\". The card already shows \"Currently working on\" above it, so do not repeat that or start with a verb like \"Working on\". Call it when you start a piece of work or move to a different one; not again while the work is the same, and not for questions or small talk. More than four words or more than \(workingOnLimit) characters is refused: shorten it to three or four words and call set_working_on again straight away.",
                 properties: ["description": ["type": "string", "maxLength": workingOnLimit]],
                 required: ["description"],
                 forSessionAgent: true,

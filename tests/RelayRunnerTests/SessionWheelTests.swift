@@ -176,6 +176,14 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertEqual(model.sessionItems.count, 4)
     }
 
+    func testOnlyARunningAgentShimmersForAttention() {
+        let model = SessionWheelModel()
+        model.runningAgents = [.puck, .isabella]
+        model.activeAgent = .puck
+        model.attentionAgents = [.isabella, .sky]
+        XCTAssertEqual(model.sessionItems.filter(\.needsAttention).map(\.agent), [.isabella])
+    }
+
     /// The segments are labelled PK, IS, GE and SK from the agent definition.
     func testAgentSegmentsUseTheTwoLetterLabels() {
         XCTAssertEqual(SessionAgent.allCases.map(\.shortLabel), ["PK", "IS", "GE", "SK"])

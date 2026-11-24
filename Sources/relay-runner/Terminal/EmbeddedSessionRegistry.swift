@@ -27,6 +27,10 @@ final class EmbeddedSessionRegistry {
 
     private(set) var sessions: [String: EmbeddedTerminalSession] = [:]
     private(set) var focusedContextID: String?
+    /// The live sessions that finished a turn, rang the bell or posted a
+    /// notification while the Workspace terminal showed another one. Showing
+    /// a session clears it.
+    private(set) var attentionContextIDs: Set<String> = []
 
     /// Stands in while no context is focused, so callers always have a session.
     @ObservationIgnored let placeholder: EmbeddedTerminalSession
@@ -71,7 +75,7 @@ final class EmbeddedSessionRegistry {
         }
         let session = sessions[contextID] ?? makeContextSession(contextID)
         sessions[contextID] = session
-        focusedContextID = contextID
+        focus(contextID: contextID)
         return .start(session)
     }
 
@@ -79,6 +83,12 @@ final class EmbeddedSessionRegistry {
     /// shows `placeholder`. Keyboard focus is left to the caller.
     func focus(contextID: String) {
         focusedContextID = contextID
+        attentionContextIDs.remove(contextID)
+    }
+
+    func noteAttention(contextID: String) {
+        guard contextID != focusedContextID, isLive(contextID) else { return }
+        attentionContextIDs.insert(contextID)
     }
 
     /// Record the spool a context's launch uses; a replaced spool is removed.
@@ -100,6 +110,7 @@ final class EmbeddedSessionRegistry {
     @discardableResult
     func end(contextID: String, retainingSpool: Bool = false) -> VoiceSessionSpool? {
         sessions[contextID]?.end()
+        attentionContextIDs.remove(contextID)
         guard let spool = spools.removeValue(forKey: contextID) else { return nil }
         if retainingSpool { return spool }
         spool.remove()
@@ -116,6 +127,7 @@ final class EmbeddedSessionRegistry {
         for spool in spools.values { spool.remove() }
         spools = [:]
         sessions = [:]
+        attentionContextIDs = []
         focusedContextID = nil
     }
 
@@ -126,6 +138,9 @@ final class EmbeddedSessionRegistry {
         }
         session.setReadyHandler { [weak self] in
             self?.readyHandler?(contextID)
+        }
+        session.setAttentionHandler { [weak self] in
+            self?.noteAttention(contextID: contextID)
         }
         return session
     }

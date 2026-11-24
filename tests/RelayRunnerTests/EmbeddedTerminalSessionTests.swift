@@ -2300,6 +2300,30 @@ final class RelayVoiceCommandDeliveryTests: XCTestCase {
         XCTAssertFalse(events.contains(#""event":"delivery_failure_published""#))
     }
 
+    func testAFinishedProviderTurnAsksForAttentionOnce() throws {
+        let fixture = try makeFixture()
+        var finished = 0
+        let delivery = RelayVoiceCommandDelivery(
+            paths: fixture.paths,
+            send: { _ in },
+            onProviderTurnFinished: { finished += 1 },
+            isRunning: { true }
+        )
+        let turn: [String: Any] = [
+            "origin": "manual", "session_id": "claude-session", "provider": "claude",
+            "created_at": 100.1, "updated_at": 100.1,
+        ]
+
+        try writeProviderTurnRecords([turn.merging(["state": "active"]) { $1 }], to: fixture.providerTurns)
+        _ = delivery.claimAndSendIfPossible()
+        XCTAssertEqual(finished, 0)
+
+        try writeProviderTurnRecords([turn.merging(["state": "completed"]) { $1 }], to: fixture.providerTurns)
+        _ = delivery.claimAndSendIfPossible()
+        _ = delivery.claimAndSendIfPossible()
+        XCTAssertEqual(finished, 1)
+    }
+
     func testVoiceSteersAfterManualSubmissionForCodexAndClaude() throws {
         for provider in ["codex", "claude"] {
             let fixture = try makeFixture()
@@ -4109,6 +4133,7 @@ private final class FakeEmbeddedTerminalProcess: EmbeddedTerminalProcess {
     var onReady: (() -> Void)?
     var onInteractive: (() -> Void)?
     var onTitle: ((String) -> Void)?
+    var onAttention: (() -> Void)?
     var startError: Error?
     var autoReady = true
     var startCount = 0
@@ -4180,6 +4205,21 @@ final class EmbeddedSessionRegistryTests: XCTestCase {
         XCTAssertEqual(b.phase, .running)
         XCTAssertEqual(registry.liveContextIDs, ["a", "b"])
         XCTAssertEqual(processes.map(\.terminateCount), [0, 0])
+    }
+
+    func testASessionNotShownThatAsksForAttentionIsFlaggedUntilItIsShown() throws {
+        let registry = makeRegistry()
+        _ = try launch(registry, "a")
+        _ = try launch(registry, "b")
+        processes[0].onAttention?()
+        processes[1].onAttention?()
+        let delivered = expectation(description: "attention reaches the registry")
+        DispatchQueue.main.async { delivered.fulfill() }
+        wait(for: [delivered], timeout: 1)
+        // "b" is the session showing, so only "a" is flagged.
+        XCTAssertEqual(registry.attentionContextIDs, ["a"])
+        registry.focus(contextID: "a")
+        XCTAssertEqual(registry.attentionContextIDs, [])
     }
 
     func testLiveContextIsFocusedInsteadOfStartedTwice() throws {

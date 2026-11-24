@@ -344,7 +344,7 @@ final class RelayAppCommandsTests: XCTestCase {
     /// RR-522: every agent's work style reads as Auto until one is chosen;
     /// set_settings changes one agent's and refuses invalid values.
     /// An agent sets the description its card shows: collapsed to one line,
-    /// saved for that agent only. RR-528: two to four words, at most
+    /// saved for that agent only. RR-528: three or four words, at most
     /// `SessionAgent.workDescriptionLimit` characters.
     func testSetWorkingOnSavesOneShortLineForTheNamedAgent() async throws {
         let set = try await ok("set_working_on", ["agent": "george", "description": "  Settings\n dropdown   dividers "])
@@ -365,7 +365,7 @@ final class RelayAppCommandsTests: XCTestCase {
         let tooLong = await refused("set_working_on", ["agent": "sky", "description": String(repeating: "a", count: limit + 1)])
         XCTAssertTrue(tooLong.contains("at most \(limit) characters"), tooLong)
         for refusal in [fiveWords, tooLong] {
-            XCTAssertTrue(refusal.contains("two to four words"), refusal)
+            XCTAssertTrue(refusal.contains("three or four words"), refusal)
             XCTAssertTrue(refusal.contains("Call set_working_on again now"), refusal)
         }
         XCTAssertEqual(app.workingOn, saved, "a refused description leaves the stored one")

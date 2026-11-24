@@ -251,6 +251,10 @@ struct PanelGlassUnderlay: View {
                     .offset(y: -top)
                 }
             }
+            // The tint runs past the panel to line up with the shell, and a
+            // clip does not clip hits: left hit-testable it swallows clicks
+            // below the Workspace, which then never dismiss it.
+            .allowsHitTesting(false)
     }
 }
 

@@ -46,6 +46,8 @@ struct SessionWheelAgent: Identifiable, Equatable {
     var isRunning = false
     /// The running agent voice turns, replies and TTS go to.
     var isActive = false
+    /// It finished a turn or asked for attention while another agent was active.
+    var needsAttention = false
 
     var id: String { agent.slug }
     var name: String { agent.name }
@@ -410,6 +412,8 @@ final class SessionWheelModel {
     /// RR-521: the agents with a live session, and the active one.
     var runningAgents: Set<SessionAgent> = []
     var activeAgent: SessionAgent?
+    /// The running agents whose Workspace tab is shimmering for attention.
+    var attentionAgents: Set<SessionAgent> = []
     var notice: String?
     private(set) var hoveredSlot: Int?
     private var hoveredControl: Int?
@@ -420,7 +424,8 @@ final class SessionWheelModel {
     var sessionItems: [SessionWheelAgent] {
         SessionAgent.allCases.map { agent in
             let running = runningAgents.contains(agent)
-            return SessionWheelAgent(agent: agent, isRunning: running, isActive: running && agent == activeAgent)
+            return SessionWheelAgent(agent: agent, isRunning: running, isActive: running && agent == activeAgent,
+                                     needsAttention: running && attentionAgents.contains(agent))
         }
     }
 

@@ -263,10 +263,12 @@ struct SessionWheelView: View {
                              destructive: false,
                              labelGlyphs: geometry.sessionAgentLayout(index, label: item.label).glyphs,
                              selected: item.isActive, labelColor: Self.agentLabelColor(item),
+                             attention: item.needsAttention,
                              arc: geometry.sessionItemArc(index)) {
             guard model.isHoveringSession else { return }
             performAgentAction(action)
         }
+        .accessibilityValue(item.needsAttention ? "Needs attention" : "")
         .accessibilityAddTraits(item.isActive ? .isSelected : [])
     }
 
@@ -425,6 +427,7 @@ struct SessionWheelView: View {
                                isOn: Bool? = nil, subdivisions: Int = 3,
                                labelGlyphs: [SessionWheelGeometry.Glyph]? = nil,
                                selected: Bool = false, labelColor: Color? = nil,
+                               attention: Bool? = nil,
                                arc: (start: CGFloat, width: CGFloat)? = nil,
                                perform: @escaping () -> Void) -> some View {
         let presentation = ProgramBoardInteractionPresentation.resolve(
@@ -445,6 +448,12 @@ struct SessionWheelView: View {
         return Button(action: perform) {
             ZStack {
                 controlBackground(shape, presentation: presentation)
+                if let attention {
+                    // An agent that wants attention shimmers, as its Workspace
+                    // tab does, until it is switched to.
+                    FluxDotsBackground(cornerRadius: 0, style: .standard, isVisible: attention)
+                        .clipShape(shape)
+                }
                 if let labelGlyphs {
                     // The label curves with its cell: one shape of its letters'
                     // outlines, so no letter snaps to the pixel grid off the arc.

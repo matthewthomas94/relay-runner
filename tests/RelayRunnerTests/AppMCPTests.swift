@@ -68,9 +68,9 @@ final class AppMCPTests: XCTestCase {
         XCTAssertEqual(schemas["relay_remote_approve"]?["required"] as? [String], ["restrict_to_network"])
         let pages = ((schemas["navigate"]?["properties"] as? [String: Any])?["settings_page"] as? [String: Any])?["enum"] as? [String]
         XCTAssertEqual(pages, ["permissions", "speech_to_text", "text_to_speech", "general", "awareness", "relay_remote"])
-        // RR-528: two to four words under the card's own state line, resent at once when refused.
+        // RR-528: three or four words under the card's own state line, resent at once when refused.
         let workingOn = tools.first { $0["name"] as? String == "set_working_on" }?["description"] as? String ?? ""
-        for phrase in ["two to four words", "\"Settings dropdown dividers\"", "\"Currently working on\"",
+        for phrase in ["three or four words", "\"Settings dropdown dividers\"", "\"Currently working on\"",
                        "\"Working on\"", "call set_working_on again straight away"] {
             XCTAssertTrue(workingOn.contains(phrase), phrase)
         }

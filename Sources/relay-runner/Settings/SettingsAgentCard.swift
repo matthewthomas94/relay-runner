@@ -47,13 +47,15 @@ struct SettingsAgentPresentation: Equatable {
     /// "Currently working on" only while the agent runs and it set its
     /// description during that session. The description is what the agent
     /// said, else its last project; with neither the card shows no block.
+    /// A description too long for `set_working_on` today, saved by an
+    /// earlier version, is not shown.
     static func workBlock(
         isRunning: Bool,
         sessionStartedAt: Date?,
         description: SettingsAgentWorkDescription?,
         lastProject: String?
     ) -> SettingsAgentWorkBlock? {
-        if let description {
+        if let description, SessionAgent.workDescriptionRefusal(description.text) == nil {
             var current = false
             if isRunning, let setAt = description.setAt, let start = sessionStartedAt { current = setAt >= start }
             return SettingsAgentWorkBlock(
