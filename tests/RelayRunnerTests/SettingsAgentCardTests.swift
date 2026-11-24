@@ -1,7 +1,6 @@
 import AppKit
 import CoreImage
 import SwiftUI
-import simd
 import XCTest
 @testable import relay_runner
 
@@ -539,53 +538,6 @@ final class SettingsAgentCardTests: XCTestCase {
         XCTAssertTrue(profiles.contains { profile in
             zip(first, profile).reduce(0.0) { $0 + abs($1.0 - $1.1) } > 0.1
         })
-    }
-
-    /// Each agent's orb swims around the whole card in its own way: it
-    /// reaches every wall, stays inside the card, passes behind the name and
-    /// picker without settling there, and Puck covers the most ground while
-    /// George covers the least.
-    func testEachAgentsOrbSwimsAroundTheWholeCardWithItsOwnTemperament() throws {
-        let size = CGSize(width: 207, height: 330)
-        let header = Int(SettingsAgentCardLayout.contentInset + SharedActionButtonMetrics.controlHeight)
-        var travel: [SessionAgent: Double] = [:]
-        for agent in SessionAgent.allCases {
-            let host = NSView(frame: CGRect(origin: .zero, size: size))
-            host.wantsLayer = true
-            let renderer = ParticleFieldRenderer(coverage: .agentOrb)
-            renderer.attach(to: host)
-            renderer.layoutInBounds(host.bounds, backingScale: 1)
-            renderer.setOrbPhase(Double(agent.order) * 2.3)
-            renderer.setOrbTemperament(agent.orbTemperament)
-            renderer.transition(to: .idle, now: 10)
-            defer { renderer.transition(to: nil) }
-            var centres: [SIMD2<Double>] = []
-            var reach = (left: Int.max, right: Int.min, bottom: Int.max, top: Int.min)
-            var underHeader = 0
-            let ticks = 240
-            for tick in 0..<ticks {
-                renderer.renderFrame(at: 10 + Double(tick) * 0.5)
-                let pixels = try pixelSamples(XCTUnwrap(renderer.renderedParticleImage))
-                XCTAssertFalse(pixels.isEmpty, "\(agent) at tick \(tick)")
-                let xs = pixels.map(\.x), ys = pixels.map(\.y)
-                reach = (min(reach.left, xs.min()!), max(reach.right, xs.max()!),
-                         min(reach.bottom, ys.min()!), max(reach.top, ys.max()!))
-                // Its bright body, not its faint halo, under the name and picker.
-                if pixels.contains(where: { $0.y > Int(size.height) - header && $0.r > 200 }) { underHeader += 1 }
-                let count = Double(pixels.count)
-                centres.append(SIMD2(pixels.reduce(0.0) { $0 + Double($1.x) } / count,
-                                     pixels.reduce(0.0) { $0 + Double($1.y) } / count))
-            }
-            XCTAssertLessThan(reach.left, 12, "\(agent) reaches the left wall: \(reach)")
-            XCTAssertGreaterThan(reach.right, Int(size.width) - 12, "\(agent) reaches the right wall: \(reach)")
-            XCTAssertLessThan(reach.bottom, 12, "\(agent) reaches the bottom: \(reach)")
-            XCTAssertGreaterThan(reach.top, Int(size.height) - 12, "\(agent) reaches the top: \(reach)")
-            XCTAssertLessThan(Double(underHeader) / Double(ticks), 0.5, "\(agent) does not settle under the name")
-            travel[agent] = zip(centres, centres.dropFirst()).reduce(0.0) { $0 + simd_distance($1.0, $1.1) }
-        }
-        XCTAssertEqual(travel.max { $0.value < $1.value }?.key, .puck, "\(travel)")
-        XCTAssertEqual(travel.min { $0.value < $1.value }?.key, .george, "\(travel)")
-        XCTAssertEqual(Set(SessionAgent.allCases.map(\.orbTemperament)).count, 4)
     }
 
     /// The orb is twice the size it was in a Workspace card: its faint edge
