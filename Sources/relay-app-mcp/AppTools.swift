@@ -102,7 +102,7 @@ struct AppTool: MCPTool {
 
 enum AppTools {
     /// `SessionAgent.workDescriptionLimit` in the app, which refuses longer text.
-    private static let workingOnLimit = 60
+    private static let workingOnLimit = 40
     private static let settingsPages = ["permissions", "speech_to_text", "text_to_speech", "general", "awareness", "relay_remote"]
 
     /// `sessionAgent` is the agent this server's session belongs to, if any.
@@ -122,7 +122,7 @@ enum AppTools {
                 description: "Show a Relay Runner surface: the Workspace board, the Notetaker, the session Terminal, or Settings, optionally on a specific page. Idempotent; it only opens or focuses the surface.",
                 properties: [
                     "destination": ["type": "string", "enum": ["workspace", "notetaker", "terminal", "settings"]],
-                    "settings_page": ["type": "string", "enum": settingsPages, "description": "Only with destination settings."],
+                    "settings_page": ["type": "string", "enum": settingsPages, "description": "Only with destination settings. speech_to_text opens the Hearing page, text_to_speech the Speech page and awareness the Sight page; without a page Settings opens on General."],
                 ],
                 required: ["destination"],
                 client: client
@@ -214,7 +214,7 @@ enum AppTools {
             ),
             AppTool(
                 name: "set_working_on",
-                description: "Set the line your agent card in Relay Runner shows under your orb: what you are working on, in at most \(workingOnLimit) characters, e.g. \"Fixing the Settings dropdown dividers\". Call it when you start a piece of work or move to a different one; not again while the work is the same, and not for questions or small talk. Longer text is refused.",
+                description: "Set the description your agent card in Relay Runner shows: two to four words naming what you are working on, at most \(workingOnLimit) characters, e.g. \"Settings dropdown dividers\". The card already shows \"Currently working on\" above it, so do not repeat that or start with a verb like \"Working on\". Call it when you start a piece of work or move to a different one; not again while the work is the same, and not for questions or small talk. More than four words or more than \(workingOnLimit) characters is refused: shorten it to two to four words and call set_working_on again straight away.",
                 properties: ["description": ["type": "string", "maxLength": workingOnLimit]],
                 required: ["description"],
                 forSessionAgent: true,

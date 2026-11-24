@@ -1422,14 +1422,20 @@ final class AppState {
         SettingsAgentPresentation.lastProjects(bindings: Array(assistantSessionStore.document.bindings.values))
     }
 
-    /// What each agent last said it was working on, for its card.
-    var agentWorkDescriptions: [SessionAgent: String] {
-        var result: [SessionAgent: String] = [:]
-        for (slug, description) in assistantSessionStore.document.workDescriptions ?? [:] {
-            if let agent = SessionAgent(rawValue: slug) { result[agent] = description }
+    /// What each agent last said it was working on, and when, for its card.
+    var agentWorkDescriptions: [SessionAgent: SettingsAgentWorkDescription] {
+        let document = assistantSessionStore.document
+        var result: [SessionAgent: SettingsAgentWorkDescription] = [:]
+        for (slug, description) in document.workDescriptions ?? [:] {
+            guard let agent = SessionAgent(rawValue: slug) else { continue }
+            result[agent] = SettingsAgentWorkDescription(text: description, setAt: document.workDescriptionDates?[slug])
         }
         return result
     }
+
+    /// RR-528: when each agent's current session started in this launch, so
+    /// its card can tell a description from this session from an older one.
+    var agentSessionStarts: [SessionAgent: Date] = [:]
 
     func setRelayAppWorkingOn(_ agent: SessionAgent, _ description: String) -> String? {
         do {
@@ -3126,6 +3132,7 @@ final class AppState {
                 )
                 try assistantSessionStore.begin(context: context, provider: launchConfig.general.provider.rawValue,
                                                model: launchConfig.general.model, transportSessionID: launchID.uuidString.lowercased())
+                agentSessionStarts[SessionAgent(context: context)] = Date()
                 if nativeResumeID != nil { resumingContextIDs.insert(context.id) } else { resumingContextIDs.remove(context.id) }
                 continuationDestinationOwners[context.id] = ["provider": prepared.target.providerMetadataValue,
                     "provider_session_id": prepared.providerSessionID ?? "", "app_session_id": prepared.appSessionID ?? "",
