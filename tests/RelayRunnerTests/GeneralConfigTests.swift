@@ -55,14 +55,22 @@ final class GeneralConfigTests: XCTestCase {
         XCTAssertEqual(
             GeneralConfig.claudeModelOptions,
             [
-                GeneralConfig.ModelOption(label: "Fable 5.2", value: "claude-fable-5-2"),
-                GeneralConfig.ModelOption(label: "Fable 5.1", value: "claude-fable-5-1"),
                 GeneralConfig.ModelOption(label: "Fable", value: "fable"),
                 GeneralConfig.ModelOption(label: "Opus", value: "opus"),
                 GeneralConfig.ModelOption(label: "Sonnet", value: "sonnet"),
                 GeneralConfig.ModelOption(label: "Haiku", value: "haiku"),
             ]
         )
+    }
+
+    func testAPinnedClaudeModelFromAnEarlierVersionBecomesItsKind() {
+        for pinned in ["claude-fable-5-2", "claude-fable-5-1", " Claude-Fable-5-2 "] {
+            XCTAssertEqual(GeneralConfig.normalizeModel(pinned, for: .claude), "fable", pinned)
+            XCTAssertEqual(GeneralConfig.normalizedMessengerModel(pinned, for: .claude), "fable", pinned)
+        }
+        XCTAssertEqual(GeneralConfig.normalizeModel("claude-opus-5-5", for: .claude), "opus")
+        XCTAssertEqual(GeneralConfig.normalizeModel("claude-unknown-1", for: .claude), GeneralConfig.defaultClaudeModel)
+        XCTAssertEqual(GeneralConfig.normalizeModel("sonnet", for: .claude), "sonnet")
     }
 
     func testLegacyCodexReasoningEffortOptionsRemainSharedBaseValues() {
@@ -104,7 +112,7 @@ final class GeneralConfigTests: XCTestCase {
                 .map { ($0.model, $0.efforts) }
         )
         XCTAssertNil(claudeMatrix["best"])
-        XCTAssertEqual(claudeMatrix["claude-fable-5-2"], ["low", "medium", "high", "xhigh", "max"])
+        XCTAssertNil(claudeMatrix["claude-fable-5-2"], "The picker lists model kinds, not versions")
         XCTAssertEqual(claudeMatrix["fable"], ["low", "medium", "high", "xhigh", "max"])
         XCTAssertEqual(claudeMatrix["opus"], ["low", "medium", "high", "xhigh", "max"])
         XCTAssertEqual(claudeMatrix["sonnet"], ["low", "medium", "high", "xhigh", "max"])

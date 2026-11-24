@@ -47,7 +47,7 @@ registered project.
   field, which keeps its own theme. It respects Reduce Motion and the Particle field
   setting. The final value is saved to
   `awareness.glow_intensity` (0.1–1.0 in 0.05 steps) when the drag ends, so
-  **Settings → Sight → Intensity** shows the same value at once, even while
+  **Settings → Interface → Intensity** shows the same value at once, even while
   Settings is open. A drag keeps the
   submenu open wherever the pointer goes. The slider is disabled while the particle
   field is off. VoiceOver exposes it as an adjustable control with a percentage.

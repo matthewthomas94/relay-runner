@@ -122,9 +122,9 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "General"
         case .permissions: return "Permissions"
-        case .speechToText: return "Hearing"
+        case .speechToText: return "Transcription"
         case .textToSpeech: return "Speech"
-        case .awareness: return "Sight"
+        case .awareness: return "Interface"
         case .relayRemote: return "Relay Remote"
         }
     }
@@ -136,9 +136,9 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "Open general settings"
         case .permissions: return "Open permission settings"
-        case .speechToText: return "Open hearing settings"
+        case .speechToText: return "Open transcription settings"
         case .textToSpeech: return "Open speech settings"
-        case .awareness: return "Open sight settings"
+        case .awareness: return "Open interface settings"
         case .relayRemote: return "Open remote settings"
         }
     }

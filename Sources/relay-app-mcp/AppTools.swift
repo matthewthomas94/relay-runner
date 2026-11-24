@@ -122,7 +122,7 @@ enum AppTools {
                 description: "Show a Relay Runner surface: the Workspace board, the Notetaker, the session Terminal, or Settings, optionally on a specific page. Idempotent; it only opens or focuses the surface.",
                 properties: [
                     "destination": ["type": "string", "enum": ["workspace", "notetaker", "terminal", "settings"]],
-                    "settings_page": ["type": "string", "enum": settingsPages, "description": "Only with destination settings. speech_to_text opens the Hearing page, text_to_speech the Speech page and awareness the Sight page; without a page Settings opens on General."],
+                    "settings_page": ["type": "string", "enum": settingsPages, "description": "Only with destination settings. speech_to_text opens the Transcription page, text_to_speech the Speech page and awareness the Interface page; without a page Settings opens on General."],
                 ],
                 required: ["destination"],
                 client: client
