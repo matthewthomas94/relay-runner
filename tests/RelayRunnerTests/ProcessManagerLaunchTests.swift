@@ -481,6 +481,9 @@ final class ProcessManagerLaunchTests: XCTestCase {
             "__ORCHESTRATOR_REPLY__",
             "Do not write reply JSON or reply envelopes to /tmp/voice_in.fifo directly",
             "the sole app-owned __ORCHESTRATOR_REPLY__ encoder",
+            "the spoken final of a voice turn is one to three short sentences of natural language",
+            "Never speak structured text verbatim (file paths, URLs, commit hashes, UUIDs, run or command ids",
+            "keep it unshortened in your terminal message and pipe a short spoken version to the reply helper as your last reply of the turn",
             "Provider responses, reasoning summaries, tool calls, progress, and final output should remain visible",
         ] {
             XCTAssertTrue(codexScript.contains(phrase), phrase)
