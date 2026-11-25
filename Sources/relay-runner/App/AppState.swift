@@ -3571,6 +3571,26 @@ final class AppState {
         }
     }
 
+    /// Shift-Option and Shift-Control: switch to the next or previous running
+    /// agent in table order, wrapping around, the way the wheel switches.
+    private func cycleAgent(_ direction: AgentCycleGesture.Direction) {
+        let running = SessionAgent.allCases.filter { liveContextID(of: $0) != nil }
+        guard let next = Self.agent(after: SessionAgent(contextID: activeContext.id), in: running,
+                                    direction: direction) else { return }
+        _ = performAgentWheelAction(.switchTo(next))
+    }
+
+    /// The agent one step from `current` among `running`, wrapping around;
+    /// nil when there is no other agent to switch to.
+    static func agent(after current: SessionAgent?, in running: [SessionAgent],
+                      direction: AgentCycleGesture.Direction) -> SessionAgent? {
+        let ordered = running.sorted { $0.order < $1.order }
+        guard let current, let index = ordered.firstIndex(of: current) else { return ordered.first }
+        guard ordered.count > 1 else { return nil }
+        let step = direction == .forward ? 1 : ordered.count - 1
+        return ordered[(index + step) % ordered.count]
+    }
+
     /// The agent's live session, preferring the active context's project.
     private func liveContextID(of agent: SessionAgent) -> String? {
         let live = sessionRegistry.liveContextIDs.filter { SessionAgent(contextID: $0) == agent }
@@ -4865,6 +4885,11 @@ final class AppState {
                         self.onboarding.noteTutorialWorkspaceToggled()
                     }
                 )
+            }
+
+            if let direction = engine.agentCycleRequested {
+                engine.agentCycleRequested = nil
+                self.cycleAgent(direction)
             }
 
             // Session prompt: handle responses
