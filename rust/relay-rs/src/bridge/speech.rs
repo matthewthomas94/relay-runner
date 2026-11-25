@@ -75,6 +75,202 @@ pub fn strip_markdown_for_tts(text: &str) -> String {
     pattern::sub(&MD_MARKER_RE, &text, 0)
 }
 
+/// A web address: with a scheme, starting `www.`, or a bare domain with a
+/// common top-level domain followed by a path.
+static URL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    pattern::compile(
+        r#"\b[a-z][a-z0-9+.-]*://[^\s<>"'`]+|\bwww\.[^\s<>"'`]+|(?<![\w/.@-])(?:[a-z0-9-]+\.)+(?:com|org|net|io|dev|ai|app|co|so|sh|me|gov|edu|uk|us|xyz|tech|cloud|ly)/[^\s<>"'`]*"#,
+        true,
+    )
+});
+/// A token with a slash in it. Rooted paths (`/`, `~/`, `./`, `../`) may
+/// continue across a space while the next word still leads to a `/`, as in
+/// `Application Support/`; `path_last_component` decides whether a relative
+/// one is a path or prose such as "and/or".
+static PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    pattern::compile(
+        r"(?<![\w.~/:@-])(?:(?:~|\.{1,2})?/[\w.@+%-]+(?: [\w.@+%-]+(?=/))*(?:/[\w.@+%-]+(?: [\w.@+%-]+(?=/))*)*/?|[\w.@+%-]+(?:/[\w.@+%-]+)+/?)",
+        false,
+    )
+});
+static UUID_RE: LazyLock<Regex> =
+    LazyLock::new(|| pattern::compile(r"\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b", true));
+/// Numbers joined by dashes, such as a Relay command id; dates are kept by
+/// `remove_dash_id`.
+static DASH_ID_RE: LazyLock<Regex> =
+    LazyLock::new(|| pattern::compile(r"(?<![\w.])\d+(?:-\d+)+\b(?![.]\d)", false));
+static HEX_RE: LazyLock<Regex> =
+    LazyLock::new(|| pattern::compile(r"(?<![\w.])[0-9a-f]{7,64}\b(?![.]\d)", true));
+static LONG_NUMBER_RE: LazyLock<Regex> =
+    LazyLock::new(|| pattern::compile(r"(?<![\w.,])\d{10,}\b(?![.,]\d)", false));
+/// Where an id was removed (`REMOVED`), with the spacing, dash or brackets
+/// it leaves behind.
+static REMOVED_BRACKETS_RE: LazyLock<Regex> =
+    LazyLock::new(|| pattern::compile("[(\\[][ \t]*\u{1}[ \t]*[)\\]]", false));
+static REMOVED_DASH_RE: LazyLock<Regex> = LazyLock::new(|| pattern::compile("-?\u{1}-?", false));
+static REMOVED_BEFORE_PUNCTUATION_RE: LazyLock<Regex> =
+    LazyLock::new(|| pattern::compile("[ \t]*\u{1}[ \t\u{1}]*(?=[.,;:!?)\\]\n]|\\z)", false));
+static REMOVED_AT_LINE_START_RE: LazyLock<Regex> =
+    LazyLock::new(|| pattern::compile("(?:^|(?<=\n))[ \t]*\u{1}[ \t\u{1}]*", false));
+static REMOVED_RE: LazyLock<Regex> =
+    LazyLock::new(|| pattern::compile("[ \t]*\u{1}[ \t\u{1}]*", false));
+
+/// Marks text removed by `speakable_text` until the spacing is tidied.
+const REMOVED: &str = "\u{1}";
+/// Punctuation that ends a sentence rather than a URL or path.
+const TRAILING_PUNCTUATION: &[char] = &['.', ',', ';', ':', '!', '?', ')', ']', '\'', '"'];
+
+/// Every match of `pattern` in `text`, replaced by `rewrite` of it.
+fn rewrite_matches(pattern: &Regex, text: &str, rewrite: impl Fn(&str) -> String) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for found in pattern.find_iter(text).map_while(Result::ok) {
+        out.push_str(&text[last..found.start()]);
+        out.push_str(&rewrite(found.as_str()));
+        last = found.end();
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
+/// Splits sentence punctuation off the end of a URL or path.
+fn split_trailing_punctuation(token: &str) -> (&str, &str) {
+    let mut end = token.len();
+    for (index, character) in token.char_indices().rev() {
+        let unbalanced_paren = character == ')' && token[..index].contains('(');
+        if !TRAILING_PUNCTUATION.contains(&character) || unbalanced_paren {
+            break;
+        }
+        end = index;
+    }
+    token.split_at(end)
+}
+
+/// The site a URL names; a GitHub pull request or issue by its number.
+fn speak_url(token: &str) -> String {
+    let (url, trailing) = split_trailing_punctuation(token);
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let (authority, path) = rest
+        .find(['/', '?', '#'])
+        .map_or((rest, ""), |at| rest.split_at(at));
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    let host = host.split(':').next().unwrap_or(host).to_lowercase();
+    let host = host.strip_prefix("www.").unwrap_or(&host).to_string();
+    if host == "github.com" {
+        let path = path.split(['?', '#']).next().unwrap_or("");
+        let segments: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+        if let [_, _, kind, number, ..] = segments.as_slice()
+            && !number.is_empty()
+            && number.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            match *kind {
+                "pull" | "pulls" => return format!("pull request {number} on GitHub{trailing}"),
+                "issues" => return format!("issue {number} on GitHub{trailing}"),
+                _ => {}
+            }
+        }
+    }
+    if host.is_empty() {
+        return token.to_string();
+    }
+    format!("{host}{trailing}")
+}
+
+/// A path's file or folder name; a slash in prose ("and/or", "24/7") as it
+/// was. A relative token counts as a path when it has a file extension, or
+/// three or more parts with a digit, dash, dot or underscore in them, or
+/// four or more parts.
+fn path_last_component(token: &str) -> String {
+    let (path, trailing) = split_trailing_punctuation(token);
+    let rooted = path.starts_with('/')
+        || path.starts_with("~/")
+        || path.starts_with("./")
+        || path.starts_with("../");
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    let Some(last) = parts.last().copied() else {
+        return token.to_string();
+    };
+    if !rooted {
+        let starts_with_word = path
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_alphabetic() || first == '_');
+        let has_extension = last.rsplit_once('.').is_some_and(|(stem, extension)| {
+            !stem.is_empty()
+                && (1..=6).contains(&extension.len())
+                && extension.starts_with(|first: char| first.is_ascii_alphabetic())
+                && extension.chars().all(|c| c.is_ascii_alphanumeric())
+        });
+        let marked = path
+            .chars()
+            .any(|c| c.is_ascii_digit() || matches!(c, '-' | '_' | '.'));
+        let path_like = has_extension || (parts.len() >= 3 && marked) || parts.len() >= 4;
+        if !starts_with_word || !path_like {
+            return token.to_string();
+        }
+    }
+    format!("{last}{trailing}")
+}
+
+/// Dash-joined numbers with a run of six or more digits, such as a command
+/// id; dates and phone-length numbers stay.
+fn remove_dash_id(token: &str) -> String {
+    if token.split('-').any(|group| group.len() >= 6) {
+        REMOVED.to_string()
+    } else {
+        token.to_string()
+    }
+}
+
+/// Hex with both a digit and a letter, such as a commit hash; hex-letter
+/// words ("defaced") and plain numbers stay.
+fn remove_hex(token: &str) -> String {
+    let digit = token.bytes().any(|byte| byte.is_ascii_digit());
+    let letter = token.bytes().any(|byte| byte.is_ascii_alphabetic());
+    if digit && letter {
+        REMOVED.to_string()
+    } else {
+        token.to_string()
+    }
+}
+
+/// What the voice says for `text`, after `strip_markdown_for_tts`: URLs
+/// become their site (a GitHub pull request or issue its number), file and
+/// folder paths their last component, and commit hashes, UUIDs and long or
+/// dash-joined ids are dropped, so structured text is never read out
+/// verbatim. Ordinary speech (versions, times, decimals, dates, "e.g.",
+/// "and/or") is left alone. The notch shows the original text.
+pub fn speakable_text(text: &str) -> String {
+    let spoken = rewrite_matches(&URL_RE, text, speak_url);
+    let spoken = rewrite_matches(&PATH_RE, &spoken, path_last_component);
+    let spoken = rewrite_matches(&UUID_RE, &spoken, |_| REMOVED.to_string());
+    let spoken = rewrite_matches(&DASH_ID_RE, &spoken, remove_dash_id);
+    let spoken = rewrite_matches(&HEX_RE, &spoken, remove_hex);
+    let spoken = rewrite_matches(&LONG_NUMBER_RE, &spoken, |_| REMOVED.to_string());
+    if !spoken.contains(REMOVED) {
+        return spoken;
+    }
+    let spoken = REMOVED_BRACKETS_RE
+        .replace_all(&spoken, REMOVED)
+        .into_owned();
+    let spoken = REMOVED_DASH_RE.replace_all(&spoken, REMOVED).into_owned();
+    let spoken = pattern::sub(&REMOVED_BEFORE_PUNCTUATION_RE, &spoken, 0);
+    let spoken = pattern::sub(&REMOVED_AT_LINE_START_RE, &spoken, 0);
+    REMOVED_RE.replace_all(&spoken, " ").into_owned()
+}
+
+/// What `queue_tts_text` speaks for a reply: markdown stripped, then made
+/// speakable. Falls back to the stripped text when nothing speakable is
+/// left, so a reply that is only an id is still delivered.
+fn spoken_text(text: &str) -> (String, String) {
+    let stripped = json::py_strip(&strip_markdown_for_tts(json::py_strip(text))).to_string();
+    let spoken = json::py_strip(&speakable_text(&stripped)).to_string();
+    if spoken.is_empty() {
+        return (stripped.clone(), stripped);
+    }
+    (spoken, stripped)
+}
+
 /// `_parse_tts_payload`: plain text, or a JSON line tagged with its Relay
 /// command. Returns the text, display text, command seq and command id.
 pub fn parse_tts_payload(raw: &str) -> (String, Option<String>, Option<i64>, Option<String>) {
@@ -246,13 +442,18 @@ pub fn tagged_payload(
 /// waiting playback atomically, so neither happens here.
 pub fn queue_tts_text(speech: &dyn Speech, raw: &str, options: TtsOptions) -> bool {
     let (text, display_text, command_seq, command_id) = parse_tts_payload(raw);
-    let display_preview = normalize_display_preview(display_text.as_deref());
-    let mut text = json::py_strip(&strip_markdown_for_tts(json::py_strip(&text))).to_string();
+    let mut display_preview = normalize_display_preview(display_text.as_deref());
+    let (mut text, mut stripped) = spoken_text(&text);
     if text.is_empty() && !display_preview.is_empty() {
-        text = json::py_strip(&strip_markdown_for_tts(&display_preview)).to_string();
+        (text, stripped) = spoken_text(&display_preview);
     }
     if text.is_empty() {
         return false;
+    }
+    // The speech service shows the spoken text when there is no display
+    // text; keep showing what was written, not what is said.
+    if display_preview.is_empty() && text != stripped {
+        display_preview = stripped;
     }
     let work_fresh = options.freshness_scope == "work"
         && options.source == "lifecycle"
@@ -445,6 +646,140 @@ mod tests {
             strip_markdown_for_tts("1. first\n- second"),
             "first\n- second"
         );
+    }
+
+    /// RR-529: structured text is said by what it refers to.
+    #[test]
+    fn speakable_text_says_structured_text_in_plain_words() {
+        for (written, spoken) in [
+            // The Description's table.
+            (
+                "Edit /Users/matthewthomas/dev/relay-runner/Sources/relay-runner/Settings/SettingsWindow.swift now.",
+                "Edit SettingsWindow.swift now.",
+            ),
+            (
+                "Opened https://github.com/matthewthomas94/relay-runner/pull/61.",
+                "Opened pull request 61 on GitHub.",
+            ),
+            (
+                "Merged the merge commit d63527b6.",
+                "Merged the merge commit.",
+            ),
+            (
+                "Command 11130-1795570645559451000-64 is done.",
+                "Command is done.",
+            ),
+            (
+                "Saved in ~/Library/Application Support/relay-runner/general-tasks today.",
+                "Saved in general-tasks today.",
+            ),
+            // URLs.
+            (
+                "See github.com/matthewthomas94/relay-runner/issues/42, then reply.",
+                "See issue 42 on GitHub, then reply.",
+            ),
+            (
+                "Read https://docs.example.com/guide/start?x=1 first.",
+                "Read docs.example.com first.",
+            ),
+            (
+                "Visit www.apple.com/mac for details.",
+                "Visit apple.com for details.",
+            ),
+            (
+                "It runs on http://localhost:3000/board.",
+                "It runs on localhost.",
+            ),
+            // Paths.
+            ("Wrote ~/notes/today.md.", "Wrote today.md."),
+            ("Logs are in /tmp/relay", "Logs are in relay"),
+            (
+                "Changed rust/relay-rs/src/bridge/speech.rs and tests.",
+                "Changed speech.rs and tests.",
+            ),
+            ("Changed src/main.rs.", "Changed main.rs."),
+            (
+                "Changed SettingsWindow.swift.",
+                "Changed SettingsWindow.swift.",
+            ),
+            // Ids.
+            (
+                "Run 6f1c2d3e-9a8b-4c7d-8e6f-5a4b3c2d1e0f failed.",
+                "Run failed.",
+            ),
+            (
+                "The artifact ticket-66eefb27a56eca95357c9e6b9357b5ec51c13d12 moved.",
+                "The artifact ticket moved.",
+            ),
+            (
+                "Merged (commit 4314ff90) into main.",
+                "Merged (commit) into main.",
+            ),
+            ("Merged (4314ff90) into main.", "Merged into main."),
+            ("d63527b6 merged.", "merged."),
+            ("Token count 12345678901 reached.", "Token count reached."),
+        ] {
+            assert_eq!(speakable_text(written), spoken, "{written}");
+        }
+    }
+
+    /// RR-529: ordinary speech is left alone.
+    #[test]
+    fn speakable_text_leaves_ordinary_speech_alone() {
+        for text in [
+            "Released 0.8.0 at 10:28 with 3.5 times the speed.",
+            "Use a short reply, e.g. one sentence.",
+            "Pick a branch and/or a tag, then turn it on/off.",
+            "It shipped on 2026-11-25 and runs 24/7.",
+            "RR-529 is in review; run 412 passed 1,234 tests.",
+            "It was defaced, not effaced.",
+            "Open the Settings/General tab.",
+            "Version v0.8.1 (122) shipped.",
+            "Call 555-123-4567.",
+            "See github.com for details.",
+        ] {
+            assert_eq!(speakable_text(text), text);
+        }
+    }
+
+    /// RR-529: the voice says the speakable text, the notch shows what was
+    /// written.
+    #[test]
+    fn queued_speech_is_speakable_and_keeps_its_display_text() {
+        let folder =
+            std::env::temp_dir().join(format!("relay-rs-speakable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        let options = || TtsOptions {
+            command_path: folder
+                .join("voice_cmd_ready")
+                .to_string_lossy()
+                .into_owned(),
+            state_path: folder.join("state.json").to_string_lossy().into_owned(),
+            ..TtsOptions::default()
+        };
+        let speech = Recorded::default();
+        let written = "Opened https://github.com/o/r/pull/7 for `src/main.rs`.";
+        assert!(queue_tts_text(&speech, written, options()));
+        let payload = r#"{"text": "Merged d63527b6.", "display_text": "Merged **d63527b6**."}"#;
+        assert!(queue_tts_text(&speech, payload, options()));
+        assert!(queue_tts_text(
+            &speech,
+            "11130-1795570645559451000-64",
+            options()
+        ));
+        let sent = speech.0.lock().unwrap().clone();
+        assert_eq!(sent[0].text, "Opened pull request 7 on GitHub for main.rs.");
+        assert_eq!(
+            sent[0].display_text,
+            "Opened https://github.com/o/r/pull/7 for src/main.rs."
+        );
+        assert_eq!(sent[1].text, "Merged.");
+        assert_eq!(sent[1].display_text, "Merged **d63527b6**.");
+        // Nothing speakable left: delivered as written rather than dropped.
+        assert_eq!(sent[2].text, "11130-1795570645559451000-64");
+        assert_eq!(sent[2].display_text, "");
+        let _ = std::fs::remove_dir_all(folder);
     }
 
     #[test]

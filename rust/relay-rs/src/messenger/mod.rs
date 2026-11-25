@@ -22,6 +22,22 @@ use crate::json::py_is_space;
 pub use config::Config;
 
 pub const MESSENGER_SYSTEM_PROMPT: &str = include_str!("system_prompt.txt");
+
+/// The system prompt both backends start with: the shared prompt, plus the
+/// session agent's name (RR-530) when `RELAY_SESSION_AGENT` names one.
+pub fn system_prompt() -> String {
+    prompt_for_agent(relay_services::command_actions::current_session_agent())
+}
+
+fn prompt_for_agent(agent: Option<&str>) -> String {
+    match agent {
+        Some(slug) => format!(
+            "{MESSENGER_SYSTEM_PROMPT}Your name is {}; answer to it as your own.\n",
+            relay_services::command_actions::agent_name(slug)
+        ),
+        None => MESSENGER_SYSTEM_PROMPT.to_string(),
+    }
+}
 pub const SILENT_RESPONSE: &str = "__SILENT__";
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -186,6 +202,32 @@ pub fn first_semantic_response(text: &str, complete: bool) -> Option<String> {
 mod tests {
     use super::*;
     use crate::json;
+
+    #[test]
+    fn the_prompt_presents_one_agent_that_hands_requests_on() {
+        let flat = MESSENGER_SYSTEM_PROMPT
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        for rule in [
+            "one assistant with one voice and one name",
+            "never say you can't do something, lack tools or access",
+            "never mention a messenger, a second session",
+            "reply __HANDOFF__ with a short acknowledgement naming the action",
+            "\"Opening Chrome.\"",
+            "never verbatim",
+        ] {
+            assert!(flat.contains(rule), "missing: {rule}");
+        }
+    }
+
+    #[test]
+    fn the_prompt_names_the_session_agent_when_known() {
+        assert_eq!(prompt_for_agent(None), MESSENGER_SYSTEM_PROMPT);
+        let named = prompt_for_agent(Some("isabella"));
+        assert!(named.starts_with(MESSENGER_SYSTEM_PROMPT));
+        assert!(named.ends_with("Your name is Isabella; answer to it as your own.\n"));
+    }
 
     #[test]
     fn the_first_sentence_needs_three_tokens() {

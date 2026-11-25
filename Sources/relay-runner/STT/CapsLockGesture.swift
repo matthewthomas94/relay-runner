@@ -10,6 +10,7 @@ import Foundation
 ///   - Double-tap Option: play queued TTS / replay last
 ///   - Double-tap Control: cancel recording / dismiss TTS
 ///   - Double-tap Shift: toggle the routed board surface
+///   - Shift-Option / Shift-Control: switch to the next / previous running agent
 final class CapsLockGesture {
     typealias GlobalMonitorInstaller = (
         NSEvent.EventTypeMask,
@@ -40,6 +41,7 @@ final class CapsLockGesture {
         case interrupt
         case play
         case boardToggle
+        case cycleAgent(AgentCycleGesture.Direction)
     }
 
     /// Threshold before a held key counts as "recording" (not a tap)
@@ -108,6 +110,8 @@ final class CapsLockGesture {
     private var pendingCancel = false
     private var pendingBoardToggle = false
     private var boardHotkeyGesture = BoardHotkeyGesture()
+    private var agentCycleGesture = AgentCycleGesture()
+    private var pendingAgentCycle: AgentCycleGesture.Direction?
 
     /// Modal confirmation gate. When `stateMachine?.pendingConfirmation != nil`
     /// the modifier double-taps mean yes/no instead of play/cancel:
@@ -240,6 +244,10 @@ final class CapsLockGesture {
         if pendingBoardToggle {
             pendingBoardToggle = false
             return .boardToggle
+        }
+        if let direction = pendingAgentCycle {
+            pendingAgentCycle = nil
+            return .cycleAgent(direction)
         }
 
         if holdBroken {
@@ -382,6 +390,7 @@ final class CapsLockGesture {
                 holdBroken = true
             }
             boardHotkeyGesture.handleKeyDown()
+            agentCycleGesture.handleKeyDown()
         default:
             break
         }
@@ -433,6 +442,18 @@ final class CapsLockGesture {
 
         if boardHotkeyGesture.handleFlagsChanged(event.modifierFlags, at: now) {
             pendingBoardToggle = true
+        }
+
+        // Shift-Option and Shift-Control switch agents; their Option or
+        // Control press is not a tap toward play or cancel.
+        if let direction = agentCycleGesture.handleFlagsChanged(event.modifierFlags) {
+            pendingAgentCycle = direction
+        }
+        if agentCycleGesture.isChordHeld {
+            optionTaps.removeAll()
+            controlTaps.removeAll()
+            pendingPlay = false
+            pendingCancel = false
         }
     }
 
@@ -513,6 +534,8 @@ final class CapsLockGesture {
         pendingCancel = false
         pendingBoardToggle = false
         boardHotkeyGesture = BoardHotkeyGesture()
+        agentCycleGesture = AgentCycleGesture()
+        pendingAgentCycle = nil
     }
 
     private func handleKeyEvent(_ event: NSEvent) {

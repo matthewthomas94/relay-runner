@@ -14,7 +14,7 @@ use crate::json::{self, Dict, Value, py_strip};
 use super::config::{Config, child_environment};
 use super::process::{Proc, read_json_lines};
 use super::subscription;
-use super::{Backend, MESSENGER_SYSTEM_PROMPT, Partial, first_semantic_response};
+use super::{Backend, Partial, first_semantic_response, system_prompt};
 
 /// One `ask` waiting for its `result` line (Python's `_pending` dict).
 struct Pending {
@@ -258,6 +258,7 @@ impl ClaudeBackend {
             return command.clone();
         }
         let mut command = self.argv.clone();
+        let prompt = system_prompt();
         for part in [
             "--print",
             "--input-format",
@@ -275,7 +276,7 @@ impl ClaudeBackend {
             "--mcp-config",
             r#"{"mcpServers":{}}"#,
             "--system-prompt",
-            MESSENGER_SYSTEM_PROMPT,
+            prompt.as_str(),
         ] {
             command.push(part.to_string());
         }
@@ -500,6 +501,7 @@ mod tests {
             ]
         );
         assert_eq!(argv[16], "--system-prompt");
+        assert_eq!(argv[17], super::super::system_prompt());
         assert_eq!(&argv[18..], &["--effort", "high", "--resume", "abc"]);
     }
 }

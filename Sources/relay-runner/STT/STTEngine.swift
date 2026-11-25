@@ -62,6 +62,8 @@ final class STTEngine: @unchecked Sendable {
     var playDetectedAt: Date?
     var boardToggleRequested = false
     var boardToggleRequestedAt: CFTimeInterval?
+    /// Shift-Option or Shift-Control was pressed on its own: switch agents.
+    var agentCycleRequested: AgentCycleGesture.Direction?
     var partialTranscription = ""
     var statusMessage = ""
     var recordingStartedSerial = 0
@@ -898,6 +900,11 @@ final class STTEngine: @unchecked Sendable {
                     boardToggleRequested = true
                     boardToggleRequestedAt = CACurrentMediaTime()
                     NSLog("[STTEngine] Workspace toggle requested (double-tap Shift)")
+                    continue
+
+                case .cycleAgent(let direction):
+                    agentCycleRequested = direction
+                    NSLog("[STTEngine] Agent switch requested (\(direction == .forward ? "Shift-Option" : "Shift-Control"))")
                     continue
                 }
             }

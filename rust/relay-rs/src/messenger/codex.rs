@@ -12,7 +12,7 @@ use crate::json::{self, Dict, Value, py_strip};
 use super::catalog::{error_message, request};
 use super::config::{Config, child_environment};
 use super::process::{Proc, read_json_lines};
-use super::{Backend, MESSENGER_SYSTEM_PROMPT, Partial, first_semantic_response};
+use super::{Backend, Partial, first_semantic_response, system_prompt};
 
 #[derive(Default)]
 struct Turn {
@@ -285,7 +285,7 @@ impl CodexBackend {
         params.insert("cwd", self.config.cwd.as_str());
         params.insert("approvalPolicy", "never");
         params.insert("sandbox", "read-only");
-        params.insert("baseInstructions", MESSENGER_SYSTEM_PROMPT);
+        params.insert("baseInstructions", system_prompt());
         for key in [
             "dynamicTools",
             "environments",

@@ -228,6 +228,35 @@ final class CapsLockGestureTests: XCTestCase {
         XCTAssertEqual(gesture.poll(currentSegment: ""), .cancel)
     }
 
+    func testShiftOptionAndShiftControlSwitchAgentsWithoutPlayOrCancel() {
+        var localHandler: ((NSEvent) -> NSEvent?)?
+        let gesture = holdGesture(flags: { [] }, local: { localHandler = $0 })
+        for _ in 0..<2 {
+            _ = localHandler?(modifierEvent(flags: [.shift], keyCode: 56))
+            _ = localHandler?(modifierEvent(flags: [.shift, .option], keyCode: 58))
+            _ = localHandler?(modifierEvent(flags: [.shift], keyCode: 58))
+            _ = localHandler?(modifierEvent(flags: [], keyCode: 56))
+            XCTAssertEqual(gesture.poll(currentSegment: ""), .cycleAgent(.forward))
+        }
+        for _ in 0..<2 {
+            _ = localHandler?(modifierEvent(flags: [.control], keyCode: 59))
+            _ = localHandler?(modifierEvent(flags: [.control, .shift], keyCode: 56))
+            _ = localHandler?(modifierEvent(flags: [.control], keyCode: 56))
+            _ = localHandler?(modifierEvent(flags: [], keyCode: 59))
+            XCTAssertEqual(gesture.poll(currentSegment: ""), .cycleAgent(.backward))
+        }
+        XCTAssertNil(gesture.poll(currentSegment: ""))
+    }
+
+    func testShiftOptionTypingDoesNotSwitchAgents() {
+        var localHandler: ((NSEvent) -> NSEvent?)?
+        let gesture = holdGesture(flags: { [] }, local: { localHandler = $0 })
+        _ = localHandler?(modifierEvent(flags: [.shift, .option], keyCode: 58))
+        _ = localHandler?(keyDownEvent(flags: [.shift, .option], keyCode: 40))
+        _ = localHandler?(modifierEvent(flags: [], keyCode: 58))
+        XCTAssertNil(gesture.poll(currentSegment: ""))
+    }
+
     /// Hold to talk is the default on a new install; a config written before
     /// the setting existed keeps Caps Lock.
     func testActivationModeDefaultsToHoldOnlyOnAFreshInstall() {
