@@ -356,7 +356,7 @@ final class RelaySessionControlTests: XCTestCase {
             return replies
         }
         XCTAssertEqual(try reply(.workspaceCommand(WorkspaceCommand(clientId: id))), [])
-        guard case .settingsState(let settings) = try reply(.settingsCommand(SettingsCommand(clientId: id, action: .get))) else {
+        guard case .settingsState(let settings)? = try reply(.settingsCommand(SettingsCommand(clientId: id, action: .get))).first else {
             return XCTFail("a settings_state answers settings_command")
         }
         XCTAssertNil(settings.error)
