@@ -34,6 +34,11 @@
 	<string>Relay Remote listens to your spoken requests and transcribes them on this iPhone. Only the text is sent to your Mac.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Relay Remote turns your speech into text on this iPhone so it can send your request to Relay Runner on your Mac.</string>
+	<key>UIAppFonts</key>
+	<array>
+		<string>BaiJamjuree-Regular.ttf</string>
+		<string>BaiJamjuree-SemiBold.ttf</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
