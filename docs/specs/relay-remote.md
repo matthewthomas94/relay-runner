@@ -26,10 +26,10 @@ Relay Remote is the proposed path for a native iOS app to drive a Relay Runner v
 
 ## Non-goals
 
-- No hosted relay, account, push notification service or Relay-operated server. Push notifications would require a server and are out of scope.
+- No hosted relay, account, push notification service or Relay-operated server. Push notifications would require a server and are out of scope; instead the phone posts local notifications for replies while it is alive in the background with its audio session active (RR-532, design `docs/design/relay-remote-ios/README.md`).
 - No audio from the phone to the Mac: the phone sends text only. From the Mac to the phone, audio is limited to synthesised reply speech (RR-457 retired the earlier text-only rule for that direction). The Mac's microphone and speaker output are never streamed.
 - No remote screen viewing or screen control from the phone. Relay Actions and Relay Vision remain Mac-local.
-- No choice of provider, model or effort from the phone, and no switching projects while a session runs. The phone attaches to a running session, or starts one for a registered project when none is running (RR-456, [Session control](#session-control)); that session uses the Mac's current defaults, and starting a different project is refused until the running one is stopped.
+- No choice of provider from the phone, and no switching projects while a session runs. The phone attaches to a running session, or starts one for a registered project, or for the built-in general-tasks project when it names none, when none is running (RR-456, RR-532, [Session control](#session-control)); that session uses the Mac's current defaults, and starting a different project is refused until the running one is stopped. Since RR-532 the phone can read the provider and change the orchestrator model, effort, sub-agent sizing and speech speed ([Settings](#settings)).
 - No multi-user access. One Mac login user, that user's keys, that user's session.
 - No waking of a sleeping Mac. A sleeping or logged-out Mac is unreachable by design.
 
@@ -50,6 +50,7 @@ Mac                                         v
                  - speech      <- SpeechCoordinator remote sink (Kokoro synthesises; the Mac speaker stays closed)
           <-> /tmp/relay_session_control.sock              (Unix stream socket, app-owned, RR-456)
                  - session_command -> list projects, start, stop, state
+                 - workspace_command, settings_command (RR-532) -> Workspace feed, settings
   Relay Runner.app
      - pairing UI, authorized_keys writer, /tmp/relay_remote_pair.sock
      - microphone and speaker gate while a remote device is active, status, keep-awake
@@ -86,16 +87,19 @@ One connection per device, one exec channel, newline-delimited UTF-8 JSON in bot
 ```
 phone -> Mac
 {"type":"hello","protocol":1,"device_id":"...","device_name":"iPhone","app_version":"0.1","resume_after_seq":41,"remote_mode":true}
-{"type":"utterance","client_id":"...","text":"move RR-120 to ready","captured_at":"2026-10-22T09:14:03Z"}
-{"type":"control","client_id":"...","action":"stop"}           stop | interrupt | cancel | play | replay
+{"type":"utterance","client_id":"...","text":"move RR-120 to ready","captured_at":"2026-10-22T09:14:03Z","agent":"george"}
+{"type":"control","client_id":"...","action":"stop","agent":"george"}           stop | interrupt | cancel | play | replay
 {"type":"remote_mode","client_id":"...","enabled":false}
 {"type":"session_command","client_id":"...","action":"start","project_id":"...","agent":"george"}   list_projects | start | stop | state
+{"type":"workspace_command","client_id":"...","action":"list"}
+{"type":"settings_command","client_id":"...","action":"get"}
+{"type":"settings_command","client_id":"...","action":"set","model":"sonnet","speech_speed_percent":150}
 {"type":"ack","seq":44,"played":true}
 {"type":"ping","t":1761124443}
 
 Mac -> phone
 {"type":"welcome","protocol":1,"session_state":"running","server_seq":44,"resumed_from":41,"dropped":false}
-{"type":"accepted","client_id":"...","relay_command_seq":812,"relay_command_id":"4711-1761124443123456789-812"}
+{"type":"accepted","client_id":"...","relay_command_seq":812,"relay_command_id":"4711-1761124443123456789-812","agent":"george"}
 {"type":"speech","seq":45,"kind":"handoff","source":"messenger","text":"Looking at RR-120 now.","relay_command_seq":812}
 {"type":"speech","seq":46,"kind":"final","source":"orchestrator","text":"RR-120 is in ready and dispatching.","relay_command_seq":812,"spoken_by":"phone","audio":true}
 {"type":"speech_audio","seq":46,"part":0,"parts":0,"format":"aac","sample_rate":24000,"data":"//FgQB/7/N4CAExhdmP+vw=="}
@@ -107,7 +111,12 @@ Mac -> phone
 {"type":"session_state","app_running":true,"session":"none","projects":[{"project_id":"...","display_name":"relay-runner","availability":"available"}]}
 {"type":"session_state","app_running":true,"session":"ready","project_id":"...","project_name":"relay-runner","active_agent":"george","running_agents":["puck","george"]}
 {"type":"session_state","app_running":false,"session":"none"}
+{"type":"session_state","app_running":true,"session":"ready","project_id":"...","project_name":"relay-runner","active_agent":"george","running_agents":["puck","george"],"agents":[{"agent":"puck","running":true,"state":"working","working_on":"RR-120 review"},{"agent":"isabella","running":false,"state":"off"},{"agent":"george","running":true,"state":"playing"},{"agent":"sky","running":false,"state":"off"}]}
+{"type":"workspace_state","projects":[{"id":"...","name":"relay-runner"}],"tickets":[{"id":"RR-120","title":"...","status":"in_progress","project_id":"...","agent":"puck"},{"id":"RR-121","title":"...","status":"queued","project_id":"..."}]}
+{"type":"settings_state","speech_speed_percent":130,"provider":"claude","model":"opus","effort":"medium","sizing":"orchestrator_decides","model_options":[{"value":"opus","label":"Opus"}],"effort_options":[{"value":"medium","label":"Medium"}],"sizing_options":[{"value":"orchestrator_decides","label":"Orchestrator decides"}]}
 ```
+
+Every frame above has golden vectors in `tests/RelayRemoteProtocolTests/Vectors`: `frames.json` holds the frames before RR-532, which carry none of its fields, and `frames_extended.json` the RR-532 frames and fields; `invalid.json` holds the refusals of both. The Swift codec (`Sources/RelayRemoteProtocol`) and its Rust twin (`rust/relay-rs/src/remote/protocol.rs`) must encode and decode all of them byte for byte.
 
 - `accepted` is the phone's receipt that an utterance entered the intent inbox, the remote equivalent of the notch's visual receipt. The phone shows it; it does not speak it.
 - `speech` mirrors `SpeechIntent` from `services/speech_coordinator.py`: the same `kind` values (`handoff`, `progress`, `clarification`, `final`, `fallback`, `control`) and `source` values (`messenger`, `orchestrator`, `lifecycle`, `completion`, `fallback`). With `audio: true` the Mac's voice for that text follows in `speech_audio` frames and the phone plays it; with `audio: false`, or no `audio` key, the phone speaks the text with its own synthesizer. Either way the phone answers `ack` with `played` once the frame has played, so the coordinator's realization record and played coverage stay truthful.
@@ -123,13 +132,72 @@ Mac -> phone
 - Controls map one-to-one onto the FIFO tokens the bridge already dispatches: `stop` to `__TTS_STOP__`, `interrupt` to `__INTERRUPT__`, `cancel` to `__CANCEL__`, `play` to `__PLAY__`, `replay` to `__REPLAY__`. No new control semantics are introduced.
 - `SSH_ORIGINAL_COMMAND` is ignored except for an allow-listed `status` subcommand that returns one `status` frame and exits, used by the phone's connection check.
 - `session_command` and `session_state` (RR-456) are described under [Session control](#session-control). Neither carries a `seq` or is replayed. Protocol version 1 is unchanged: both decoders ignore unknown keys, the phone logs an unknown frame type and continues, and the helper hands `session_command` to the app, so a voice bridge never receives it.
+- RR-532 adds [agent addressing and per-agent state](#agents), the [Workspace feed](#workspace-feed) and [settings](#settings). Every addition is an optional field or a new frame type, so protocol version 1 is unchanged and a peer that sends none of them behaves exactly as before.
+
+### Which side serves each command
+
+| Phone frame | Served by | Answer |
+| --- | --- | --- |
+| `hello`, `utterance`, `control`, `remote_mode`, `ack`, `ping` | Voice bridge (`rust/relay-rs/src/remote/server.rs`) | `welcome`, `accepted`, `speech`, `speech_audio`, `speech_control`, `status`, `pong` |
+| `session_command` | App, `/tmp/relay_session_control.sock` (`RelaySessionControl.swift`) | `session_state` |
+| `workspace_command` (RR-532) | App, `RelayRemoteWorkspaceFeed.swift` | `workspace_state` |
+| `settings_command` (RR-532) | App, `RelayRemoteSettings.swift` | `settings_state` |
+
+The app serves the Workspace and settings because it owns the project registry, the boards and the configuration; the bridge sees none of them. `relay-remote-shell` sends all three app commands to the session-control socket, opening it beside an attached bridge on the first one, and answers `app_unavailable` when the app is not running. None of them carries a `seq` or is replayed; `client_id` is checked as a UUID. On a session-control channel the app also ignores `utterance` and `control` frames, as it always has: there is no bridge to take them.
+
+**Older peers.** A phone built before RR-532 never sends the new frames or fields and ignores the new keys it receives; the Mac sends `workspace_state` and `settings_state` only in answer to a command. A Mac built before RR-532 ignores `agent` and delivers to the focused agent, sends no `agents`, refuses a `start` without `project_id` with "Choose a project to start.", and answers `workspace_command` and `settings_command` with an `unknown_type` error from an attached bridge, or not at all on a session-control channel. The phone treats either as "not available on this Mac".
+
+### Agents
+
+The Mac runs up to four named agents, by slug `puck`, `isabella`, `george` and `sky` (table order, `RelayRemoteProtocol.agents`). The codecs accept any string as a slug so that a later agent does not break an older peer; the Mac refuses or ignores one it does not know.
+
+- **Addressing.** `utterance` and `control` carry an optional `agent`: the agent the request or control is for. Absent means the agent focused on the Mac, today's behaviour. `accepted`, `speech`, `speech_audio`, `speech_control` and `status` carry an optional `agent` naming the agent the frame belongs to; absent means the focused agent, and on `speech_control` every agent's speech, as before. A `speech_audio` part carries the same `agent` as the `speech` frame it voices.
+- **Per-agent state.** `session_state` carries an optional `agents` list, one entry per agent in table order, running or not: `agent`, `running`, `state` and an optional short `working_on`. `state` is `off` (not running), `starting`, `ready` (running and idle), `working` (running a turn), `listening` (taking the user's speech) or `playing` (its reply is playing). The Mac includes it in every `session_state` once it reports per-agent state, so the app's once-a-second push carries every change; absent means a Mac that does not report it.
+- **What ships in RR-532.** The codecs, the kit and the seams. The bridge accepts `agent` and ignores it (`rust/relay-rs/src/bridge/remote_agents.rs` resolves every remote item to the focused voice target), the Mac tags no outbound frame with an agent, and `RelayRemoteAgents.states` reports no `agents`, so `session_state` is unchanged. RR-534 routes by agent, tags the frames and fills `agents`.
+
+### Workspace feed
+
+`workspace_command` with `action: "list"` (the only action) asks the Mac for its Workspace and is answered with one `workspace_state`:
+
+- `projects`: every registered project, `id` and `name`.
+- `tickets`: the open tickets the phone groups by lane: `id` (for example `RR-120`), `title`, `status` (`in_progress`, `queued` or `backlog`), `project_id` (an `id` from `projects`) and an optional owning `agent` slug.
+- `error`: optional, why the lists are empty when the Mac could not read them.
+
+Both lists are always present, even when empty. **What ships in RR-532:** `RelayRemoteWorkspaceFeed` answers every command with empty lists and the `error` "The Workspace is not available from the phone on this Mac yet." RR-535 serves the real feed and decides whether the Mac also pushes `workspace_state` when a board changes; the phone already accepts one at any time.
+
+### Settings
+
+`settings_command` with `action: "get"` reads the Mac's settings; `action: "set"` changes only the keys it carries and leaves the rest alone. Either is answered with one `settings_state`. The keys are:
+
+| Key | Meaning | In `set` |
+| --- | --- | --- |
+| `speech_speed_percent` | The desktop TTS rate in hundredths: 130 is 1.3x. The phone's slider runs 50 to 200 in steps of 10. Integers keep the canonical encoding identical in Swift and Rust | yes |
+| `provider` | The orchestrator provider, `codex` or `claude` | no, read-only from the phone |
+| `model` | The orchestrator model, one of `model_options` | yes |
+| `effort` | The orchestrator effort, one of `effort_options` | yes |
+| `sizing` | The sub-agent sizing policy, one of `sizing_options` (`orchestrator_decides`, `user_default`) | yes |
+
+`settings_state` also carries `model_options`, `effort_options` and `sizing_options`, each a list of `{value, label}` from the Mac's own catalogue for the current provider and model (`GeneralConfig` in `Config.swift`), so the phone never hard-codes it and a Mac update needs no phone update. A `set` the Mac refuses is answered with the unchanged values and an `error` saying why. Every field of `settings_state` is optional, so a Mac that cannot serve settings answers with only `error`. RR-536 applies each `set` through the same validation and save path as the Mac's own Settings window, so a retried `client_id` re-applies the same values harmlessly. **What ships in RR-532:** `RelayRemoteSettings` answers every command, `get` or `set`, with only the `error` "Settings cannot be changed from the phone on this Mac yet." and changes nothing; RR-536 serves the real values.
+
+### Kit client API
+
+`ios/RelayRemoteKit` exposes the RR-532 frames to the iPhone app (RR-540, RR-543 and RR-544 build on these names):
+
+- `RemoteSession.send(text:agent:)` and `send(control:agent:)` address a named agent; nil is the focused agent. A queued utterance keeps its agent when it is resent.
+- `Frame.agent` is the agent any agent-addressed frame names, for frames from `onInbound` or `records`.
+- `RemoteSession.agents` and `MacSessionStatus.agents` (with `agent(_:)`) publish the Mac's per-agent state; empty from a Mac that does not report it, and in `MacSessionStatus` while the Mac is not reached.
+- `RemoteSession.requestWorkspace()` asks for the feed, which lands in `workspace`.
+- `RemoteSession.requestSettings()` and `updateSettings(speechSpeedPercent:model:effort:sizing:)` read and change settings; the answer lands in `settings`, and a refusal's reason in `settingsError`, cleared by the next settings command.
+- `send(sessionCommand: .start, projectID: nil, agent:)` starts in the general-tasks project.
+
+Each returns false when no channel is up, so a request the user made earlier is not sent later; they work on a bridge channel and on a session-control channel alike.
 
 ### Session control
 
 Relay Runner listens on `/tmp/relay_session_control.sock` whenever the app runs, with or without a session (RR-456). The socket is created mode 600, every connection's uid is checked with `getpeereid`, and its phone-side client is `relay-remote-shell`, which only a paired device's forced command runs. The same socket also carries [Relay App](relay-app.md)'s `app_command` lines (RR-459); a connection whose first line is `identify`, as every helper connection's is, is refused app commands, so a phone can only reach `session_command`.
 
-- **Routing.** `relay-remote-shell --device` connects to `/tmp/relay_remote.sock` when a session's bridge listens, as before. When it does not, the helper connects to the session-control socket instead; the app answers the helper's `identify` with `session_state` and the project list, ignores `hello` and answers `ping`. While attached to a bridge, the helper opens the session-control socket on the phone's first `session_command` and sends every `session_command` there, so Stop and the running project's name work from an attached session; without the app it answers `app_unavailable`. When neither socket listens the helper writes `session_state` with `app_running: false` and exits. An SSH failure remains "Mac unreachable" on the phone. The `status` and `--pair` modes never fall back.
-- **Commands.** `list_projects` and `state` report. `start` with a registered, available `project_id` calls `AppState.newSession(workingDirectory:)` with that project's path, the path the Workspace Start button uses, without raising the Workspace; the session uses the Mac's provider, model and effort defaults and behaves exactly like one started on the Mac, including its voice-command authority. `stop` calls `AppState.endSession()`. A `start` while another project's session runs is refused with an `error` naming it; starting the running project again only reports it. RR-523: `start` carries an optional `agent` slug (`puck`, `isabella`, `george`, `sky`); a named agent not yet running in the project starts beside the running ones, and an unknown one is refused. A `start` without `agent`, from an older phone build, starts the most recently active agent, or Puck if none has run. `session_state` reports `active_agent` and `running_agents` (table order) while a session runs. `client_id` de-duplicates a retried command.
+- **Routing.** `relay-remote-shell --device` connects to `/tmp/relay_remote.sock` when a session's bridge listens, as before. When it does not, the helper connects to the session-control socket instead; the app answers the helper's `identify` with `session_state` and the project list, ignores `hello` and answers `ping`. While attached to a bridge, the helper opens the session-control socket on the phone's first app command (`session_command`, and since RR-532 `workspace_command` and `settings_command`) and sends every app command there, so Stop and the running project's name work from an attached session; without the app it answers `app_unavailable`. When neither socket listens the helper writes `session_state` with `app_running: false` and exits. An SSH failure remains "Mac unreachable" on the phone. The `status` and `--pair` modes never fall back.
+- **Commands.** `list_projects` and `state` report. `start` with a registered, available `project_id` calls `AppState.newSession(workingDirectory:)` with that project's path, the path the Workspace Start button uses, without raising the Workspace; the session uses the Mac's provider, model and effort defaults and behaves exactly like one started on the Mac, including its voice-command authority. `stop` calls `AppState.endSession()`. RR-532: a `start` without `project_id` starts in the built-in general-tasks project, the project the Mac's own Start Session uses by default, and is otherwise the same as a start that names it; "Choose a project to start." remains only for a Mac whose registry cannot provide that project. A `start` while another project's session runs is refused with an `error` naming it; starting the running project again only reports it. RR-523: `start` carries an optional `agent` slug (`puck`, `isabella`, `george`, `sky`); a named agent not yet running in the project starts beside the running ones, and an unknown one is refused. A `start` without `agent`, from an older phone build, starts the most recently active agent, or Puck if none has run. `session_state` reports `active_agent` and `running_agents` (table order) while a session runs. `client_id` de-duplicates a retried command.
 - **States.** `none`, then `starting` from the accepted start until the bridge's Relay Remote socket answers `status` with `running`, then `ready`; `failed` with an `error` when the app refuses the start or the session ends before it is ready. The app pushes each change to connected helpers once a second. A `stop` reports `none` at once.
 - **Attach.** On a session-control channel, `ready` closes the channel and the phone reconnects at once, so the helper attaches to the new bridge and `hello` carries the Remote mode as usual. If the channel reports `ready` on arrival, the phone reconnects after its normal backoff instead. Utterances typed before the session existed stay queued and are sent after `welcome`. After each `welcome` the phone sends `session_command` `state` to learn the running project.
 
@@ -215,15 +283,16 @@ No iOS code, SSH prototype or model inference was run while preparing this spec.
 
 ## Verification targets
 
-- Protocol codec round-trips, replay trimming and `client_id` dedupe pass identical golden vectors in Swift and Python tests.
+- Protocol codec round-trips, replay trimming and `client_id` dedupe pass identical golden vectors in Swift and Rust tests, including the RR-532 vectors in `frames_extended.json` and `invalid.json`.
 - The `authorized_keys` writer is idempotent against a temporary `HOME`, never touches foreign lines, and refuses unsafe permissions.
 - Remote utterances carry `input_source` and `device_id` through `_begin_relay_command`, the spool `.meta` and the state file, in order with microphone utterances.
 - The coordinator's remote sink records realization from device `ack` frames, keeps the Mac's speaker closed for remote-routed speech while streaming its synthesised audio, and cancels that synthesis on every stop, with the speech event log showing the sink and first-audio latency.
 - A per-user `sshd -D -f <temporary config> -p <high port>` with a temporary host key and `authorized_keys` runs the real helper end to end on a Mac, with no privileged setup.
 - On a physical iPhone: pair by QR, send an utterance, hear the reply in the Mac's voice, lock the phone during a reply, reconnect and receive the replayed frames; repeat over Tailscale from cellular.
+- RR-532: the kit tests cover sending to a named agent, agent-tagged speech, per-agent state updates, a Workspace round trip and settings get and set including a refused set against the scripted Mac; the app tests cover each new command reaching its own handler with a well-formed reply and a start without a project; the helper test covers the new commands reaching the app beside a bridge; the bridge test covers an agent-tagged utterance and control being delivered as before.
 - Session control (RR-456): unit tests cover the app handler, the helper's socket order and the codec vectors, and a kit loopback test runs the real helper against a scripted session-control socket that brings up the real bridge module. On a physical iPhone, with Relay Runner running and no session: the phone lists the Mac's projects, Start shows starting then ready, the phone attaches by itself and a typed or spoken request is answered, Stop ends the session on the Mac, and with Relay Runner quit the phone says it is not running.
 
-Push notifications, a hosted relay, multi-user access, remote screen viewing or control, audio from the phone to the Mac, streaming of the Mac's microphone or speaker output, choosing the provider or model from the phone and waking a sleeping Mac are not capabilities of this proposal.
+Push notifications, a hosted relay, multi-user access, remote screen viewing or control, audio from the phone to the Mac, streaming of the Mac's microphone or speaker output, choosing the provider from the phone and waking a sleeping Mac are not capabilities of this proposal. Choosing the orchestrator model, effort and sub-agent sizing and the speech speed from the phone is in scope since RR-532 ([Settings](#settings)). Push notifications stay out; while the app is alive in the background with its audio session active it posts local notifications for replies instead.
 
 ## Proposed ticket breakdown
 

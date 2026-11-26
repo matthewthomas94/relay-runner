@@ -617,11 +617,12 @@ fn handle_entry(
     if let Some(rest) = pattern::group(&SLASH_RE, &text, 1) {
         text = format!("/{}", rest.replace(' ', "-"));
     }
-    let voice_target = if entry.remote.is_none() {
-        let pinned = pinned_target_key.take().unwrap_or_default();
-        targets::voice_target_for(&pinned).or_else(targets::current_voice_target)
-    } else {
-        targets::current_voice_target()
+    let voice_target = match &entry.remote {
+        None => {
+            let pinned = pinned_target_key.take().unwrap_or_default();
+            targets::voice_target_for(&pinned).or_else(targets::current_voice_target)
+        }
+        Some(item) => super::remote_agents::voice_target(item),
     };
     let target_repo = match &voice_target {
         Some(target) => target.cwd.clone(),

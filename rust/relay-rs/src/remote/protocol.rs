@@ -1,7 +1,6 @@
 //! Relay Remote wire protocol (docs/specs/relay-remote.md, "Wire protocol").
 //!
-//! Rust twin of `services/relay_remote_protocol.py` and
-//! `Sources/RelayRemoteProtocol`. All three agree byte for byte on
+//! Rust twin of `Sources/RelayRemoteProtocol`. Both agree byte for byte on
 //! `tests/RelayRemoteProtocolTests/Vectors`. Pure data code: no sockets.
 //!
 //! Every frame is checked against one field table on the way in and on the
@@ -27,6 +26,18 @@ const AUDIO_FORMATS: &[&str] = &["aac", "opus"];
 /// RR-456: session control from the phone.
 const SESSION_ACTIONS: &[&str] = &["list_projects", "start", "stop", "state"];
 const SESSION_PHASES: &[&str] = &["none", "starting", "ready", "failed"];
+/// RR-532: per-agent state, the Workspace feed and settings.
+const AGENT_STATES: &[&str] = &[
+    "off",
+    "starting",
+    "ready",
+    "working",
+    "listening",
+    "playing",
+];
+const WORKSPACE_ACTIONS: &[&str] = &["list"];
+const TICKET_STATUSES: &[&str] = &["in_progress", "queued", "backlog"];
+const SETTINGS_ACTIONS: &[&str] = &["get", "set"];
 /// `speech_coordinator.SPEECH_KINDS` and `SPEECH_SOURCES`.
 const SPEECH_KINDS: &[&str] = &[
     "handoff",
@@ -82,12 +93,16 @@ pub struct Utterance {
     pub client_id: String,
     pub text: String,
     pub captured_at: String,
+    /// RR-532: the agent slug the request is for; absent means the focused agent.
+    pub agent: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Control {
     pub client_id: String,
     pub action: String,
+    /// RR-532: the agent slug the control is for; absent means the focused agent.
+    pub agent: Option<String>,
 }
 
 /// RR-454: on, the phone owns mic and speaker; off, speech plays on the Mac.
@@ -135,6 +150,8 @@ pub struct Accepted {
     pub client_id: String,
     pub relay_command_seq: i64,
     pub relay_command_id: String,
+    /// RR-532: the agent whose inbox took the utterance.
+    pub agent: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -148,6 +165,8 @@ pub struct Speech {
     pub spoken_by: Option<String>,
     /// RR-457: true when `speech_audio` parts in the Mac's voice follow.
     pub audio: Option<bool>,
+    /// RR-532: the agent speaking; absent means the focused agent.
+    pub agent: Option<String>,
 }
 
 /// RR-457: one slice of the Mac's voice for the `speech` frame `seq`. It takes
@@ -161,6 +180,8 @@ pub struct SpeechAudio {
     pub sample_rate: i64,
     pub data: String,
     pub last: Option<bool>,
+    /// RR-532: the agent of the `speech` frame this voices.
+    pub agent: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -168,12 +189,16 @@ pub struct SpeechControl {
     pub seq: i64,
     pub action: String,
     pub reason: Option<String>,
+    /// RR-532: the agent whose speech stops; absent means every agent's.
+    pub agent: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Status {
     pub seq: i64,
     pub text: String,
+    /// RR-532: the agent the status is about, when it is about one.
+    pub agent: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -194,6 +219,84 @@ pub struct SessionState {
     /// RR-523: the active agent's slug, and every running agent's in table order.
     pub active_agent: Option<String>,
     pub running_agents: Option<Vec<String>>,
+    /// RR-532: one entry per agent in table order, running or not.
+    pub agents: Option<Vec<AgentEntry>>,
+}
+
+/// RR-532: one agent inside `SessionState::agents` (not a frame).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentEntry {
+    pub agent: String,
+    pub running: bool,
+    /// One of `off`, `starting`, `ready`, `working`, `listening`, `playing`.
+    pub state: String,
+    pub working_on: Option<String>,
+}
+
+/// RR-532: asks the Mac for its Workspace; answered with `workspace_state`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkspaceCommand {
+    pub client_id: String,
+    pub action: String,
+}
+
+/// RR-532: a project inside `WorkspaceState::projects` (not a frame).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkspaceProject {
+    pub id: String,
+    pub name: String,
+}
+
+/// RR-532: a ticket inside `WorkspaceState::tickets` (not a frame).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkspaceTicket {
+    pub id: String,
+    pub title: String,
+    /// One of `in_progress`, `queued`, `backlog`.
+    pub status: String,
+    pub project_id: String,
+    pub agent: Option<String>,
+}
+
+/// RR-532: the Mac's answer to `workspace_command`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkspaceState {
+    pub projects: Vec<WorkspaceProject>,
+    pub tickets: Vec<WorkspaceTicket>,
+    pub error: Option<String>,
+}
+
+/// RR-532: `get`, or `set` with only the keys to change.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettingsCommand {
+    pub client_id: String,
+    pub action: String,
+    /// Hundredths: 130 is 1.3x.
+    pub speech_speed_percent: Option<i64>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub sizing: Option<String>,
+}
+
+/// RR-532: one choice inside a `settings_state` option list (not a frame).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettingOption {
+    pub value: String,
+    pub label: String,
+}
+
+/// RR-532: the Mac's settings, in answer to every `settings_command`.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct SettingsState {
+    pub speech_speed_percent: Option<i64>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub sizing: Option<String>,
+    pub model_options: Option<Vec<SettingOption>>,
+    pub effort_options: Option<Vec<SettingOption>>,
+    pub sizing_options: Option<Vec<SettingOption>>,
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -214,6 +317,10 @@ pub enum Frame {
     Error(ErrorFrame),
     Pong { t: i64 },
     SessionState(SessionState),
+    WorkspaceCommand(WorkspaceCommand),
+    WorkspaceState(WorkspaceState),
+    SettingsCommand(SettingsCommand),
+    SettingsState(SettingsState),
 }
 
 impl Frame {
@@ -235,6 +342,10 @@ impl Frame {
             Frame::Error(_) => "error",
             Frame::Pong { .. } => "pong",
             Frame::SessionState(_) => "session_state",
+            Frame::WorkspaceCommand(_) => "workspace_command",
+            Frame::WorkspaceState(_) => "workspace_state",
+            Frame::SettingsCommand(_) => "settings_command",
+            Frame::SettingsState(_) => "settings_state",
         }
     }
 
@@ -263,6 +374,20 @@ impl Frame {
                 out.insert(key, value.clone());
             }
         }
+        fn options(out: &mut Dict, key: &str, value: &Option<Vec<SettingOption>>) {
+            if let Some(options) = value {
+                let items = options
+                    .iter()
+                    .map(|option| {
+                        let mut item = Dict::new();
+                        item.insert("value", option.value.as_str());
+                        item.insert("label", option.label.as_str());
+                        Value::Dict(item)
+                    })
+                    .collect::<Vec<_>>();
+                out.insert(key, items);
+            }
+        }
         match self {
             Frame::Hello(f) => {
                 out.insert("device_id", f.device_id.as_str());
@@ -276,10 +401,12 @@ impl Frame {
                 out.insert("client_id", f.client_id.as_str());
                 out.insert("text", f.text.as_str());
                 out.insert("captured_at", f.captured_at.as_str());
+                opt(&mut out, "agent", &f.agent);
             }
             Frame::Control(f) => {
                 out.insert("client_id", f.client_id.as_str());
                 out.insert("action", f.action.as_str());
+                opt(&mut out, "agent", &f.agent);
             }
             Frame::RemoteMode(f) => {
                 out.insert("client_id", f.client_id.as_str());
@@ -307,6 +434,7 @@ impl Frame {
                 out.insert("client_id", f.client_id.as_str());
                 out.insert("relay_command_seq", f.relay_command_seq);
                 out.insert("relay_command_id", f.relay_command_id.as_str());
+                opt(&mut out, "agent", &f.agent);
             }
             Frame::Speech(f) => {
                 out.insert("seq", f.seq);
@@ -316,6 +444,7 @@ impl Frame {
                 opt(&mut out, "relay_command_seq", &f.relay_command_seq);
                 opt(&mut out, "spoken_by", &f.spoken_by);
                 opt(&mut out, "audio", &f.audio);
+                opt(&mut out, "agent", &f.agent);
             }
             Frame::SpeechAudio(f) => {
                 out.insert("seq", f.seq);
@@ -325,15 +454,18 @@ impl Frame {
                 out.insert("sample_rate", f.sample_rate);
                 out.insert("data", f.data.as_str());
                 opt(&mut out, "last", &f.last);
+                opt(&mut out, "agent", &f.agent);
             }
             Frame::SpeechControl(f) => {
                 out.insert("seq", f.seq);
                 out.insert("action", f.action.as_str());
                 opt(&mut out, "reason", &f.reason);
+                opt(&mut out, "agent", &f.agent);
             }
             Frame::Status(f) => {
                 out.insert("seq", f.seq);
                 out.insert("text", f.text.as_str());
+                opt(&mut out, "agent", &f.agent);
             }
             Frame::Error(f) => {
                 out.insert("code", f.code.as_str());
@@ -366,6 +498,71 @@ impl Frame {
                         .collect::<Vec<_>>();
                     out.insert("running_agents", items);
                 }
+                if let Some(agents) = &f.agents {
+                    let items = agents
+                        .iter()
+                        .map(|entry| {
+                            let mut item = Dict::new();
+                            item.insert("agent", entry.agent.as_str());
+                            item.insert("running", entry.running);
+                            item.insert("state", entry.state.as_str());
+                            opt(&mut item, "working_on", &entry.working_on);
+                            Value::Dict(item)
+                        })
+                        .collect::<Vec<_>>();
+                    out.insert("agents", items);
+                }
+            }
+            Frame::WorkspaceCommand(f) => {
+                out.insert("client_id", f.client_id.as_str());
+                out.insert("action", f.action.as_str());
+            }
+            Frame::WorkspaceState(f) => {
+                let projects = f
+                    .projects
+                    .iter()
+                    .map(|project| {
+                        let mut item = Dict::new();
+                        item.insert("id", project.id.as_str());
+                        item.insert("name", project.name.as_str());
+                        Value::Dict(item)
+                    })
+                    .collect::<Vec<_>>();
+                out.insert("projects", projects);
+                let tickets = f
+                    .tickets
+                    .iter()
+                    .map(|ticket| {
+                        let mut item = Dict::new();
+                        item.insert("id", ticket.id.as_str());
+                        item.insert("title", ticket.title.as_str());
+                        item.insert("status", ticket.status.as_str());
+                        item.insert("project_id", ticket.project_id.as_str());
+                        opt(&mut item, "agent", &ticket.agent);
+                        Value::Dict(item)
+                    })
+                    .collect::<Vec<_>>();
+                out.insert("tickets", tickets);
+                opt(&mut out, "error", &f.error);
+            }
+            Frame::SettingsCommand(f) => {
+                out.insert("client_id", f.client_id.as_str());
+                out.insert("action", f.action.as_str());
+                opt(&mut out, "speech_speed_percent", &f.speech_speed_percent);
+                opt(&mut out, "model", &f.model);
+                opt(&mut out, "effort", &f.effort);
+                opt(&mut out, "sizing", &f.sizing);
+            }
+            Frame::SettingsState(f) => {
+                opt(&mut out, "speech_speed_percent", &f.speech_speed_percent);
+                opt(&mut out, "provider", &f.provider);
+                opt(&mut out, "model", &f.model);
+                opt(&mut out, "effort", &f.effort);
+                opt(&mut out, "sizing", &f.sizing);
+                options(&mut out, "model_options", &f.model_options);
+                options(&mut out, "effort_options", &f.effort_options);
+                options(&mut out, "sizing_options", &f.sizing_options);
+                opt(&mut out, "error", &f.error);
             }
         }
         out
@@ -374,15 +571,24 @@ impl Frame {
 
 // -- The field table ------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 enum Kind {
     Str,
     Int,
     Bool,
-    /// `session_state.projects`: a list of `ProjectEntry` objects.
-    Projects,
     /// `session_state.running_agents`: a list of strings.
     StrList,
+    /// A list of objects, each checked against its own field table:
+    /// `session_state.projects` and `agents`, `workspace_state.projects` and
+    /// `tickets`, and the `settings_state` option lists.
+    Objects(&'static Nested),
+}
+
+/// The field table of the objects inside an `Objects` list. `scope` names
+/// them for `allowed_values`.
+struct Nested {
+    scope: &'static str,
+    fields: &'static [Field],
 }
 
 struct Field {
@@ -407,7 +613,43 @@ const fn opt(name: &'static str, kind: Kind) -> Field {
     }
 }
 
-use Kind::{Bool, Int, Projects, Str, StrList};
+use Kind::{Bool, Int, Objects, Str, StrList};
+
+const PROJECTS: Nested = Nested {
+    scope: "project",
+    fields: &[
+        req("project_id", Str),
+        req("display_name", Str),
+        req("availability", Str),
+    ],
+};
+const AGENTS: Nested = Nested {
+    scope: "agent",
+    fields: &[
+        req("agent", Str),
+        req("running", Bool),
+        req("state", Str),
+        opt("working_on", Str),
+    ],
+};
+const WORKSPACE_PROJECTS: Nested = Nested {
+    scope: "workspace_project",
+    fields: &[req("id", Str), req("name", Str)],
+};
+const TICKETS: Nested = Nested {
+    scope: "ticket",
+    fields: &[
+        req("id", Str),
+        req("title", Str),
+        req("status", Str),
+        req("project_id", Str),
+        opt("agent", Str),
+    ],
+};
+const OPTIONS: Nested = Nested {
+    scope: "option",
+    fields: &[req("value", Str), req("label", Str)],
+};
 
 /// Each frame's fields in the Python dataclass order, which decides which
 /// field an error names first.
@@ -431,10 +673,11 @@ fn fields(type_name: &str) -> Option<&'static [Field]> {
                     req("client_id", Str),
                     req("text", Str),
                     req("captured_at", Str),
+                    opt("agent", Str),
                 ]
             }
         }
-        "control" => const { &[req("client_id", Str), req("action", Str)] },
+        "control" => const { &[req("client_id", Str), req("action", Str), opt("agent", Str)] },
         "remote_mode" => const { &[req("client_id", Str), req("enabled", Bool)] },
         "session_command" => {
             const {
@@ -465,6 +708,7 @@ fn fields(type_name: &str) -> Option<&'static [Field]> {
                     req("client_id", Str),
                     req("relay_command_seq", Int),
                     req("relay_command_id", Str),
+                    opt("agent", Str),
                 ]
             }
         }
@@ -478,6 +722,7 @@ fn fields(type_name: &str) -> Option<&'static [Field]> {
                     opt("relay_command_seq", Int),
                     opt("spoken_by", Str),
                     opt("audio", Bool),
+                    opt("agent", Str),
                 ]
             }
         }
@@ -491,11 +736,21 @@ fn fields(type_name: &str) -> Option<&'static [Field]> {
                     req("sample_rate", Int),
                     req("data", Str),
                     opt("last", Bool),
+                    opt("agent", Str),
                 ]
             }
         }
-        "speech_control" => const { &[req("seq", Int), req("action", Str), opt("reason", Str)] },
-        "status" => const { &[req("seq", Int), req("text", Str)] },
+        "speech_control" => {
+            const {
+                &[
+                    req("seq", Int),
+                    req("action", Str),
+                    opt("reason", Str),
+                    opt("agent", Str),
+                ]
+            }
+        }
+        "status" => const { &[req("seq", Int), req("text", Str), opt("agent", Str)] },
         "error" => const { &[req("code", Str), req("message", Str)] },
         "session_state" => {
             const {
@@ -504,18 +759,54 @@ fn fields(type_name: &str) -> Option<&'static [Field]> {
                     req("session", Str),
                     opt("project_id", Str),
                     opt("project_name", Str),
-                    opt("projects", Projects),
+                    opt("projects", Objects(&PROJECTS)),
                     opt("error", Str),
                     opt("active_agent", Str),
                     opt("running_agents", StrList),
+                    opt("agents", Objects(&AGENTS)),
+                ]
+            }
+        }
+        "workspace_command" => const { &[req("client_id", Str), req("action", Str)] },
+        "workspace_state" => {
+            const {
+                &[
+                    req("projects", Objects(&WORKSPACE_PROJECTS)),
+                    req("tickets", Objects(&TICKETS)),
+                    opt("error", Str),
+                ]
+            }
+        }
+        "settings_command" => {
+            const {
+                &[
+                    req("client_id", Str),
+                    req("action", Str),
+                    opt("speech_speed_percent", Int),
+                    opt("model", Str),
+                    opt("effort", Str),
+                    opt("sizing", Str),
+                ]
+            }
+        }
+        "settings_state" => {
+            const {
+                &[
+                    opt("speech_speed_percent", Int),
+                    opt("provider", Str),
+                    opt("model", Str),
+                    opt("effort", Str),
+                    opt("sizing", Str),
+                    opt("model_options", Objects(&OPTIONS)),
+                    opt("effort_options", Objects(&OPTIONS)),
+                    opt("sizing_options", Objects(&OPTIONS)),
+                    opt("error", Str),
                 ]
             }
         }
         _ => return None,
     })
 }
-
-const PROJECT_FIELDS: &[&str] = &["project_id", "display_name", "availability"];
 
 fn allowed_values(type_name: &str, field: &str) -> Option<&'static [&'static str]> {
     Some(match (type_name, field) {
@@ -527,6 +818,10 @@ fn allowed_values(type_name: &str, field: &str) -> Option<&'static [&'static str
         ("session_command", "action") => SESSION_ACTIONS,
         ("session_state", "session") => SESSION_PHASES,
         ("speech_audio", "format") => AUDIO_FORMATS,
+        ("agent", "state") => AGENT_STATES,
+        ("workspace_command", "action") => WORKSPACE_ACTIONS,
+        ("ticket", "status") => TICKET_STATUSES,
+        ("settings_command", "action") => SETTINGS_ACTIONS,
         _ => return None,
     })
 }
@@ -535,7 +830,13 @@ fn is_uuid_field(type_name: &str, field: &str) -> bool {
     field == "client_id"
         && matches!(
             type_name,
-            "utterance" | "control" | "remote_mode" | "session_command" | "accepted"
+            "utterance"
+                | "control"
+                | "remote_mode"
+                | "session_command"
+                | "accepted"
+                | "workspace_command"
+                | "settings_command"
         )
 }
 
@@ -562,39 +863,42 @@ fn kind_matches(kind: Kind, value: &Value) -> bool {
         StrList => value
             .as_list()
             .is_some_and(|items| items.iter().all(|item| matches!(item, Value::Str(_)))),
-        Projects => value.as_list().is_some_and(|items| {
+        Objects(nested) => value.as_list().is_some_and(|items| {
             items.iter().all(|item| {
-                item.as_dict().is_some_and(|entry| {
-                    PROJECT_FIELDS
-                        .iter()
-                        .all(|name| matches!(entry.get(name), Some(Value::Str(_))))
-                })
+                item.as_dict()
+                    .is_some_and(|entry| check_fields(nested.scope, nested.fields, entry).is_ok())
             })
         }),
     }
 }
 
-/// `_validate`: every field's type, enumerations, client ids and the audio
-/// slice size.
-fn validate(type_name: &str, frame: &Dict) -> Result<(), FrameError> {
-    let table = fields(type_name).ok_or_else(|| FrameError::new("unknown_type", type_name))?;
+/// Every field's type and enumeration in one object of `table`.
+fn check_fields(scope: &str, table: &[Field], object: &Dict) -> Result<(), FrameError> {
     for field in table {
-        let value = frame.get(field.name).unwrap_or(&Value::Null);
+        let value = object.get(field.name).unwrap_or(&Value::Null);
         if matches!(value, Value::Null) && field.optional {
             continue;
         }
         if !kind_matches(field.kind, value) {
             return Err(FrameError::invalid(field.name));
         }
-        if let (Some(allowed), Some(text)) = (allowed_values(type_name, field.name), value.as_str())
+        if let (Some(allowed), Some(text)) = (allowed_values(scope, field.name), value.as_str())
             && !allowed.contains(&text)
         {
             return Err(FrameError::invalid(field.name));
         }
-        if is_uuid_field(type_name, field.name) && !value.as_str().is_some_and(is_uuid) {
+        if is_uuid_field(scope, field.name) && !value.as_str().is_some_and(is_uuid) {
             return Err(FrameError::invalid(field.name));
         }
     }
+    Ok(())
+}
+
+/// `_validate`: every field's type, enumerations, client ids and the audio
+/// slice size.
+fn validate(type_name: &str, frame: &Dict) -> Result<(), FrameError> {
+    let table = fields(type_name).ok_or_else(|| FrameError::new("unknown_type", type_name))?;
+    check_fields(type_name, table, frame)?;
     if type_name == "speech_audio"
         && frame
             .get("data")
@@ -706,11 +1010,11 @@ pub fn decode(line: &[u8]) -> Result<Frame, FrameError> {
     // Presence and nested shape first, field by field, as the Python twin
     // builds its keyword arguments; types after.
     for field in table {
-        match object.get(field.name) {
-            Some(value) if field.kind == Projects => check_projects_shape(value)?,
-            Some(_) => {}
-            None if field.optional => {}
-            None => return Err(FrameError::new("missing_field", field.name)),
+        match (object.get(field.name), field.kind) {
+            (Some(value), Objects(nested)) => check_objects_shape(field.name, value, nested)?,
+            (Some(_), _) => {}
+            (None, _) if field.optional => {}
+            (None, _) => return Err(FrameError::new("missing_field", field.name)),
         }
     }
     validate(&type_name, &object)?;
@@ -719,19 +1023,19 @@ pub fn decode(line: &[u8]) -> Result<Frame, FrameError> {
 
 /// Mirror Swift's decoder: a wrong shape is `invalid_field`, a missing key
 /// `missing_field`.
-fn check_projects_shape(value: &Value) -> Result<(), FrameError> {
+fn check_objects_shape(name: &str, value: &Value, nested: &Nested) -> Result<(), FrameError> {
     if matches!(value, Value::Null) {
         return Ok(());
     }
-    let items = value
-        .as_list()
-        .ok_or_else(|| FrameError::invalid("projects"))?;
+    let items = value.as_list().ok_or_else(|| FrameError::invalid(name))?;
     for item in items {
-        let entry = item
-            .as_dict()
-            .ok_or_else(|| FrameError::invalid("projects"))?;
-        if let Some(name) = PROJECT_FIELDS.iter().find(|name| entry.get(name).is_none()) {
-            return Err(FrameError::new("missing_field", *name));
+        let entry = item.as_dict().ok_or_else(|| FrameError::invalid(name))?;
+        if let Some(field) = nested
+            .fields
+            .iter()
+            .find(|field| !field.optional && entry.get(field.name).is_none())
+        {
+            return Err(FrameError::new("missing_field", field.name));
         }
     }
     Ok(())
@@ -757,6 +1061,27 @@ fn build(type_name: &str, object: &Dict) -> Frame {
         _ => None,
     };
     let b = |key: &str| ob(key).unwrap_or_default();
+    // The validated objects inside an `Objects` list, each as `make` builds it.
+    fn objects<T>(object: &Dict, key: &str, make: impl Fn(&Dict) -> T) -> Option<Vec<T>> {
+        object
+            .get(key)
+            .and_then(Value::as_list)
+            .map(|items| items.iter().filter_map(Value::as_dict).map(make).collect())
+    }
+    fn text(entry: &Dict, key: &str) -> String {
+        entry
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    }
+    fn optional_text(entry: &Dict, key: &str) -> Option<String> {
+        entry.get(key).and_then(Value::as_str).map(str::to_string)
+    }
+    let option = |entry: &Dict| SettingOption {
+        value: text(entry, "value"),
+        label: text(entry, "label"),
+    };
     match type_name {
         "hello" => Frame::Hello(Hello {
             device_id: s("device_id"),
@@ -770,10 +1095,12 @@ fn build(type_name: &str, object: &Dict) -> Frame {
             client_id: s("client_id"),
             text: s("text"),
             captured_at: s("captured_at"),
+            agent: os("agent"),
         }),
         "control" => Frame::Control(Control {
             client_id: s("client_id"),
             action: s("action"),
+            agent: os("agent"),
         }),
         "remote_mode" => Frame::RemoteMode(RemoteMode {
             client_id: s("client_id"),
@@ -802,6 +1129,7 @@ fn build(type_name: &str, object: &Dict) -> Frame {
             client_id: s("client_id"),
             relay_command_seq: i("relay_command_seq"),
             relay_command_id: s("relay_command_id"),
+            agent: os("agent"),
         }),
         "speech" => Frame::Speech(Speech {
             seq: i("seq"),
@@ -811,6 +1139,7 @@ fn build(type_name: &str, object: &Dict) -> Frame {
             relay_command_seq: int("relay_command_seq"),
             spoken_by: os("spoken_by"),
             audio: ob("audio"),
+            agent: os("agent"),
         }),
         "speech_audio" => Frame::SpeechAudio(SpeechAudio {
             seq: i("seq"),
@@ -820,48 +1149,72 @@ fn build(type_name: &str, object: &Dict) -> Frame {
             sample_rate: i("sample_rate"),
             data: s("data"),
             last: ob("last"),
+            agent: os("agent"),
         }),
         "speech_control" => Frame::SpeechControl(SpeechControl {
             seq: i("seq"),
             action: s("action"),
             reason: os("reason"),
+            agent: os("agent"),
         }),
         "status" => Frame::Status(Status {
             seq: i("seq"),
             text: s("text"),
+            agent: os("agent"),
         }),
         "error" => Frame::Error(ErrorFrame {
             code: s("code"),
             message: s("message"),
+        }),
+        "workspace_command" => Frame::WorkspaceCommand(WorkspaceCommand {
+            client_id: s("client_id"),
+            action: s("action"),
+        }),
+        "workspace_state" => Frame::WorkspaceState(WorkspaceState {
+            projects: objects(object, "projects", |entry| WorkspaceProject {
+                id: text(entry, "id"),
+                name: text(entry, "name"),
+            })
+            .unwrap_or_default(),
+            tickets: objects(object, "tickets", |entry| WorkspaceTicket {
+                id: text(entry, "id"),
+                title: text(entry, "title"),
+                status: text(entry, "status"),
+                project_id: text(entry, "project_id"),
+                agent: optional_text(entry, "agent"),
+            })
+            .unwrap_or_default(),
+            error: os("error"),
+        }),
+        "settings_command" => Frame::SettingsCommand(SettingsCommand {
+            client_id: s("client_id"),
+            action: s("action"),
+            speech_speed_percent: int("speech_speed_percent"),
+            model: os("model"),
+            effort: os("effort"),
+            sizing: os("sizing"),
+        }),
+        "settings_state" => Frame::SettingsState(SettingsState {
+            speech_speed_percent: int("speech_speed_percent"),
+            provider: os("provider"),
+            model: os("model"),
+            effort: os("effort"),
+            sizing: os("sizing"),
+            model_options: objects(object, "model_options", option),
+            effort_options: objects(object, "effort_options", option),
+            sizing_options: objects(object, "sizing_options", option),
+            error: os("error"),
         }),
         _ => Frame::SessionState(SessionState {
             app_running: b("app_running"),
             session: s("session"),
             project_id: os("project_id"),
             project_name: os("project_name"),
-            projects: object
-                .get("projects")
-                .and_then(Value::as_list)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(Value::as_dict)
-                        .map(|entry| {
-                            let text = |key: &str| {
-                                entry
-                                    .get(key)
-                                    .and_then(Value::as_str)
-                                    .unwrap_or_default()
-                                    .to_string()
-                            };
-                            ProjectEntry {
-                                project_id: text("project_id"),
-                                display_name: text("display_name"),
-                                availability: text("availability"),
-                            }
-                        })
-                        .collect()
-                }),
+            projects: objects(object, "projects", |entry| ProjectEntry {
+                project_id: text(entry, "project_id"),
+                display_name: text(entry, "display_name"),
+                availability: text(entry, "availability"),
+            }),
             error: os("error"),
             active_agent: os("active_agent"),
             running_agents: object
@@ -874,6 +1227,12 @@ fn build(type_name: &str, object: &Dict) -> Frame {
                         .map(str::to_string)
                         .collect()
                 }),
+            agents: objects(object, "agents", |entry| AgentEntry {
+                agent: text(entry, "agent"),
+                running: matches!(entry.get("running"), Some(Value::Bool(true))),
+                state: text(entry, "state"),
+                working_on: optional_text(entry, "working_on"),
+            }),
         }),
     }
 }
@@ -1092,6 +1451,8 @@ mod tests {
                 | Frame::SessionCommand(_)
                 | Frame::Ack(_)
                 | Frame::Ping { .. }
+                | Frame::WorkspaceCommand(_)
+                | Frame::SettingsCommand(_)
         )
     }
 
@@ -1180,6 +1541,107 @@ mod tests {
         );
     }
 
+    /// RR-532: agent addressing, per-agent state, the Workspace feed and
+    /// settings round-trip byte for byte, as the Swift twin reads them.
+    #[test]
+    fn extended_frame_vectors_round_trip_byte_for_byte() {
+        let mut types = HashSet::new();
+        for entry in list(&vectors("frames_extended")) {
+            let name = text(entry, "name");
+            let line = text(entry, "line").as_bytes().to_vec();
+            let frame = decode(&line).unwrap_or_else(|error| panic!("{name}: {error:?}"));
+            types.insert(frame.type_name());
+            assert_eq!(
+                phone_to_mac(&frame),
+                text(entry, "direction") == "phone_to_mac",
+                "{name}"
+            );
+            let mut expected = line.clone();
+            expected.push(b'\n');
+            assert_eq!(encode(&frame).unwrap(), expected, "{name}");
+            assert_eq!(decode(&expected).unwrap(), frame, "{name}");
+        }
+        for name in [
+            "workspace_command",
+            "workspace_state",
+            "settings_command",
+            "settings_state",
+        ] {
+            assert!(types.contains(name), "{name}");
+        }
+    }
+
+    /// RR-532: the new fields decode, and frames without them decode as before.
+    #[test]
+    fn agent_workspace_and_settings_fields_decode() {
+        let named = |file: &str, name: &str| {
+            let entries = vectors(file);
+            let line = list(&entries)
+                .iter()
+                .find(|entry| text(entry, "name") == name)
+                .map(|entry| text(entry, "line").as_bytes().to_vec())
+                .unwrap();
+            decode(&line).unwrap()
+        };
+        let Frame::Utterance(utterance) = named("frames_extended", "utterance_agent") else {
+            panic!("expected utterance");
+        };
+        assert_eq!(utterance.agent.as_deref(), Some("george"));
+        let Frame::Utterance(older) = named("frames", "utterance") else {
+            panic!("expected utterance");
+        };
+        assert_eq!(older.agent, None);
+        let Frame::SessionState(state) = named("frames_extended", "session_state_agents") else {
+            panic!("expected session_state");
+        };
+        let agents = state.agents.unwrap();
+        assert_eq!(
+            agents.iter().map(|a| a.state.as_str()).collect::<Vec<_>>(),
+            ["working", "off", "playing", "listening"]
+        );
+        assert_eq!(agents[0].working_on.as_deref(), Some("RR-120 review"));
+        assert!(!agents[1].running);
+        let Frame::SessionState(plain) = named("frames", "session_state_ready_agents") else {
+            panic!("expected session_state");
+        };
+        assert_eq!(plain.agents, None);
+        let Frame::SessionCommand(general) =
+            named("frames_extended", "session_command_start_general")
+        else {
+            panic!("expected session_command");
+        };
+        assert_eq!(general.project_id, None);
+        let Frame::WorkspaceState(workspace) = named("frames_extended", "workspace_state") else {
+            panic!("expected workspace_state");
+        };
+        assert_eq!(
+            workspace
+                .tickets
+                .iter()
+                .map(|t| t.agent.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("puck"), None, Some("sky")]
+        );
+        let Frame::SettingsState(unsupported) =
+            named("frames_extended", "settings_state_unsupported")
+        else {
+            panic!("expected settings_state");
+        };
+        assert_eq!(
+            unsupported,
+            SettingsState {
+                error: Some("Settings cannot be changed from the phone on this Mac yet.".into()),
+                ..Default::default()
+            }
+        );
+        let Frame::SettingsCommand(set) = named("frames_extended", "settings_command_set") else {
+            panic!("expected settings_command");
+        };
+        assert_eq!(set.speech_speed_percent, Some(150));
+        assert_eq!(set.model.as_deref(), Some("sonnet"));
+        assert_eq!(set.effort, None);
+    }
+
     #[test]
     fn invalid_vectors_report_shared_error_codes() {
         for entry in list(&vectors("invalid")) {
@@ -1194,6 +1656,7 @@ mod tests {
             client_id: text(limits, "pad_client_id").to_string(),
             text: "a".repeat(length),
             captured_at: text(limits, "captured_at").to_string(),
+            agent: None,
         })
     }
 
@@ -1222,6 +1685,7 @@ mod tests {
             sample_rate: 24000,
             data: "A".repeat(length),
             last: Some(true),
+            agent: None,
         })
     }
 
@@ -1263,6 +1727,7 @@ mod tests {
         Frame::Status(Status {
             seq,
             text: format!("frame {seq}"),
+            agent: None,
         })
     }
 
@@ -1342,6 +1807,7 @@ mod tests {
                                 relay_command_seq: None,
                                 spoken_by: None,
                                 audio: Some(true),
+                                agent: None,
                             })
                         } else {
                             status(seq)
@@ -1360,6 +1826,7 @@ mod tests {
                                 sample_rate: 24000,
                                 data: "AAAA".into(),
                                 last: None,
+                                agent: None,
                             };
                             *index += 1;
                             assert_eq!(
@@ -1395,6 +1862,7 @@ mod tests {
         let frame = Frame::Status(Status {
             seq: 1,
             text: "a\u{1}b\u{7f}c\u{2028}/".into(),
+            agent: None,
         });
         let line = String::from_utf8(encode(&frame).unwrap()).unwrap();
         assert_eq!(

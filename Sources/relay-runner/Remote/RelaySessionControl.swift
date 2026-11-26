@@ -41,16 +41,22 @@ struct RelaySessionControlHost {
     var stop: () -> Void
     /// The app's current session message; one that appears during a refused start explains it.
     var message: () -> String?
+    /// RR-532: the built-in general-tasks project's id, which a `start`
+    /// without `project_id` uses, as the Mac's own Start Session does. Nil
+    /// when the registry cannot provide it.
+    var generalTasksProjectID: () -> String? = { nil }
 }
 
 /// The app's side of remote session control (RR-456), shared by every
 /// connection on the session-control socket. The forced-command helper opens
 /// each connection with `identify`; the phone then sends `hello`, `ping` and
 /// `session_command` frames. Commands are answered, and changes pushed, as
-/// `session_state`. The phone's provider, model and effort are not chosen
-/// here: a session started from the phone uses the Mac's defaults and is
-/// otherwise identical to one started from the Workspace. Main-thread only,
-/// like the `AppState` it calls; the server hops there for every line.
+/// `session_state`. RR-532: `workspace_command` and `settings_command` are
+/// answered here too, each by its own handler. The phone's provider, model
+/// and effort are not chosen by a start: a session started from the phone
+/// uses the Mac's defaults and is otherwise identical to one started from the
+/// Workspace. Main-thread only, like the `AppState` it calls; the server hops
+/// there for every line.
 final class RelaySessionControl {
     private let host: RelaySessionControlHost
     private var dedup = ClientIDDeduplicator()
@@ -76,7 +82,7 @@ final class RelaySessionControl {
         switch type {
         case "identify":
             return [.sessionState(state(includingProjects: true))]
-        case "ping", "session_command":
+        case "ping", "session_command", "workspace_command", "settings_command":
             let frame: Frame
             do {
                 frame = try FrameCodec.decode(line)
@@ -87,6 +93,8 @@ final class RelaySessionControl {
             switch frame {
             case .ping(let ping): return [.pong(Pong(t: ping.t))]
             case .sessionCommand(let command): return [.sessionState(perform(command))]
+            case .workspaceCommand(let command): return [.workspaceState(RelayRemoteWorkspaceFeed.reply(to: command))]
+            case .settingsCommand(let command): return [.settingsState(RelayRemoteSettings.reply(to: command))]
             default: return []
             }
         default:
@@ -135,6 +143,7 @@ final class RelaySessionControl {
             result.activeAgent = snapshot.activeAgent?.slug
             result.runningAgents = SessionAgent.allCases.filter(running.contains).map(\.slug)
         }
+        result.agents = RelayRemoteAgents.states(snapshot)
         if let error { result.error = error }
         if includingProjects {
             result.projects = host.projects().map {
@@ -180,7 +189,10 @@ final class RelaySessionControl {
     }
 
     private func start(projectID: String?, agent: SessionAgent?) -> SessionState {
-        guard let projectID, !projectID.isEmpty else { return state(error: "Choose a project to start.") }
+        // RR-532: no project is the built-in general-tasks project.
+        guard let projectID = projectID.flatMap({ $0.isEmpty ? nil : $0 }) ?? host.generalTasksProjectID() else {
+            return state(error: "Choose a project to start.")
+        }
         guard let project = host.projects().first(where: { $0.id == projectID }) else {
             return state(includingProjects: true, error: "That project is no longer registered on this Mac.")
         }

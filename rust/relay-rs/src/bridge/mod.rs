@@ -25,6 +25,7 @@ mod pm_frontstage;
 mod ports;
 mod recovery;
 mod relay;
+mod remote_agents;
 mod remote_link;
 mod replies;
 mod settings;

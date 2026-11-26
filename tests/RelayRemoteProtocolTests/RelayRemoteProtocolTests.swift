@@ -113,6 +113,88 @@ final class RelayRemoteProtocolTests: XCTestCase {
         XCTAssertNil(plain.runningAgents)
     }
 
+    /// RR-532: agent addressing, per-agent state, the Workspace feed and
+    /// settings round-trip byte for byte, as the Rust twin reads them.
+    func testExtendedFrameVectorsRoundTripByteForByte() throws {
+        var types = Set<String>()
+        for entry in try objects("frames_extended") {
+            let name = entry["name"] as! String
+            let line = Data((entry["line"] as! String).utf8)
+            let frame = try FrameCodec.decode(line)
+            types.insert(frame.typeName)
+            XCTAssertEqual(frame.direction == .phoneToMac, entry["direction"] as? String == "phone_to_mac", name)
+            XCTAssertEqual(try FrameCodec.encode(frame), line + Data([0x0A]), name)
+            XCTAssertEqual(try FrameCodec.decode(line + Data([0x0A])), frame, name)
+        }
+        XCTAssertTrue(types.isSuperset(of: ["workspace_command", "workspace_state", "settings_command",
+                                            "settings_state"]))
+    }
+
+    /// RR-532: the new fields decode as the Mac and phone read them, and the
+    /// RR-456 vectors that carry none of them still decode as before.
+    func testAgentWorkspaceAndSettingsFieldsDecode() throws {
+        let extended = try objects("frames_extended")
+        let plain = try objects("frames")
+        func frame(_ name: String, in entries: [[String: Any]]) throws -> Frame {
+            try FrameCodec.decode(Data(try XCTUnwrap(entries.first { $0["name"] as? String == name }?["line"] as? String).utf8))
+        }
+        for name in ["utterance_agent", "control_agent", "accepted_agent", "speech_agent", "speech_audio_agent",
+                     "speech_control_agent", "status_agent"] {
+            XCTAssertNotNil(try frame(name, in: extended).agent, name)
+        }
+        XCTAssertEqual(try frame("utterance_agent", in: extended).agent, "george")
+        for name in ["utterance", "control_stop", "accepted", "speech_final", "speech_audio_first_part",
+                     "speech_control", "status", "session_command_start"] {
+            XCTAssertNil(try frame(name, in: plain).agent, name)
+        }
+        guard case .sessionState(let older) = try frame("session_state_ready_agents", in: plain) else {
+            return XCTFail("expected session_state")
+        }
+        XCTAssertNil(older.agents)
+
+        guard case .sessionCommand(let general) = try frame("session_command_start_general", in: extended) else {
+            return XCTFail("expected session_command")
+        }
+        XCTAssertEqual(general.action, .start)
+        XCTAssertNil(general.projectId, "no project means general-tasks")
+        XCTAssertEqual(general.agent, "sky")
+
+        guard case .sessionState(let state) = try frame("session_state_agents", in: extended) else {
+            return XCTFail("expected session_state")
+        }
+        XCTAssertEqual(state.agents?.map(\.agent), RelayRemoteProtocol.agents)
+        XCTAssertEqual(state.agents?.map(\.state), [.working, .off, .playing, .listening])
+        XCTAssertEqual(state.agents?.first?.workingOn, "RR-120 review")
+        XCTAssertNil(state.agents?[1].workingOn)
+
+        guard case .workspaceState(let workspace) = try frame("workspace_state", in: extended) else {
+            return XCTFail("expected workspace_state")
+        }
+        XCTAssertEqual(workspace.projects.map(\.name), ["relay-runner", "general-tasks"])
+        XCTAssertEqual(workspace.tickets.map(\.status), [.inProgress, .queued, .backlog])
+        XCTAssertEqual(workspace.tickets.map(\.agent), ["puck", nil, "sky"])
+        XCTAssertNil(workspace.error)
+        XCTAssertNil(Frame.workspaceState(workspace).seq, "workspace_state is not replayed")
+
+        guard case .settingsCommand(let set) = try frame("settings_command_set", in: extended) else {
+            return XCTFail("expected settings_command")
+        }
+        XCTAssertEqual(set, SettingsCommand(clientId: "3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10", action: .set,
+                                            speechSpeedPercent: 150, model: "sonnet"))
+        guard case .settingsState(let settings) = try frame("settings_state", in: extended) else {
+            return XCTFail("expected settings_state")
+        }
+        XCTAssertEqual(settings.speechSpeedPercent, 130)
+        XCTAssertEqual(settings.modelOptions?.map(\.value), ["fable", "opus", "sonnet", "haiku"])
+        XCTAssertEqual(settings.sizingOptions?.last, SettingOption(value: "user_default", label: "Use my defaults"))
+        guard case .settingsState(let unsupported) = try frame("settings_state_unsupported", in: extended) else {
+            return XCTFail("expected settings_state")
+        }
+        XCTAssertEqual(unsupported, SettingsState(error: "Settings cannot be changed from the phone on this Mac yet."))
+        XCTAssertEqual(Frame.settingsCommand(set).direction, .phoneToMac)
+        XCTAssertEqual(Frame.workspaceCommand(WorkspaceCommand(clientId: set.clientId)).direction, .phoneToMac)
+    }
+
     func testAudioDataLimitOnEncodeAndDecode() throws {
         let limits = try XCTUnwrap(vector("limits") as? [String: Any])
         let limit = limits["max_audio_data_bytes"] as! Int
