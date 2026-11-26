@@ -19,17 +19,6 @@ enum SessionAgent: String, CaseIterable, Codable, Identifiable {
         }
     }
 
-    /// RR-521: the two-letter label on the session wheel's agent segments.
-    /// The full name is used everywhere else, VoiceOver included.
-    var shortLabel: String {
-        switch self {
-        case .puck: return "PK"
-        case .isabella: return "IS"
-        case .george: return "GE"
-        case .sky: return "SK"
-        }
-    }
-
     /// The agent's Kokoro voice: everything said for its session speaks in it
     /// (RR-520). relay-speech maps the slug to the same voice in `agents.rs`;
     /// `tests/fixtures/session_agent_voices.json` pins the two together.

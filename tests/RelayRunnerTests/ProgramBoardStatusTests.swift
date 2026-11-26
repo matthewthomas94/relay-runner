@@ -1824,6 +1824,26 @@ final class ProgramBoardStatusTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(model.selectedNoteDetail).copyNote(to: pasteboard))
         XCTAssertEqual(pasteboard.string(forType: .string), markdown)
 
+        // Copy transcript copies only the transcript text.
+        pasteboard.setString("Previous clipboard", forType: .string)
+        var loaded = try XCTUnwrap(model.selectedNoteDetail)
+        XCTAssertTrue(loaded.canCopyTranscript)
+        XCTAssertTrue(loaded.copyTranscript(to: pasteboard))
+        XCTAssertEqual(pasteboard.string(forType: .string), "First paragraph.\n\nSecond paragraph.")
+
+        pasteboard.setString("Previous clipboard", forType: .string)
+        loaded.isLoading = true
+        XCTAssertFalse(loaded.canCopyTranscript)
+        XCTAssertFalse(loaded.copyTranscript(to: pasteboard))
+        loaded.isLoading = false
+        for missing in [nil, ""] as [String?] {
+            loaded.transcript = missing
+            XCTAssertFalse(loaded.canCopyTranscript)
+            XCTAssertFalse(loaded.copyTranscript(to: pasteboard))
+        }
+        XCTAssertEqual(pasteboard.string(forType: .string), "Previous clipboard")
+        pasteboard.setString(markdown, forType: .string)
+
         model.setNoteFetcher { _ in ProgramBoardNoteLoadResult(notes: [item], errorMessage: nil) }
         await model.refreshNotes()
         XCTAssertEqual(model.selectedNoteDetail?.markdown, markdown, "Refreshing cards must retain the loaded note document")

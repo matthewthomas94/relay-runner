@@ -543,14 +543,18 @@ struct ProgramBoardOverlayView: View {
             .allowsHitTesting(!dotMatrixPresentation.isVisible)
             .zIndex(2)
 
-            WorkspaceMenuBarClock()
-                .frame(height: BoardSurfaceLayout.navigationHeight)
-                .padding(.top, BoardSurfaceLayout.navigationTopPadding)
-                .padding(.trailing, 20)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .blur(radius: backgroundBlurRadius)
-                .allowsHitTesting(false)
-                .zIndex(2)
+            HStack(spacing: 12) {
+                WorkspaceMenuBarUpdateButton(updater: workspace.updater)
+                    .allowsHitTesting(!dotMatrixPresentation.isVisible)
+                WorkspaceMenuBarClock()
+                    .allowsHitTesting(false)
+            }
+            .frame(height: BoardSurfaceLayout.navigationHeight)
+            .padding(.top, BoardSurfaceLayout.navigationTopPadding)
+            .padding(.trailing, 20)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .blur(radius: backgroundBlurRadius)
+            .zIndex(2)
 
             // Tabs, and the Workspace states within the work tab, swap as pages.
             ZStack(alignment: .topLeading) {
@@ -2826,6 +2830,13 @@ private struct ProgramNoteDetailPanel: View {
                     detail.copyNote()
                 }
                 ProgramDetailActionButton(
+                    icon: .fileText, title: "Copy transcript",
+                    disabled: !detail.canCopyTranscript,
+                    help: detail.canCopyTranscript ? "Copy transcript text" : "No transcript yet"
+                ) {
+                    detail.copyTranscript()
+                }
+                ProgramDetailActionButton(
                     icon: .folder, title: "Reveal",
                     disabled: noteFileURL == nil,
                     help: noteFileURL == nil ? "No local file" : "Reveal transcript"
@@ -2982,15 +2993,11 @@ private struct ProgramNoteDetailPanel: View {
                                 .foregroundStyle(ProgramBoardStyle.mutedText)
                         }
                         .transition(.relayReplacing(.element))
-                    } else if let transcript = detail.transcript {
-                        ProgramDetailSection(title: "Transcript", text: transcript.isEmpty ? "No transcript captured." : transcript)
-                            .textSelection(.enabled)
-                            .transition(.relayReplacing(.element))
                     }
                 }
                 .animation(
                     RelayMotion.change(reduceMotion: reduceMotion),
-                    value: [detail.isLoading, detail.transcript != nil, detail.item.card.metadata?.summary != nil]
+                    value: [detail.isLoading, detail.item.card.metadata?.summary != nil]
                 )
                 .overlay(alignment: .topLeading) {
                     ProgramTicketDetailTopBoundaryMarker()
