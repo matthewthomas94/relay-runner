@@ -54,7 +54,7 @@ enum WorkspacePhase: Equatable {
 }
 
 /// Workspace (26): tickets by status with project tabs above the tab bar.
-/// Read-only: a ticket does nothing when tapped.
+/// Read-only: a tapped ticket opens in the ticket modal (RR-551), where it can be read.
 struct WorkspaceTabView: View {
     let model: AppModel
     var sample: WorkspaceFeed?
@@ -73,7 +73,8 @@ struct WorkspaceTabView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .relayBanner(feed.isUnreachable ? Self.unreachableBanner(feed) : nil)
+        // Drawn by `MainTabView`, above the ticket modal and its scrim.
+        .floatingBanner(feed.isUnreachable ? Self.unreachableBanner(feed) : nil)
         .onAppear { if sample == nil { feed.refresh() } }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active, sample == nil { feed.refresh() }
@@ -105,7 +106,9 @@ struct WorkspaceTabView: View {
             .padding(.horizontal, 32)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .list(let listing):
-            WorkspaceList(listing: listing, dimmed: feed.isUnreachable) { await refresh(feed) }
+            WorkspaceList(listing: listing, dimmed: feed.isUnreachable, open: { model.openTicket($0) }) {
+                await refresh(feed)
+            }
         }
     }
 
@@ -130,6 +133,7 @@ struct WorkspaceTabView: View {
 private struct WorkspaceList: View {
     let listing: WorkspaceListing
     let dimmed: Bool
+    let open: (WorkspaceTicket) -> Void
     let refresh: () async -> Void
 
     var body: some View {
@@ -145,7 +149,12 @@ private struct WorkspaceList: View {
                         (Text(group.status.heading).font(RelayTextStyle.section.font).foregroundStyle(RelayColor.neutral10)
                             + Text("  \(group.tickets.count)").font(RelayTextStyle.body.font).foregroundStyle(RelayColor.neutral7))
                         VStack(spacing: 8) {
-                            ForEach(group.tickets, id: \.id) { TicketRow(ticket: $0, project: listing.projectName(of: $0)) }
+                            ForEach(group.tickets, id: \.id) { ticket in
+                                Button { open(ticket) } label: {
+                                    TicketRow(ticket: ticket, project: listing.projectName(of: ticket))
+                                }
+                                .buttonStyle(TicketRowButtonStyle())
+                            }
                         }
                         .padding(.top, 12)
                         .padding(.bottom, 28)
@@ -163,6 +172,13 @@ private struct WorkspaceList: View {
         .refreshable { await refresh() }
         .opacity(dimmed ? 0.3 : 1)
         .accessibilityElement(children: .contain)
+    }
+}
+
+/// A row that can be tapped: plain, and a little dimmer while pressed.
+private struct TicketRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.opacity(configuration.isPressed ? 0.7 : 1).contentShape(Rectangle())
     }
 }
 

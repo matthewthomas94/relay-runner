@@ -7,9 +7,14 @@ import XCTest
 final class WorkspaceBoard: @unchecked Sendable {
     static let repoPath = "/repos/relay-runner"
     private let lock = NSLock()
+    /// RR-551: where its tickets live, so a test can put real ticket files there.
+    let repoPath: String
     private var stored: [(id: String, title: String, status: String)]
 
-    init(tickets: [(String, String, String)]) { stored = tickets.map { (id: $0.0, title: $0.1, status: $0.2) } }
+    init(tickets: [(String, String, String)], repoPath: String = WorkspaceBoard.repoPath) {
+        self.repoPath = repoPath
+        stored = tickets.map { (id: $0.0, title: $0.1, status: $0.2) }
+    }
 
     var tickets: [(String, String, String)] {
         get { lock.withLock { stored.map { ($0.id, $0.title, $0.status) } } }
@@ -22,10 +27,10 @@ final class WorkspaceBoard: @unchecked Sendable {
         func lane(_ query: String, _ statuses: Set<String>) -> ProgramStatusResponse {
             let items = all.enumerated().filter { statuses.contains($0.element.2) }.map { index, ticket in
                 ProgramStatusItem(
-                    project: ProgramStatusProject(name: "relay-runner", path: Self.repoPath),
+                    project: ProgramStatusProject(name: "relay-runner", path: repoPath),
                     ticketID: ticket.0, title: ticket.1, status: ticket.2, priority: "medium",
                     ticketModifiedAt: Date(timeIntervalSince1970: Double(1_000 + index)),
-                    branch: "relay/\(ticket.0.lowercased())", activity: "reading /repos/relay-runner/secret.txt")
+                    branch: "relay/\(ticket.0.lowercased())", activity: "reading \(repoPath)/secret.txt")
             }
             return ProgramStatusResponse(query: query, provider: nil, message: "", items: items,
                                          counts: ProgramStatusCounts(projects: 1, items: items.count))
@@ -155,5 +160,157 @@ final class RelayRemoteWorkspaceFeedTests: XCTestCase {
         let state = await hung.load()
         XCTAssertEqual(state.error, RelayRemoteWorkspaceFeed.timedOut)
         XCTAssertLessThan(Date().timeIntervalSince(started), 5)
+    }
+
+    // MARK: RR-551: one ticket's text
+
+    /// A project directory holding real ticket files, and a feed that reads them.
+    private func ticketFeed(_ tickets: [(id: String, title: String, status: String, body: String)]) throws
+        -> (RelayRemoteWorkspaceFeed, URL) {
+        let root = URL(fileURLWithPath: "/tmp/rrw-\(UUID().uuidString.prefix(8))")
+        let orchestrator = root.appendingPathComponent(".orchestrator")
+        try FileManager.default.createDirectory(at: orchestrator, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        for ticket in tickets {
+            let contents = """
+            ---
+            id: \(ticket.id)
+            title: "\(ticket.title)"
+            status: \(ticket.status)
+            priority: medium
+            execution_mode: implementation
+            depends_on: []
+            run_id: null
+            canceled: false
+            worker_model: balanced
+            worker_effort: high
+            ---
+            \(ticket.body)
+            """
+            try contents.write(to: orchestrator.appendingPathComponent("\(ticket.id).md"), atomically: true, encoding: .utf8)
+        }
+        let board = WorkspaceBoard(tickets: tickets.map { ($0.id, $0.title, $0.status) }, repoPath: root.path)
+        let registered = [RelaySessionControlHost.Project(id: "p-relay", name: "relay-runner", path: root.path,
+                                                           availability: "available")]
+        let feed = RelayRemoteWorkspaceFeed(projects: { registered }, fetchDashboard: { _ in board.snapshot },
+                                            fetchOwners: { [:] })
+        return (feed, root)
+    }
+
+    func testGetReturnsTheBodyWithoutItsFrontmatter() async throws {
+        let body = "\n## Description\n\nOpen a ticket — café ☕.\n\n- [ ] one\n- [x] two\n"
+        let (feed, _) = try ticketFeed([("RR-1", "Read me", "in_progress", body)])
+        let reply = await feed.ticket(projectID: "p-relay", ticketID: "RR-1")
+        XCTAssertNil(reply.error)
+        XCTAssertEqual(reply.title, "Read me")
+        XCTAssertEqual(reply.status, .inProgress)
+        XCTAssertNil(reply.truncated)
+        let markdown = try XCTUnwrap(reply.markdown)
+        XCTAssertTrue(markdown.contains("## Description"))
+        XCTAssertTrue(markdown.contains("- [x] two"))
+        let line = String(decoding: try FrameCodec.encode(.workspaceTicket(reply)), as: UTF8.self)
+        for key in ["worker_model", "worker_effort", "execution_mode", "depends_on", "priority: medium", "status: in_progress"] {
+            XCTAssertFalse(line.contains(key), "\(key) is frontmatter and must not be sent")
+        }
+        XCTAssertFalse(line.contains("/tmp/rrw"), "no filesystem path is added")
+        XCTAssertFalse(line.contains("secret.txt"))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
+        XCTAssertEqual(Set(object.keys), ["type", "project_id", "ticket_id", "title", "status", "markdown"])
+        XCTAssertEqual(markdown, body, "the body is sent as written")
+    }
+
+    func testGetCarriesTheOwningAgentAndStatusLanes() async throws {
+        let first = try ticketFeed([("RR-1", "A", "ready", "x"), ("RR-2", "B", "backlog", "y"), ("RR-3", "C", "done", "z"),
+                                    ("RR-4", "D", "canceled", "w")])
+        let lanes = [("RR-1", TicketDetailStatus.queued), ("RR-2", .backlog), ("RR-3", .done)]
+        for (id, status) in lanes {
+            let reply = await first.0.ticket(projectID: "p-relay", ticketID: id)
+            XCTAssertEqual(reply.status, status, id)
+            XCTAssertNil(reply.error, id)
+        }
+        let canceled = await first.0.ticket(projectID: "p-relay", ticketID: "RR-4")
+        XCTAssertEqual(canceled.error, RelayRemoteWorkspaceFeed.unknownTicket)
+
+        var owned = first.0
+        let root = ProgramBoardProjectPath.normalized(first.1.path)
+        owned.fetchOwners = { [RelayRemoteWorkspaceFeed.ownerKey(path: root, ticketID: "RR-1"): "sky"] }
+        let withOwner = await owned.ticket(projectID: "p-relay", ticketID: "RR-1")
+        XCTAssertEqual(withOwner.agent, "sky")
+        let without = await owned.ticket(projectID: "p-relay", ticketID: "RR-2")
+        XCTAssertNil(without.agent)
+    }
+
+    func testGetForAnUnknownProjectOrTicketIsAnErrorWithNoBody() async throws {
+        let (feed, _) = try ticketFeed([("RR-1", "Mine", "backlog", "body")])
+        let project = await feed.ticket(projectID: "nope", ticketID: "RR-1")
+        XCTAssertEqual(project.error, RelayRemoteWorkspaceFeed.unknownProject)
+        XCTAssertNil(project.markdown)
+        let ticket = await feed.ticket(projectID: "p-relay", ticketID: "RR-404")
+        XCTAssertEqual(ticket.error, RelayRemoteWorkspaceFeed.unknownTicket)
+        XCTAssertNil(ticket.markdown)
+        XCTAssertEqual(ticket.ticketId, "RR-404")
+        XCTAssertNoThrow(try FrameCodec.encode(.workspaceTicket(ticket)))
+        // On the board but with no file behind it.
+        let board = WorkspaceBoard(tickets: [("RR-9", "Ghost", "ready")], repoPath: "/tmp/rrw-missing")
+        let ghost = RelayRemoteWorkspaceFeed(
+            projects: { [.init(id: "p", name: "x", path: "/tmp/rrw-missing", availability: "available")] },
+            fetchDashboard: { _ in board.snapshot }, fetchOwners: { [:] })
+        let gone = await ghost.ticket(projectID: "p", ticketID: "RR-9")
+        XCTAssertEqual(gone.error, RelayRemoteWorkspaceFeed.unknownTicket)
+        XCTAssertFalse(String(decoding: try FrameCodec.encode(.workspaceTicket(gone)), as: UTF8.self).contains("/tmp/rrw-missing"))
+    }
+
+    func testGetWithTheDaemonDownIsAWellFormedError() async throws {
+        var (feed, _) = try ticketFeed([("RR-1", "Mine", "backlog", "body")])
+        feed.fetchDashboard = { _ in throw URLError(.cannotConnectToHost) }
+        let down = await feed.ticket(projectID: "p-relay", ticketID: "RR-1")
+        XCTAssertEqual(down.error, RelayRemoteWorkspaceFeed.daemonDown)
+        XCTAssertNil(down.markdown)
+        feed.fetchDashboard = { _ in
+            try await Task.sleep(nanoseconds: 60_000_000_000)
+            return WorkspaceBoard(tickets: []).snapshot
+        }
+        feed.timeout = 0.2
+        let slow = await feed.ticket(projectID: "p-relay", ticketID: "RR-1")
+        XCTAssertEqual(slow.error, RelayRemoteWorkspaceFeed.timedOut)
+    }
+
+    func testABodyOverTheCapIsCutOnACharacterBoundaryAndMarkedTruncated() async throws {
+        // 4-byte characters never divide evenly into the cap plus one, so a byte cut would split one.
+        let long = String(repeating: "🙂a", count: 40_000)
+        let (feed, _) = try ticketFeed([("RR-1", "Long", "ready", long)])
+        let reply = await feed.ticket(projectID: "p-relay", ticketID: "RR-1")
+        XCTAssertNil(reply.error)
+        XCTAssertEqual(reply.truncated, true)
+        let markdown = try XCTUnwrap(reply.markdown)
+        XCTAssertLessThanOrEqual(markdown.utf8.count, WorkspaceTicketDetail.maxMarkdownBytes)
+        XCTAssertTrue(long.hasPrefix(markdown), "a prefix of the body, with no replacement character")
+        XCTAssertFalse(markdown.contains("\u{FFFD}"))
+        XCTAssertLessThanOrEqual(try FrameCodec.encode(.workspaceTicket(reply)).count, RelayRemoteProtocol.maxLineBytes)
+    }
+
+    func testCapKeepsAShortBodyAndCutsAtTheLimit() {
+        XCTAssertEqual(RelayRemoteWorkspaceFeed.cap("hello", bytes: 5).0, "hello")
+        XCTAssertFalse(RelayRemoteWorkspaceFeed.cap("hello", bytes: 5).1)
+        let cut = RelayRemoteWorkspaceFeed.cap("ab🙂cd", bytes: 5)
+        XCTAssertEqual(cut.0, "ab", "a character that does not fit is left out whole")
+        XCTAssertTrue(cut.1)
+        XCTAssertEqual(RelayRemoteWorkspaceFeed.cap("ab🙂cd", bytes: 6).0, "ab🙂")
+    }
+
+    func testABodyThatEscapesLargeStillFitsOneFrame() async throws {
+        let quotes = String(repeating: "\"\\\n", count: 20_000)
+        let (feed, _) = try ticketFeed([("RR-1", "Escapes", "ready", quotes)])
+        let reply = await feed.ticket(projectID: "p-relay", ticketID: "RR-1")
+        XCTAssertNil(reply.error)
+        XCTAssertEqual(reply.truncated, true)
+        XCTAssertLessThanOrEqual(try FrameCodec.encode(.workspaceTicket(reply)).count, RelayRemoteProtocol.maxLineBytes)
+    }
+
+    func testTheListStillCarriesNoBodyWhenTicketsHaveText() async throws {
+        let (feed, _) = try ticketFeed([("RR-1", "Mine", "backlog", "SECRET BODY TEXT")])
+        let state = await feed.load()
+        XCTAssertEqual(state.tickets.map(\.id), ["RR-1"])
+        XCTAssertFalse(String(decoding: try FrameCodec.encode(.workspaceState(state)), as: UTF8.self).contains("SECRET BODY TEXT"))
     }
 }

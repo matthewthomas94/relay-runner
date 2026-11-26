@@ -308,6 +308,13 @@ final class RelayRemoteShellTests: XCTestCase {
         let state = try vectorLine("settings_state_unsupported", file: "frames_extended")
         app.send(state + "\n")
         XCTAssertEqual(readLine(stdout), state)
+        // RR-551: `get` takes the same route as `list`, and its reply comes back the same way.
+        let get = try vectorLine("workspace_command_get", file: "frames_extended")
+        try stdin.write(contentsOf: Data((get + "\n").utf8))
+        XCTAssertEqual(app.readLine(), get)
+        let ticket = try vectorLine("workspace_ticket", file: "frames_extended")
+        app.send(ticket + "\n")
+        XCTAssertEqual(readLine(stdout), ticket)
         let utterance = try vectorLine("utterance_agent", file: "frames_extended")
         try stdin.write(contentsOf: Data((utterance + "\n").utf8))
         XCTAssertEqual(bridge.readLine(), utterance)

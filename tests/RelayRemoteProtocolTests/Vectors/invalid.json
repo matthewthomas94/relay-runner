@@ -303,5 +303,25 @@
   "name": "settings_state_speed_not_int",
   "line": "{\"type\":\"settings_state\",\"speech_speed_percent\":\"130\"}",
   "error": "invalid_field"
+ },
+ {
+  "name": "workspace_command_get_project_not_string",
+  "line": "{\"type\":\"workspace_command\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"action\":\"get\",\"project_id\":5,\"ticket_id\":\"RR-1\"}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "workspace_ticket_missing_ticket_id",
+  "line": "{\"type\":\"workspace_ticket\",\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\"}",
+  "error": "missing_field"
+ },
+ {
+  "name": "workspace_ticket_unknown_status",
+  "line": "{\"type\":\"workspace_ticket\",\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"ticket_id\":\"RR-1\",\"status\":\"canceled\"}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "workspace_ticket_truncated_not_bool",
+  "line": "{\"type\":\"workspace_ticket\",\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"ticket_id\":\"RR-1\",\"truncated\":\"yes\"}",
+  "error": "invalid_field"
  }
 ]

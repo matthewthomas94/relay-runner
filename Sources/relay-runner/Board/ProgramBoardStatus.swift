@@ -1618,6 +1618,8 @@ final class ProgramBoardViewModel {
     var notesLoaded = false
     /// Why the last notes refresh failed; shown above the library until one succeeds.
     var noteLoadErrorMessage: String?
+    /// RR-549: the Notes chat, one conversation per note and one for the library.
+    @ObservationIgnored let noteChat = NoteChatModel()
     var noteCaptureSnapshot = MeetingNoteCoordinatorSnapshot(
         phase: .idle,
         noteID: nil,

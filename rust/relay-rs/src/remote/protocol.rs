@@ -35,8 +35,11 @@ const AGENT_STATES: &[&str] = &[
     "listening",
     "playing",
 ];
-const WORKSPACE_ACTIONS: &[&str] = &["list"];
+const WORKSPACE_ACTIONS: &[&str] = &["list", "get"];
 const TICKET_STATUSES: &[&str] = &["in_progress", "queued", "backlog"];
+/// RR-551: a `workspace_ticket` also names `done`, a ticket that finished
+/// while the phone had it open.
+const TICKET_DETAIL_STATUSES: &[&str] = &["in_progress", "queued", "backlog", "done"];
 const SETTINGS_ACTIONS: &[&str] = &["get", "set"];
 /// `speech_coordinator.SPEECH_KINDS` and `SPEECH_SOURCES`.
 const SPEECH_KINDS: &[&str] = &[
@@ -234,10 +237,13 @@ pub struct AgentEntry {
 }
 
 /// RR-532: asks the Mac for its Workspace; answered with `workspace_state`.
+/// RR-551: `get` names one ticket and is answered with `workspace_ticket`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkspaceCommand {
     pub client_id: String,
     pub action: String,
+    pub project_id: Option<String>,
+    pub ticket_id: Option<String>,
 }
 
 /// RR-532: a project inside `WorkspaceState::projects` (not a frame).
@@ -266,6 +272,22 @@ pub struct WorkspaceState {
     pub error: Option<String>,
     /// RR-535: the Mac held more open tickets than it sent.
     pub truncated: Option<bool>,
+}
+
+/// RR-551: the Mac's answer to `workspace_command` `get`: one ticket's text.
+/// `markdown` is the ticket body (at most 64 KB of UTF-8) and `error` takes its
+/// place when the ticket cannot be served.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkspaceTicketDetail {
+    pub project_id: String,
+    pub ticket_id: String,
+    pub title: Option<String>,
+    /// One of `in_progress`, `queued`, `backlog`, `done`.
+    pub status: Option<String>,
+    pub agent: Option<String>,
+    pub markdown: Option<String>,
+    pub truncated: Option<bool>,
+    pub error: Option<String>,
 }
 
 /// RR-532: `get`, or `set` with only the keys to change.
@@ -321,6 +343,7 @@ pub enum Frame {
     SessionState(SessionState),
     WorkspaceCommand(WorkspaceCommand),
     WorkspaceState(WorkspaceState),
+    WorkspaceTicket(WorkspaceTicketDetail),
     SettingsCommand(SettingsCommand),
     SettingsState(SettingsState),
 }
@@ -346,6 +369,7 @@ impl Frame {
             Frame::SessionState(_) => "session_state",
             Frame::WorkspaceCommand(_) => "workspace_command",
             Frame::WorkspaceState(_) => "workspace_state",
+            Frame::WorkspaceTicket(_) => "workspace_ticket",
             Frame::SettingsCommand(_) => "settings_command",
             Frame::SettingsState(_) => "settings_state",
         }
@@ -518,6 +542,18 @@ impl Frame {
             Frame::WorkspaceCommand(f) => {
                 out.insert("client_id", f.client_id.as_str());
                 out.insert("action", f.action.as_str());
+                opt(&mut out, "project_id", &f.project_id);
+                opt(&mut out, "ticket_id", &f.ticket_id);
+            }
+            Frame::WorkspaceTicket(f) => {
+                out.insert("project_id", f.project_id.as_str());
+                out.insert("ticket_id", f.ticket_id.as_str());
+                opt(&mut out, "title", &f.title);
+                opt(&mut out, "status", &f.status);
+                opt(&mut out, "agent", &f.agent);
+                opt(&mut out, "markdown", &f.markdown);
+                opt(&mut out, "truncated", &f.truncated);
+                opt(&mut out, "error", &f.error);
             }
             Frame::WorkspaceState(f) => {
                 let projects = f
@@ -770,7 +806,30 @@ fn fields(type_name: &str) -> Option<&'static [Field]> {
                 ]
             }
         }
-        "workspace_command" => const { &[req("client_id", Str), req("action", Str)] },
+        "workspace_command" => {
+            const {
+                &[
+                    req("client_id", Str),
+                    req("action", Str),
+                    opt("project_id", Str),
+                    opt("ticket_id", Str),
+                ]
+            }
+        }
+        "workspace_ticket" => {
+            const {
+                &[
+                    req("project_id", Str),
+                    req("ticket_id", Str),
+                    opt("title", Str),
+                    opt("status", Str),
+                    opt("agent", Str),
+                    opt("markdown", Str),
+                    opt("truncated", Bool),
+                    opt("error", Str),
+                ]
+            }
+        }
         "workspace_state" => {
             const {
                 &[
@@ -825,6 +884,7 @@ fn allowed_values(type_name: &str, field: &str) -> Option<&'static [&'static str
         ("agent", "state") => AGENT_STATES,
         ("workspace_command", "action") => WORKSPACE_ACTIONS,
         ("ticket", "status") => TICKET_STATUSES,
+        ("workspace_ticket", "status") => TICKET_DETAIL_STATUSES,
         ("settings_command", "action") => SETTINGS_ACTIONS,
         _ => return None,
     })
@@ -1173,6 +1233,18 @@ fn build(type_name: &str, object: &Dict) -> Frame {
         "workspace_command" => Frame::WorkspaceCommand(WorkspaceCommand {
             client_id: s("client_id"),
             action: s("action"),
+            project_id: os("project_id"),
+            ticket_id: os("ticket_id"),
+        }),
+        "workspace_ticket" => Frame::WorkspaceTicket(WorkspaceTicketDetail {
+            project_id: s("project_id"),
+            ticket_id: s("ticket_id"),
+            title: os("title"),
+            status: os("status"),
+            agent: os("agent"),
+            markdown: os("markdown"),
+            truncated: ob("truncated"),
+            error: os("error"),
         }),
         "workspace_state" => Frame::WorkspaceState(WorkspaceState {
             projects: objects(object, "projects", |entry| WorkspaceProject {
@@ -1569,6 +1641,7 @@ mod tests {
         for name in [
             "workspace_command",
             "workspace_state",
+            "workspace_ticket",
             "settings_command",
             "settings_state",
         ] {
@@ -1651,6 +1724,51 @@ mod tests {
         assert_eq!(set.speech_speed_percent, Some(150));
         assert_eq!(set.model.as_deref(), Some("sonnet"));
         assert_eq!(set.effort, None);
+    }
+
+    /// RR-551: `get` names a ticket, and `workspace_ticket` carries its text or
+    /// an error in place of it.
+    #[test]
+    fn workspace_ticket_vectors_decode() {
+        let named = |name: &str| {
+            let entries = vectors("frames_extended");
+            let line = list(&entries)
+                .iter()
+                .find(|entry| text(entry, "name") == name)
+                .map(|entry| text(entry, "line").as_bytes().to_vec())
+                .unwrap();
+            decode(&line).unwrap()
+        };
+        let Frame::WorkspaceCommand(get) = named("workspace_command_get") else {
+            panic!("expected workspace_command");
+        };
+        assert_eq!(get.action, "get");
+        assert_eq!(
+            get.project_id.as_deref(),
+            Some("6d23b5b1-6da7-4056-b328-7ea8167388c0")
+        );
+        assert_eq!(get.ticket_id.as_deref(), Some("RR-120"));
+        let Frame::WorkspaceCommand(list_command) = named("workspace_command_list") else {
+            panic!("expected workspace_command");
+        };
+        assert_eq!((list_command.project_id, list_command.ticket_id), (None, None));
+        let Frame::WorkspaceTicket(ticket) = named("workspace_ticket") else {
+            panic!("expected workspace_ticket");
+        };
+        assert_eq!(ticket.status.as_deref(), Some("in_progress"));
+        assert_eq!(ticket.agent.as_deref(), Some("puck"));
+        assert!(ticket.markdown.unwrap().starts_with("## Description\n"));
+        assert_eq!((ticket.truncated, ticket.error), (None, None));
+        let Frame::WorkspaceTicket(cut) = named("workspace_ticket_truncated") else {
+            panic!("expected workspace_ticket");
+        };
+        assert_eq!(cut.status.as_deref(), Some("done"));
+        assert_eq!(cut.truncated, Some(true));
+        let Frame::WorkspaceTicket(failed) = named("workspace_ticket_error") else {
+            panic!("expected workspace_ticket");
+        };
+        assert_eq!(failed.error.as_deref(), Some("That ticket no longer exists."));
+        assert_eq!((failed.markdown, failed.title), (None, None));
     }
 
     #[test]
