@@ -125,6 +125,22 @@ A port of `buildDotGrid` in `ParticleFieldRenderer.swift` on an 8 pt grid, sligh
 
 Tickets grouped by status: In progress, Queued, Backlog. Each row shows the ticket and the agent that owns it. Above the tab bar is a scrollable strip of project tabs: All, then one per project, styled like the agent tabs. These are tabs, not filter chips. There is no page title.
 
+## Ticket modal (opens from a Workspace row)
+
+There is no Figma screen for this; it is built from the styles above and the screen is `ios/RelayRemote/MainApp/TicketModalView.swift` on the reusable `RelayModal` (`DesignSystem/RelayModal.swift`, shown on the gallery's Modal page). It is the app's first modal. It is read-only: no editing, dispatching, cancelling or commenting from the phone.
+
+![Ticket modal](29-ticket-modal.jpg)
+
+- **Surface.** One glass panel (`relayGlass(.panel)`, radius 16), 16 pt in from each side, starting 16 pt below the status bar and ending 40 pt above the bottom of the screen, the full-width buttons' gap. It hugs a short ticket and is centred in that space; a long one fills it and scrolls inside the panel. No system sheet, detents, drag indicator or pushed screen.
+- **Scrim.** Black at 60% over the whole app except the status bar: the tab bar, the project tab strip and the state glows are all under it. The list stays visible, and does not scroll or take taps. A pushed banner (Mac unreachable) is drawn above the scrim and the panel.
+- **Close.** A 44 pt secondary glass icon button with the stroke X (Lucide) at the panel's top right, pinned while the body scrolls. A tap on the scrim, a drag down past a third of the panel's height or a fast flick (while the body is at its top) and VoiceOver's escape gesture close it too. While dragging the panel follows the finger and the scrim fades with it. The list is as it was: same scroll position, same project tab.
+- **Motion.** `RelayMotion.swap` (0.24 s): the panel fades and scales from 96% and the scrim fades. With Reduce Motion, fade only.
+- **Header**, left of the close button: the ticket id and project name on one caption line; the title (card title); the status in words (In progress, Queued, Backlog, Done) and the owning agent's name when there is one. No page title and no pills or lights.
+- **Body**, from the ticket's Markdown: headings (24, 18 and 16 semibold by level), paragraphs, bulleted and numbered lists, task items as unticked or ticked boxes (outline icons, read-only), inline code on the secondary surface, code blocks on the secondary surface that scroll sideways rather than wrap, bold (SemiBold), italics and links (underlined, open in the system browser). Bai Jamjuree, white on the panel, and it follows Dynamic Type. The body scrolls under the fixed header and fades out at its top and bottom edges with an alpha mask, not a black overlay.
+- **States.** Loading: the header from the list row at once, only the body waits. Error: one short line and Retry, a secondary button; the modal has no primary button. Truncated: "Open on your Mac to read the rest." after the text. Older Mac: "Ticket text is not available on this Mac." and no Retry. Mac unreachable: the floating banner, with the last loaded text dimmed beneath it.
+- **Live.** The text is asked for each time the ticket is opened and on pull to refresh. While it is open a pushed Workspace list updates the header's status and agent; if the ticket leaves the open list the header says Done and the text stays.
+- **Debug.** `--ticket-sample=<short|long|loading|error|truncated|unsupported|done>` opens it on sample data (with `--workspace-sample=unreachable` for the banner), and `--gallery=modal` shows the component.
+
 ## Settings tab (27)
 
 No page title.

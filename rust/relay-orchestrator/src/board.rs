@@ -28,6 +28,8 @@ use relay_artifacts::sync::{ArtifactSyncEngine, SyncMode, SyncOptions};
 use relay_artifacts::{ErrorKind, pystr, tickets, toml};
 use relay_intents::json::{self, Dict, Value};
 use relay_intents::pattern::Regex;
+use relay_services::history_chat;
+use relay_services::notes::chat;
 use relay_services::notes::util::{b64decode_strict, b64encode, utc_now_isoformat, uuid4_hex};
 
 use crate::daemon::{Daemon, guard, read_json, registered_project_repo_paths};
@@ -465,6 +467,34 @@ impl Daemon {
                 reply(200, body)
             },
         )
+    }
+
+    /// RR-550: one tool-free provider answer about the repository's ticket
+    /// history or one historical ticket. Ticket text is read offline only:
+    /// no `online` deepening and no GitHub exposure confirmation, whatever
+    /// the body says. The archive is released before the provider runs.
+    pub fn artifact_history_chat(&self, request: &Request) -> Outcome<Reply> {
+        let repo_path = request.text("repo_path");
+        let token = body_token(request);
+        let chat_request = history_chat::parse_request(&request.body)?;
+        let prompt = if self.artifact_lifecycle(&repo_path)?.is_none() {
+            // As `…/history/search` answers: no archive, no history yet.
+            match &chat_request.artifact_id {
+                Some(artifact_id) => return Err(history_chat::not_found(artifact_id).into()),
+                None => history_chat::history_prompt(&[], &chat_request.messages),
+            }
+        } else {
+            self.with_retention(&repo_path, token.as_deref(), false, |context| {
+                Ok(history_chat::prompt(&context.manager, &chat_request)?)
+            })?
+        };
+        match history_chat::respond(self.history_chat.as_ref(), prompt) {
+            Ok(result) => reply(200, result),
+            Err(error) => match chat::provider_failure(&error) {
+                Some((status, body)) => reply(status, body),
+                None => Err(error.into()),
+            },
+        }
     }
 
     pub fn artifact_history_attachment(&self, request: &Request) -> Outcome<Reply> {

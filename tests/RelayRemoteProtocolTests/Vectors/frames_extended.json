@@ -70,6 +70,11 @@
   "line": "{\"projects\":[],\"tickets\":[],\"type\":\"workspace_state\"}"
  },
  {
+  "name": "workspace_state_truncated",
+  "direction": "mac_to_phone",
+  "line": "{\"projects\":[{\"id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"name\":\"relay-runner\"}],\"tickets\":[{\"id\":\"RR-120\",\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"status\":\"backlog\",\"title\":\"Newest of many\"}],\"truncated\":true,\"type\":\"workspace_state\"}"
+ },
+ {
   "name": "workspace_state_unsupported",
   "direction": "mac_to_phone",
   "line": "{\"error\":\"The Workspace is not available from the phone on this Mac yet.\",\"projects\":[],\"tickets\":[],\"type\":\"workspace_state\"}"
@@ -103,5 +108,25 @@
   "name": "settings_state_unsupported",
   "direction": "mac_to_phone",
   "line": "{\"error\":\"Settings cannot be changed from the phone on this Mac yet.\",\"type\":\"settings_state\"}"
+ },
+ {
+  "name": "workspace_command_get",
+  "direction": "phone_to_mac",
+  "line": "{\"action\":\"get\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"ticket_id\":\"RR-120\",\"type\":\"workspace_command\"}"
+ },
+ {
+  "name": "workspace_ticket",
+  "direction": "mac_to_phone",
+  "line": "{\"agent\":\"puck\",\"markdown\":\"## Description\\n\\nOpen a ticket from the phone.\\n\\n- [ ] Read it\\n- [x] Café ☕ — `code`\\n\\n```swift\\nlet a = \\\"b\\\"\\n```\\n\",\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"status\":\"in_progress\",\"ticket_id\":\"RR-120\",\"title\":\"Move the board to the artifact branch\",\"type\":\"workspace_ticket\"}"
+ },
+ {
+  "name": "workspace_ticket_truncated",
+  "direction": "mac_to_phone",
+  "line": "{\"markdown\":\"Long body…\",\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"status\":\"done\",\"ticket_id\":\"RR-121\",\"title\":\"Queued behind RR-120\",\"truncated\":true,\"type\":\"workspace_ticket\"}"
+ },
+ {
+  "name": "workspace_ticket_error",
+  "direction": "mac_to_phone",
+  "line": "{\"error\":\"That ticket no longer exists.\",\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"ticket_id\":\"RR-999\",\"type\":\"workspace_ticket\"}"
  }
 ]

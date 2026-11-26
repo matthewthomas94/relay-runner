@@ -379,6 +379,104 @@ enum OrchestratorClient {
         )
     }
 
+    struct NoteChatResponse: Decodable, Equatable {
+        let reply: String
+        let noteIDs: [String]
+
+        private enum CodingKeys: String, CodingKey {
+            case reply
+            case noteIDs = "note_ids"
+        }
+    }
+
+    /// RR-548's chat route allows the provider 120 seconds.
+    private static let noteChatTimeout: TimeInterval = 150
+
+    /// RR-549: the request for one chat question; `note` nil asks the whole library.
+    static func noteChatRequest(
+        note: String?,
+        messages: [NoteChatMessage],
+        repoPath: String,
+        projectScopeToken: String?,
+        port: Int
+    ) -> URLRequest? {
+        var payload = artifactPayload(
+            repoPath: GlobalNoteStore.requestPath(repoPath),
+            projectScopeToken: projectScopeToken
+        )
+        if let note { payload["note"] = note }
+        payload["messages"] = messages.map { ["role": $0.role.rawValue, "text": $0.text] }
+        return postRequest(
+            path: "/v1/artifacts/notes/chat",
+            payload: payload,
+            port: port,
+            timeout: noteChatTimeout
+        )
+    }
+
+    static func chatAboutNotes(
+        note: String?,
+        messages: [NoteChatMessage],
+        repoPath: String,
+        projectScopeToken: String?
+    ) async throws -> NoteChatResponse {
+        guard let request = noteChatRequest(
+            note: note,
+            messages: messages,
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken,
+            port: readPort()
+        ) else { throw OrchestratorClientError.invalidRequest }
+        return try await response(NoteChatResponse.self, for: request)
+    }
+
+    struct HistoryChatResponse: Decodable, Equatable {
+        let reply: String
+        let artifactIDs: [String]
+
+        private enum CodingKeys: String, CodingKey {
+            case reply
+            case artifactIDs = "artifact_ids"
+        }
+    }
+
+    /// RR-550: one Workspace History chat question; `artifactID` nil asks
+    /// about the repository's whole history. The route reads tickets offline
+    /// only, so the request carries no online or GitHub exposure flags.
+    static func historyChatRequest(
+        artifactID: String?,
+        messages: [NoteChatMessage],
+        repoPath: String,
+        projectScopeToken: String?,
+        port: Int
+    ) -> URLRequest? {
+        var payload = artifactPayload(repoPath: repoPath, projectScopeToken: projectScopeToken)
+        if let artifactID { payload["artifact_id"] = artifactID }
+        payload["messages"] = messages.map { ["role": $0.role.rawValue, "text": $0.text] }
+        return postRequest(
+            path: "/v1/artifacts/history/chat",
+            payload: payload,
+            port: port,
+            timeout: noteChatTimeout
+        )
+    }
+
+    static func chatAboutHistory(
+        artifactID: String?,
+        messages: [NoteChatMessage],
+        repoPath: String,
+        projectScopeToken: String?
+    ) async throws -> HistoryChatResponse {
+        guard let request = historyChatRequest(
+            artifactID: artifactID,
+            messages: messages,
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken,
+            port: readPort()
+        ) else { throw OrchestratorClientError.invalidRequest }
+        return try await response(HistoryChatResponse.self, for: request)
+    }
+
     static func artifactRequest(
         path: String,
         repoPath: String,
@@ -1265,6 +1363,19 @@ enum OrchestratorClient {
               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let text = object["startup_text"] as? String else { return "" }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// RR-535: the daemon's `GET /v1/agent-presence` body, which names the
+    /// tickets each running agent wrote or dispatched. Throws on a connection
+    /// failure or a non-200 answer.
+    static func fetchAgentPresence() async throws -> Data {
+        guard let request = getRequest(path: "/v1/agent-presence", query: [], port: readPort(), timeout: 5) else {
+            throw OrchestratorClientError.invalidRequest
+        }
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200 else { throw OrchestratorClientError.badStatus(status, "") }
+        return data
     }
 
     private static func readPort() -> Int {

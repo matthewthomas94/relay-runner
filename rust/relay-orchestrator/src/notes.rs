@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use relay_intents::json::{Dict, Value};
+use relay_services::notes::chat;
 use relay_services::notes::project::ProjectNoteManager;
 use relay_services::notes::{CreateNote, NoteManager, checked_update, retry_metadata};
 
@@ -144,6 +145,19 @@ impl Daemon {
         let result = manager.create(&create)?;
         self.schedule_note_metadata(&manager, &result);
         reply(201, result)
+    }
+
+    /// RR-548: one tool-free provider answer about a note or the library.
+    /// Nothing is saved; a provider failure answers its own status.
+    pub fn artifact_note_chat(&self, request: &Request) -> Outcome<Reply> {
+        let manager = self.body_note_manager(request)?;
+        match chat::answer(manager.as_ref(), self.note_chat.as_ref(), &request.body) {
+            Ok(result) => reply(200, result),
+            Err(error) => match chat::provider_failure(&error) {
+                Some((status, body)) => reply(status, body),
+                None => Err(error.into()),
+            },
+        }
     }
 
     pub fn artifact_note_update(&self, request: &Request) -> Outcome<Reply> {

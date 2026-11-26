@@ -125,6 +125,29 @@ pub fn parse_output(provider: &str, raw: &[u8]) -> Result<Dict> {
 
 /// `command(provider, binary, model, directory)`: the one-shot launch line.
 pub fn command(provider: &str, binary: &str, model: &str, directory: &Path) -> Vec<String> {
+    one_shot_command(
+        provider,
+        binary,
+        model,
+        directory,
+        SYSTEM_PROMPT,
+        Some(&schema()),
+    )
+}
+
+/// The tool-free, subscription-only one-shot launch line every note
+/// provider call shares: `schema` asks for structured JSON, `None` for the
+/// plain-text answer (Claude still wraps it in its JSON result envelope;
+/// Codex writes it to `result.txt`). Codex reads its system prompt from
+/// `instructions.txt` in `directory`, which the caller writes.
+pub fn one_shot_command(
+    provider: &str,
+    binary: &str,
+    model: &str,
+    directory: &Path,
+    system_prompt: &str,
+    schema: Option<&Value>,
+) -> Vec<String> {
     let owned = |items: &[&str]| {
         items
             .iter()
@@ -147,12 +170,14 @@ pub fn command(provider: &str, binary: &str, model: &str, directory: &Path) -> V
             "--permission-mode",
             "dontAsk",
             "--system-prompt",
-            SYSTEM_PROMPT,
+            system_prompt,
             "--output-format",
             "json",
-            "--json-schema",
         ]);
-        args.push(json::dumps(&schema()));
+        if let Some(schema) = schema {
+            args.push("--json-schema".to_string());
+            args.push(json::dumps(schema));
+        }
         args.extend(owned(&["--model", model]));
         return args;
     }
@@ -170,11 +195,17 @@ pub fn command(provider: &str, binary: &str, model: &str, directory: &Path) -> V
         "never",
         "--model",
         model,
-        "--output-schema",
     ]);
-    args.push(path("schema.json"));
+    if schema.is_some() {
+        args.push("--output-schema".to_string());
+        args.push(path("schema.json"));
+    }
     args.push("--output-last-message".to_string());
-    args.push(path("result.json"));
+    args.push(path(if schema.is_some() {
+        "result.json"
+    } else {
+        "result.txt"
+    }));
     let mut settings: Vec<(String, Value)> = vec![
         ("approval_policy".into(), Value::from("never")),
         ("project_doc_max_bytes".into(), Value::Int(0)),
@@ -369,14 +400,34 @@ fn resolve_from_cli(model: &str, binary: &str) -> std::result::Result<String, St
 }
 
 /// A private temporary directory, removed on drop.
-struct TemporaryDirectory(PathBuf);
+pub(crate) struct TemporaryDirectory(pub(crate) PathBuf);
 
 impl TemporaryDirectory {
-    fn new() -> Result<Self> {
-        let path = std::env::temp_dir().join(format!("relay-note-metadata-{}", util::uuid4_hex()));
+    pub(crate) fn new(label: &str) -> Result<Self> {
+        let path = std::env::temp_dir().join(format!("relay-{label}-{}", util::uuid4_hex()));
         DirBuilder::new().mode(0o700).create(&path)?;
         Ok(Self(path))
     }
+}
+
+/// The provider, CLI and model a one-shot note call launches.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Launch {
+    pub provider: String,
+    pub binary: String,
+    pub model: String,
+}
+
+/// The result file a Codex one-shot call wrote, bounded like stdout.
+pub(crate) fn read_result(path: &Path) -> Result<Vec<u8>> {
+    fs::File::open(path)
+        .and_then(|file| {
+            let mut buffer = Vec::new();
+            file.take(MAX_OUTPUT_BYTES as u64 + 1)
+                .read_to_end(&mut buffer)?;
+            Ok(buffer)
+        })
+        .map_err(|_| generation_error("invalid_output"))
 }
 
 impl Drop for TemporaryDirectory {
@@ -400,14 +451,10 @@ impl NoteMetadataGenerator {
     }
 }
 
-impl Generate for NoteMetadataGenerator {
-    fn generate(&self, text: &str, cancel: &AtomicBool) -> Result<Dict> {
-        if json::py_strip(text).is_empty() {
-            return Err(generation_error("empty"));
-        }
-        if text.len() > MAX_INPUT_BYTES {
-            return Err(generation_error("input_too_large"));
-        }
+impl NoteMetadataGenerator {
+    /// The configured `[general]` provider, its CLI and model, after the
+    /// subscription-only gate (Claude) and the CLI catalogue (Codex).
+    pub fn launch(&self) -> Result<Launch> {
         let config = (self.config_loader)();
         let general = config
             .get("general")
@@ -455,7 +502,28 @@ impl Generate for NoteMetadataGenerator {
             model = (self.codex_resolver)(&model, &binary)
                 .map_err(|_| generation_error("model_unavailable"))?;
         }
-        let directory = TemporaryDirectory::new()?;
+        Ok(Launch {
+            provider,
+            binary,
+            model,
+        })
+    }
+}
+
+impl Generate for NoteMetadataGenerator {
+    fn generate(&self, text: &str, cancel: &AtomicBool) -> Result<Dict> {
+        if json::py_strip(text).is_empty() {
+            return Err(generation_error("empty"));
+        }
+        if text.len() > MAX_INPUT_BYTES {
+            return Err(generation_error("input_too_large"));
+        }
+        let Launch {
+            provider,
+            binary,
+            model,
+        } = self.launch()?;
+        let directory = TemporaryDirectory::new("note-metadata")?;
         fs::write(directory.0.join("schema.json"), json::dumps(&schema()))?;
         fs::write(directory.0.join("instructions.txt"), SYSTEM_PROMPT)?;
         // JSON quoting keeps transcript boundaries even for instruction-like
@@ -471,14 +539,7 @@ impl Generate for NoteMetadataGenerator {
             PROCESS_TIMEOUT,
         )?;
         if provider == "codex" {
-            raw = fs::File::open(directory.0.join("result.json"))
-                .and_then(|file| {
-                    let mut buffer = Vec::new();
-                    file.take(MAX_OUTPUT_BYTES as u64 + 1)
-                        .read_to_end(&mut buffer)?;
-                    Ok(buffer)
-                })
-                .map_err(|_| generation_error("invalid_output"))?;
+            raw = read_result(&directory.0.join("result.json"))?;
         }
         let mut result = parse_output(&provider, &raw)?;
         result.insert("provider", provider.as_str());

@@ -421,6 +421,10 @@ final class AppState {
     private var actionsBus: ActionsConfirmBus?
     /// RR-456: lets a paired phone list projects and start or stop a session.
     @ObservationIgnored private var sessionControlServer: RelaySessionControlServer?
+    /// RR-534: the session control the phone's commands reach, for agents the bridge asks to start.
+    @ObservationIgnored private var remoteSessionControl: RelaySessionControl?
+    /// RR-534: the agent started for a phone message and the context focused before it.
+    @ObservationIgnored private var remoteStartFocusRestore: (agent: SessionAgent, contextID: String)?
     private var sttPollTimer: Timer?
     private var notchActivityPollingActive = false
     private var notchActivityRunStates: [RunState] = []
@@ -1730,7 +1734,8 @@ final class AppState {
                     ?? continuityRecoveryGenerationBySession[sessionID] ?? "",
                 projectName: sessionLabel(contextID: contextID),
                 focus: contextID == focusedID,
-                liveSessionKeys: liveKeys
+                liveSessionKeys: liveKeys,
+                ready: contextProviderReady(contextID)
             )
         }
         guard force || messages != sentVoiceFocus else { return true }
@@ -1751,9 +1756,10 @@ final class AppState {
         recoveryGeneration: String,
         projectName: String,
         focus: Bool,
-        liveSessionKeys: [String]
+        liveSessionKeys: [String],
+        ready: Bool = true
     ) -> String? {
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "session_key": sessionKey,
             "provider": provider,
             "provider_session_id": providerSessionID,
@@ -1765,6 +1771,9 @@ final class AppState {
             "focus": focus,
             "live_session_keys": liveSessionKeys,
         ]
+        // RR-534: a session still starting says so; the bridge holds a phone
+        // message addressed to its agent until it is ready.
+        if !ready { payload["ready"] = false }
         guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
               let json = String(data: data, encoding: .utf8) else { return nil }
         return "__FOCUS__:" + json
@@ -4764,6 +4773,9 @@ final class AppState {
             },
             onRemoteDeviceEvent: { [weak self] event in
                 self?.remoteDeviceSession.apply(event)
+            },
+            onRemoteAgentStart: { [weak self] agent in
+                self?.startAgentForRemoteMessage(agent)
             }
         )
         eventBus = bus
@@ -4821,14 +4833,17 @@ final class AppState {
         // RR-456: the Relay Remote session-control socket, live while the app
         // runs so a paired phone can start a session when none is running.
         // RR-459: the same socket carries Relay App's commands.
-        let control = RelaySessionControl(host: remoteSessionControlHost())
+        let controlHost = remoteSessionControlHost()
+        let control = RelaySessionControl(host: controlHost)
         let commands = MainActor.assumeIsolated {
             RelayAppCommands(host: relayAppCommandHost(), session: control, remote: RelayRemoteController.shared)
         }
-        let sessionControl = RelaySessionControlServer(control: control, commands: commands)
+        let sessionControl = RelaySessionControlServer(
+            control: control, commands: commands, workspace: .live(projects: controlHost.projects))
         do {
             try sessionControl.start()
             sessionControlServer = sessionControl
+            remoteSessionControl = control
         } catch {
             NSLog("[AppState] Relay Remote session control unavailable: \(error)")
         }
@@ -5400,6 +5415,10 @@ final class AppState {
 
     private func embeddedTerminalDidBecomeReady(contextID: String) {
         resumingContextIDs.remove(contextID)
+        // RR-534: the phone sees the agent ready, then the bridge learns it
+        // may deliver a message held for it.
+        noteRemoteAgentReady(contextID: contextID)
+        syncVoiceFocus()
         if let readyContext = assistantSessionStore.document.bindings[contextID]?.context {
             do { try assistantSessionStore.mark(.running, context: readyContext) }
             catch { contextSwitchMessage = "Conversation could not be saved: \(error.localizedDescription)" }
@@ -5545,7 +5564,9 @@ final class AppState {
             message: { [weak self] in self?.contextSwitchMessage },
             generalTasksProjectID: { [weak self] in
                 (try? self?.projectRegistryV2?.ensureGeneralTasksProject())?.projectID
-            }
+            },
+            config: { [weak self] in self?.relayAppConfig ?? AppConfig() },
+            saveConfig: { [weak self] in self?.saveRelayAppConfig($0) }
         )
     }
 
@@ -5622,14 +5643,96 @@ final class AppState {
             .sorted { $0 == focused && $1 != focused }
             .compactMap { assistantSessionStore.document.bindings[$0]?.context }
             .map { RelaySessionControlHost.LiveSession(projectID: $0.projectID, name: $0.displayName,
-                                                       agent: SessionAgent(context: $0)) }
+                                                       agent: SessionAgent(context: $0),
+                                                       ready: contextProviderReady($0.id)) }
         // RR-523: a named agent may start beside the running ones; the
         // four-agent limit refuses through newSession's message. A note in
         // progress refuses here.
         return .init(live: live, activeAgent: agentStatuses.first(where: \.isActive)?.agent,
                      launching: pendingSessionLaunchID != nil || pendingContextSelection != nil,
                      startBlockedReason: meetingNoteSnapshot.phase.ownsForeground
-                        ? "Relay Runner is taking notes on this Mac. Finish the note first." : nil)
+                        ? "Relay Runner is taking notes on this Mac. Finish the note first." : nil,
+                     activity: remoteAgentActivity)
+    }
+
+    /// RR-534: a live context's provider has finished starting.
+    private func contextProviderReady(_ contextID: String) -> Bool {
+        guard let phase = sessionRegistry.sessions[contextID]?.phase else { return false }
+        return phase != .preparing && phase != .starting
+    }
+
+    /// RR-534: the live agent whose spool has `key`.
+    private func liveAgent(spoolKey key: String?) -> SessionAgent? {
+        guard let key else { return nil }
+        return sessionRegistry.liveContextIDs
+            .first { sessionRegistry.spool(for: $0)?.key == key }
+            .flatMap(SessionAgent.init(contextID:))
+    }
+
+    /// RR-534: what each agent is doing, for the phone's agent tabs. The
+    /// notch glyph's status (`NotchSessionStatus.resolve`) is attributed to the
+    /// agent it is about: Listening to the agent the recording goes to,
+    /// Playing to the agent whose reply plays, Working to the active agent.
+    /// A background agent is working while its provider turn is active.
+    private var remoteAgentActivity: RelaySessionControlHost.Activity {
+        var activity = RelaySessionControlHost.Activity()
+        let active = agentStatuses.first(where: \.isActive)?.agent
+        if pendingSessionLaunchID != nil || pendingContextSelection != nil {
+            activity.launching = pendingContextSelection.map(SessionAgent.init(context:))
+                ?? SessionAgent(context: activeContext)
+        }
+        switch NotchSessionStatus.resolve(for: stateMachine.state, hasActivityLabels: false) {
+        case .listening:
+            let key = sttEngine.flatMap { $0.isRecording ? $0.recordingVoiceTargetSessionKey : $0.voiceTargetSessionKey }
+            activity.listening = liveAgent(spoolKey: key) ?? active
+        case .playing:
+            activity.playing = liveAgent(spoolKey: stateMachine.speechPresentation?.sessionKey) ?? active
+        case .working:
+            if let active { activity.working.insert(active) }
+        case .notWorking, .paused:
+            break
+        }
+        for contextID in sessionRegistry.liveContextIDs {
+            guard let agent = SessionAgent(contextID: contextID),
+                  let sessionFile = sessionRegistry.spool(for: contextID)?.providerSessionID,
+                  ProcessManager.providerTurnActive(forSpoolFile: sessionFile) else { continue }
+            activity.working.insert(agent)
+        }
+        let cards = SettingsAgentPresentation.cards(
+            statuses: agentStatuses, agents: config.agents, state: stateMachine.state, hasWorkingProgress: false,
+            workDescriptions: agentWorkDescriptions, sessionStarts: agentSessionStarts
+        )
+        for card in cards where card.work?.state == SettingsAgentWorkBlock.currentState {
+            activity.workingOn[card.agent] = card.work?.description
+        }
+        return activity
+    }
+
+    /// RR-534: the bridge asks for an agent that a phone message is addressed
+    /// to. It starts as a phone `start` naming the agent and no project does:
+    /// beside the running agents, or in general-tasks when none runs. The
+    /// Mac's focus returns to the agent the user had chosen once it is ready,
+    /// so local microphone input keeps going where it went.
+    private func startAgentForRemoteMessage(_ agent: SessionAgent) {
+        guard let control = remoteSessionControl, !runningAgents.contains(agent) else { return }
+        let previous = sessionRegistry.liveContextIDs.contains(activeContext.id) ? activeContext.id : nil
+        let reply = control.perform(.start, agent: agent)
+        if let error = reply.error {
+            NSLog("[AppState] Relay Remote could not start \(agent.name): \(error)")
+            return
+        }
+        if let previous { remoteStartFocusRestore = (agent, previous) }
+    }
+
+    /// RR-534: an agent started for a phone message is ready: the phone sees
+    /// it ready first, then focus returns to the agent the user had chosen.
+    private func noteRemoteAgentReady(contextID: String) {
+        sessionControlServer?.pushChangedState()
+        guard let restore = remoteStartFocusRestore, SessionAgent(contextID: contextID) == restore.agent else { return }
+        remoteStartFocusRestore = nil
+        if sessionRegistry.isLive(restore.contextID), activeContext.id == contextID {
+            selectPMTab(restore.contextID, showsTerminal: false)
+        }
     }
 
     private func suspendWorkspaceForProjectPicker(_ completion: @escaping () -> Void) {

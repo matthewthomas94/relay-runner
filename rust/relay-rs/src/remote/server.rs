@@ -33,6 +33,8 @@ pub enum Event {
         device_id: String,
         client_id: String,
         control: bool,
+        /// RR-534: the agent slug the item is for; `None` is the focused agent.
+        agent: Option<String>,
     },
     AttachSink {
         device_id: String,
@@ -127,6 +129,9 @@ struct SessionState {
     dedup: ClientIdDeduplicator,
     /// The receipts of the newest accepted client ids, oldest first.
     accepted: VecDeque<(String, Accepted)>,
+    /// RR-534: the agent of each recent `speech` frame by seq, so its
+    /// `speech_audio` parts carry the same agent.
+    speech_agents: VecDeque<(i64, String)>,
 }
 
 /// Per-device state that survives reconnects: seq, replay and dedupe.
@@ -156,6 +161,7 @@ impl DeviceSession {
                 replay: ReplayBuffer::default(),
                 dedup: ClientIdDeduplicator::default(),
                 accepted: VecDeque::new(),
+                speech_agents: VecDeque::new(),
             }),
         }
     }
@@ -206,6 +212,8 @@ impl DeviceSession {
                 .is_some_and(|at| (self.clock)() - at <= proto::REPLAY_MAX_AGE)
     }
 
+    /// RR-534: `agent` names the agent the speech belongs to.
+    #[allow(clippy::too_many_arguments)]
     pub fn speech(
         &self,
         kind: &str,
@@ -214,8 +222,9 @@ impl DeviceSession {
         relay_command_seq: Option<i64>,
         spoken_by: Option<&str>,
         audio: Option<bool>,
+        agent: Option<&str>,
     ) -> Result<i64, FrameError> {
-        self.emit(|seq| {
+        let seq = self.emit(|seq| {
             Frame::Speech(proto::Speech {
                 seq,
                 kind: kind.to_string(),
@@ -224,15 +233,29 @@ impl DeviceSession {
                 relay_command_seq,
                 spoken_by: spoken_by.map(str::to_string),
                 audio,
-                // RR-532: frames are not tagged with their agent yet (RR-534).
-                agent: None,
+                agent: agent.map(str::to_string),
             })
-        })
+        })?;
+        if let Some(agent) = agent {
+            let mut state = lock(&self.state);
+            state.speech_agents.push_back((seq, agent.to_string()));
+            while state.speech_agents.len() > proto::DEFAULT_DEDUP_WINDOW {
+                state.speech_agents.pop_front();
+            }
+        }
+        Ok(seq)
     }
 
     /// Send an audio part of the `speech` frame `seq` (RR-457). It takes no
     /// seq of its own; the replay buffer keeps it with that frame.
     pub fn speech_audio(&self, seq: i64, part: &AudioPart) -> Result<(), FrameError> {
+        let mut state = lock(&self.state);
+        // RR-534: a part carries the agent of the speech frame it voices.
+        let agent = state
+            .speech_agents
+            .iter()
+            .find(|(voiced, _)| *voiced == seq)
+            .map(|(_, agent)| agent.clone());
         let audio = proto::SpeechAudio {
             seq,
             part: part.part,
@@ -241,34 +264,47 @@ impl DeviceSession {
             sample_rate: part.sample_rate,
             data: part.data.clone(),
             last: part.last.then_some(true),
-            agent: None,
+            agent,
         };
         let frame = Frame::SpeechAudio(audio.clone());
         proto::encode(&frame)?;
-        let mut state = lock(&self.state);
         state.replay.attach(audio);
         self.send_locked(&mut state, &frame);
         Ok(())
     }
 
-    pub fn speech_control(&self, action: &str, reason: &str) -> Result<i64, FrameError> {
+    /// RR-534: with `agent` the phone drops only that agent's earlier
+    /// frames; without, every frame before it.
+    pub fn speech_control(
+        &self,
+        action: &str,
+        reason: &str,
+        agent: Option<&str>,
+    ) -> Result<i64, FrameError> {
         self.emit(|seq| {
             Frame::SpeechControl(proto::SpeechControl {
                 seq,
                 action: action.to_string(),
                 reason: Some(reason.to_string()),
-                agent: None,
+                agent: agent.map(str::to_string),
             })
         })
     }
 
-    /// Send, and remember, the receipt for an accepted utterance.
-    pub fn accept(&self, client_id: &str, relay_command_seq: i64, relay_command_id: &str) {
+    /// Send, and remember, the receipt for an accepted utterance. RR-534:
+    /// `agent` names the agent whose session received it.
+    pub fn accept(
+        &self,
+        client_id: &str,
+        relay_command_seq: i64,
+        relay_command_id: &str,
+        agent: Option<&str>,
+    ) {
         let receipt = Accepted {
             client_id: client_id.to_string(),
             relay_command_seq,
             relay_command_id: relay_command_id.to_string(),
-            agent: None,
+            agent: agent.map(str::to_string),
         };
         let key = client_id.to_lowercase();
         let mut state = lock(&self.state);
@@ -284,6 +320,11 @@ impl DeviceSession {
             state.accepted.pop_front();
         }
         self.send_locked(&mut state, &Frame::Accepted(receipt));
+    }
+
+    /// An `error` frame on the current connection, if there is one.
+    pub fn send_error(&self, code: &str, message: &str) {
+        self.send(&Frame::error(code, message));
     }
 
     fn accepted_for(state: &SessionState, client_id: &str) -> Option<Accepted> {
@@ -659,6 +700,24 @@ impl Server {
             ));
             return;
         }
+        let agent = match &frame {
+            Frame::Utterance(utterance) => utterance.agent.as_deref(),
+            Frame::Control(control) => control.agent.as_deref(),
+            _ => None,
+        };
+        // RR-534: the Mac refuses an agent it does not run.
+        let agent =
+            match agent.map(|slug| (slug, relay_services::command_actions::known_agent(slug))) {
+                None => None,
+                Some((_, Some(known))) => Some(known.to_string()),
+                Some((slug, None)) => {
+                    session.send(&Frame::error(
+                        "unknown_agent",
+                        &format!("Relay Runner has no agent '{slug}'"),
+                    ));
+                    return;
+                }
+            };
         let (client_id, item) = match &frame {
             Frame::Utterance(utterance) => {
                 let text = json::py_strip(&utterance.text);
@@ -693,6 +752,7 @@ impl Server {
             device_id: session.device_id.clone(),
             client_id,
             control: item.1,
+            agent,
         });
     }
 }
@@ -922,11 +982,12 @@ mod tests {
                 text: "hello there".into(),
                 device_id: "D1".into(),
                 client_id: CLIENT.into(),
-                control: false
+                control: false,
+                agent: None
             }
         );
         let session = harness.server.session("D1").unwrap();
-        session.accept(CLIENT, 7, "cmd-7");
+        session.accept(CLIENT, 7, "cmd-7", None);
         let receipt = format!(
             "{{\"client_id\":\"{CLIENT}\",\"relay_command_id\":\"cmd-7\",\"relay_command_seq\":7,\"type\":\"accepted\"}}\n"
         );
@@ -942,10 +1003,10 @@ mod tests {
         );
     }
 
-    /// RR-532: an utterance or control naming an agent is delivered exactly
-    /// as one without it until RR-534 routes by agent.
+    /// RR-534: an utterance or control naming an agent carries it to the
+    /// bridge, and one naming an agent the Mac does not run is refused.
     #[test]
-    fn agent_tagged_items_are_delivered_as_before() {
+    fn agent_tagged_items_carry_their_agent() {
         let harness = Harness::new(true);
         let mut device = harness.connect();
         device.send(HELLO);
@@ -961,7 +1022,8 @@ mod tests {
                 text: "hello".into(),
                 device_id: "D1".into(),
                 client_id: CLIENT.into(),
-                control: false
+                control: false,
+                agent: Some("george".into())
             }
         );
         let control = "9a1d6e47-2b83-4c55-8e0f-5d3c7b9a1e22";
@@ -974,8 +1036,73 @@ mod tests {
                 text: "__TTS_STOP__".into(),
                 device_id: "D1".into(),
                 client_id: control.into(),
-                control: true
+                control: true,
+                agent: Some("isabella".into())
             }
+        );
+        let unknown = "1b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b";
+        device.send(&format!(
+            r#"{{"agent":"oberon","captured_at":"t","client_id":"{unknown}","text":"hi","type":"utterance"}}"#
+        ));
+        assert_eq!(
+            device.line(),
+            "{\"code\":\"unknown_agent\",\"message\":\"Relay Runner has no agent 'oberon'\",\"type\":\"error\"}\n"
+        );
+        assert!(
+            harness
+                .events
+                .recv_timeout(Duration::from_millis(200))
+                .is_err()
+        );
+    }
+
+    /// RR-534: receipts, speech, its audio and scoped stops name their agent.
+    #[test]
+    fn outbound_frames_carry_their_agent() {
+        let harness = Harness::new(true);
+        let mut device = harness.connect();
+        device.send(HELLO);
+        device.line();
+        let session = harness.server.session("D1").unwrap();
+        session.accept(CLIENT, 7, "cmd-7", Some("george"));
+        assert_eq!(
+            device.line(),
+            format!(
+                "{{\"agent\":\"george\",\"client_id\":\"{CLIENT}\",\"relay_command_id\":\"cmd-7\",\"relay_command_seq\":7,\"type\":\"accepted\"}}\n"
+            )
+        );
+        let seq = session
+            .speech(
+                "final",
+                "orchestrator",
+                "done",
+                Some(7),
+                Some("phone"),
+                Some(true),
+                Some("george"),
+            )
+            .unwrap();
+        assert!(
+            device
+                .line()
+                .starts_with("{\"agent\":\"george\",\"audio\":true,")
+        );
+        let part = AudioPart {
+            part: 0,
+            parts: 1,
+            format: "aac".into(),
+            sample_rate: 24000,
+            data: "AAAA".into(),
+            last: true,
+        };
+        session.speech_audio(seq, &part).unwrap();
+        assert!(device.line().starts_with("{\"agent\":\"george\",\"data\":"));
+        session
+            .speech_control("stop", "user_stop", Some("george"))
+            .unwrap();
+        assert_eq!(
+            device.line(),
+            "{\"action\":\"stop\",\"agent\":\"george\",\"reason\":\"user_stop\",\"seq\":2,\"type\":\"speech_control\"}\n"
         );
     }
 
@@ -987,7 +1114,15 @@ mod tests {
         device.line();
         let session = harness.server.session("D1").unwrap();
         assert_eq!(
-            session.speech("final", "orchestrator", "one", Some(3), Some("phone"), None),
+            session.speech(
+                "final",
+                "orchestrator",
+                "one",
+                Some(3),
+                Some("phone"),
+                None,
+                None
+            ),
             Ok(1)
         );
         assert_eq!(
@@ -996,7 +1131,7 @@ mod tests {
         );
         assert_eq!(
             session
-                .speech("shout", "orchestrator", "bad", None, None, None)
+                .speech("shout", "orchestrator", "bad", None, None, None, None)
                 .unwrap_err()
                 .code,
             "invalid_field"
@@ -1007,7 +1142,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(session.routable());
-        assert_eq!(session.speech_control("stop", "superseded"), Ok(2));
+        assert_eq!(session.speech_control("stop", "superseded", None), Ok(2));
         let mut again = harness.connect();
         again.send(&HELLO.replace("\"protocol\"", "\"resume_after_seq\":1,\"protocol\""));
         assert_eq!(
@@ -1045,7 +1180,8 @@ mod tests {
                 text: "__INTERRUPT__".into(),
                 device_id: "D1".into(),
                 client_id: CLIENT.into(),
-                control: true
+                control: true,
+                agent: None
             }
         );
     }

@@ -1,5 +1,6 @@
 import Network
 import RelayRemoteKit
+import RelayRemoteProtocol
 import SwiftUI
 import UIKit
 
@@ -22,8 +23,19 @@ final class AppModel {
     private(set) var paired: PairedMac?
     private(set) var session: RemoteSession?
     private(set) var voice: VoiceController?
+    /// The Agents tab's chats, selection and per-agent state (RR-540).
+    let agents: AgentsModel
     private(set) var pairingState = PairingState.idle
     private(set) var startupError: String?
+    /// The Workspace tab's selected project tab (RR-543); nil is All. Lives
+    /// here so it lasts for the app session, not just while the tab is shown.
+    var workspaceProject: String?
+    /// RR-551: the ticket in the Workspace tab's modal. It stays set while the
+    /// modal fades out, so the panel keeps its text as it leaves.
+    private(set) var shownTicket: WorkspaceTicket?
+    private(set) var isTicketOpen = false
+    /// Counts the asks for the open ticket's text; each one sends a `get`.
+    private(set) var ticketRequests = 0
     /// The Remote mode switch (RR-454). On: this phone owns the microphone and
     /// speaker and the Mac stays quiet. Off: the Mac listens and speaks and the
     /// phone shows the text. Persisted, and sent to the Mac on connect and change.
@@ -54,11 +66,36 @@ final class AppModel {
     @ObservationIgnored private let playbackModePreference: PlaybackModePreference
 
     init(remoteModePreference: RemoteModePreference = RemoteModePreference(),
-         playbackModePreference: PlaybackModePreference = PlaybackModePreference()) {
+         playbackModePreference: PlaybackModePreference = PlaybackModePreference(),
+         agents: AgentsModel? = nil) {
         self.remoteModePreference = remoteModePreference
         self.playbackModePreference = playbackModePreference
+        self.agents = agents ?? AgentsModel()
         remoteMode = remoteModePreference.isOn
         playbackMode = playbackModePreference.mode
+    }
+
+    /// RR-551: opens a Workspace row in the ticket modal. Text held from an
+    /// earlier open is dropped, so the body loads fresh.
+    func openTicket(_ row: WorkspaceTicket) {
+        session?.forgetWorkspaceTicket(projectID: row.projectId, ticketID: row.id)
+        shownTicket = row
+        isTicketOpen = true
+        ticketRequests += 1
+    }
+
+    func closeTicket() { isTicketOpen = false }
+
+    /// Debug only: shows a sample row in the modal without asking the Mac.
+    func showSampleTicket(_ row: WorkspaceTicket) {
+        shownTicket = row
+        isTicketOpen = true
+    }
+
+    /// Asks the Mac for the open ticket's text again, keeping what is shown.
+    func refreshTicket() {
+        guard isTicketOpen else { return }
+        ticketRequests += 1
     }
 
     func bootstrap() {
@@ -105,6 +142,7 @@ final class AppModel {
         voice = nil
         session?.stop()
         session = nil
+        agents.session = nil
         if let mac = paired { UserDefaults.standard.removeObject(forKey: Self.resumeKey(mac)) }
         paired = nil
         try? pairingStore.clear()
@@ -122,7 +160,7 @@ final class AppModel {
         case .background:
             isForeground = false
             saveResumePoint()
-            // A reply still playing, or hands-free still listening, keeps the
+            // A reply still playing, or an utterance still recording, keeps the
             // channel open; `audioBecameIdle` closes it afterwards.
             if voice?.isAudioActive != true { session?.stop() }
         default:
@@ -150,6 +188,14 @@ final class AppModel {
         voice.playbackMode = playbackMode
         voice.onAudioIdle = { [weak self] in self?.audioBecameIdle() }
         self.voice = voice
+        // Each reply is filed under its agent's chat before it plays, and a
+        // spoken request goes to the selected agent like a typed one.
+        agents.session = session
+        session.onInbound = { [weak self] frame in
+            self?.agents.receive(frame)
+            self?.voice?.receive(frame)
+        }
+        voice.onSpokenRequest = { [weak self] text in self?.agents.send(text) }
         if isForeground { session.start() }
     }
 

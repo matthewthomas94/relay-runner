@@ -18,6 +18,7 @@ pub mod authorization;
 pub mod command_actions;
 pub mod continuity;
 pub mod general_work;
+pub mod history_chat;
 pub mod notes;
 pub mod personal_storage;
 pub mod program;

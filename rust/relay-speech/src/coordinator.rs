@@ -118,7 +118,14 @@ pub trait RemoteDevice: Send + Sync {
     fn device_id(&self) -> &str;
     fn routable(&self) -> bool;
     fn speech(&self, frame: Json) -> Result<i64, CallFailed>;
-    fn speech_control(&self, action: &str, reason: &str) -> Result<i64, CallFailed>;
+    /// RR-534: `session_key` scopes the control to that session's frames,
+    /// which the bridge tags with the session's agent; `None` is every frame.
+    fn speech_control(
+        &self,
+        action: &str,
+        reason: &str,
+        session_key: Option<&str>,
+    ) -> Result<i64, CallFailed>;
     fn speech_audio(&self, seq: i64, part: &AudioPart) -> Result<(), CallFailed>;
 }
 
@@ -297,6 +304,9 @@ struct State {
     remote_sinks: Ordered<String, Arc<dyn RemoteDevice>>,
     remote_outstanding: Ordered<RemoteKey, Arc<SpeechIntent>>,
     remote_stopped_through: HashMap<String, i64>,
+    // RR-534: frames above a device's `remote_stopped_through` that a
+    // session-scoped control already covered.
+    remote_stopped: HashSet<RemoteKey>,
     // RR-454: devices with Remote mode off see Mac speech as text only.
     remote_mirrors: Ordered<String, Arc<dyn RemoteDevice>>,
     // RR-457: replies still being voiced for a device, by (device, seq).
@@ -364,6 +374,7 @@ impl SpeechCoordinator {
                 remote_sinks: Ordered::new(),
                 remote_outstanding: Ordered::new(),
                 remote_stopped_through: HashMap::new(),
+                remote_stopped: HashSet::new(),
                 remote_mirrors: Ordered::new(),
                 remote_voices: HashMap::new(),
             }),
@@ -593,6 +604,7 @@ impl SpeechCoordinator {
         let intent = {
             let mut st = self.lock();
             let intent = st.remote_outstanding.remove(&key);
+            st.remote_stopped.remove(&key);
             if let Some(intent) = &intent
                 && played
             {
@@ -1090,17 +1102,8 @@ impl SpeechCoordinator {
             "" => "user_stop".to_string(),
             reason => reason.to_string(),
         };
-        let in_session = |sent: &SpeechIntent| Some(sent.session_key.as_str()) == session_key;
-        self.stop_remote(
-            "stop",
-            remote_reason(&reason),
-            if session_key.is_some() {
-                Some(&in_session)
-            } else {
-                None
-            },
-            false,
-        );
+        // RR-534: a session's stop covers only that session's frames.
+        self.stop_remote_scoped("stop", remote_reason(&reason), None, false, session_key);
         let intent = {
             let mut st = self.lock();
             let intent = intent_for(
@@ -1182,6 +1185,30 @@ impl SpeechCoordinator {
         }
         if let Some(next) = next {
             self.enqueue_worker(&next);
+        }
+    }
+
+    /// RR-534: `skip` for one session: only its frames on a Relay Remote
+    /// sink, and its reply on the Mac only while that reply is playing.
+    pub fn skip_session(&self, reason: &str, session_key: &str) {
+        self.stop_remote_scoped(
+            "skip",
+            remote_reason(reason),
+            None,
+            false,
+            Some(session_key),
+        );
+        let active = {
+            let mut st = self.lock();
+            let active = intent_for(&st, st.playing_id.as_deref())
+                .filter(|active| active.session_key == session_key);
+            if let Some(active) = &active {
+                retire_locked(&mut st, active, reason);
+            }
+            active
+        };
+        if active.is_some() {
+            self.stop_playback(reason, Some(session_key));
         }
     }
 
@@ -1565,11 +1592,13 @@ impl SpeechCoordinator {
                 continue;
             };
             // RR-464: an unplayed reply returns to the Mac queue in seq order.
-            if key.1 > stopped_through && is_queued_reply_kind(&sent.kind) && !sent.expired() {
+            let stopped = key.1 <= stopped_through || st.remote_stopped.remove(&key);
+            if !stopped && is_queued_reply_kind(&sent.kind) && !sent.expired() {
                 returned.push(sent);
             }
         }
         cancel_remote_voices_locked(st, device_id, None);
+        st.remote_stopped.retain(|key| key.0 != device_id);
         st.backlog.extend(returned.iter().cloned());
         for sent in &returned {
             self.diagnostic(
@@ -1628,13 +1657,16 @@ impl SpeechCoordinator {
             true,
         );
         let audio = self.worker.remote_audio_available();
-        let frame = json_record(&[
-            ("kind", intent.kind.clone().into()),
-            ("source", intent.source.clone().into()),
-            ("text", intent.spoken_text.clone().into()),
-            ("relay_command_seq", opt_int(intent.command_seq)),
-            ("audio", audio.into()),
-        ]);
+        let frame = remote_frame(
+            &intent,
+            [
+                ("kind", intent.kind.clone().into()),
+                ("source", intent.source.clone().into()),
+                ("text", intent.spoken_text.clone().into()),
+                ("relay_command_seq", opt_int(intent.command_seq)),
+                ("audio", audio.into()),
+            ],
+        );
         let Ok(seq) = sink.speech(frame) else {
             let mut failed = vec![("latency_ms", number(elapsed_ms(started)))];
             failed.extend(fields.iter().cloned());
@@ -1740,17 +1772,31 @@ impl SpeechCoordinator {
         stale: Option<&dyn Fn(&SpeechIntent) -> bool>,
         preserve_replies: bool,
     ) {
+        self.stop_remote_scoped(action, reason, stale, preserve_replies, None);
+    }
+
+    fn stop_remote_scoped(
+        &self,
+        action: &str,
+        reason: &str,
+        stale: Option<&dyn Fn(&SpeechIntent) -> bool>,
+        preserve_replies: bool,
+        scope: Option<&str>,
+    ) {
         let mut st = self.lock();
         if let Some(sink) = self.active_remote_sink_locked(&mut st) {
-            self.stop_remote_locked(&mut st, &sink, action, reason, stale, preserve_replies);
+            self.stop_remote_in(
+                &mut st,
+                &sink,
+                action,
+                reason,
+                stale,
+                preserve_replies,
+                scope,
+            );
         }
     }
 
-    /// Send `speech_control` once for unacked frames not already stopped.
-    ///
-    /// The device drops every frame before a `speech_control`. With
-    /// `preserve_replies` (RR-464) no stop is sent while an unacked reply that
-    /// is not itself stale would be dropped with it.
     fn stop_remote_locked(
         &self,
         st: &mut State,
@@ -1760,38 +1806,77 @@ impl SpeechCoordinator {
         stale: Option<&dyn Fn(&SpeechIntent) -> bool>,
         preserve_replies: bool,
     ) {
+        self.stop_remote_in(st, sink, action, reason, stale, preserve_replies, None);
+    }
+
+    /// Send `speech_control` once for unacked frames not already stopped.
+    ///
+    /// The device drops every frame before a `speech_control`. With
+    /// `preserve_replies` (RR-464) no stop is sent while an unacked reply that
+    /// is not itself stale would be dropped with it. RR-534: with `scope` only
+    /// that session's frames count, the control names the session, and the
+    /// device drops only that session's frames.
+    #[allow(clippy::too_many_arguments)]
+    fn stop_remote_in(
+        &self,
+        st: &mut State,
+        sink: &Arc<dyn RemoteDevice>,
+        action: &str,
+        reason: &str,
+        stale: Option<&dyn Fn(&SpeechIntent) -> bool>,
+        preserve_replies: bool,
+        scope: Option<&str>,
+    ) {
         let device_id = sink.device_id().to_string();
         let stopped_through = st
             .remote_stopped_through
             .get(&device_id)
             .copied()
             .unwrap_or(0);
-        let unacked: Vec<&Arc<SpeechIntent>> = st
+        let unacked: Vec<(&RemoteKey, &Arc<SpeechIntent>)> = st
             .remote_outstanding
             .entries
             .iter()
-            .filter(|(key, _)| key.0 == device_id && key.1 > stopped_through)
-            .map(|(_, sent)| sent)
+            .filter(|(key, sent)| {
+                key.0 == device_id
+                    && key.1 > stopped_through
+                    && !st.remote_stopped.contains(key)
+                    && scope.is_none_or(|scope| sent.session_key == scope)
+            })
+            .map(|(key, sent)| (key, sent))
             .collect();
         let is_stale = |sent: &SpeechIntent| stale.is_none_or(|stale| stale(sent));
-        if !unacked.iter().any(|sent| is_stale(sent)) {
+        if !unacked.iter().any(|(_, sent)| is_stale(sent)) {
             return;
         }
         if preserve_replies
             && unacked
                 .iter()
-                .any(|sent| is_queued_reply_kind(&sent.kind) && !is_stale(sent))
+                .any(|(_, sent)| is_queued_reply_kind(&sent.kind) && !is_stale(sent))
         {
             return;
         }
-        let Ok(seq) = sink.speech_control(action, reason) else {
+        let covered: Vec<RemoteKey> = unacked.iter().map(|(key, _)| (*key).clone()).collect();
+        let Ok(seq) = sink.speech_control(action, reason, scope) else {
             eprintln!("[speech_coordinator] speech_control was not sent");
             return;
         };
-        st.remote_stopped_through.insert(device_id.clone(), seq);
-        // The device drops every frame before a speech_control, so stop voicing them.
-        cancel_remote_voices_locked(st, &device_id, Some(seq));
-        self.write(json_record(&[
+        if scope.is_some() {
+            // The device drops only this session's earlier frames.
+            for key in covered {
+                if let Some(voice) = st.remote_voices.remove(&key) {
+                    voice.cancelled.store(true, Ordering::SeqCst);
+                }
+                st.remote_stopped.insert(key);
+            }
+        } else {
+            st.remote_stopped_through.insert(device_id.clone(), seq);
+            st.remote_stopped
+                .retain(|key| key.0 != device_id || key.1 > seq);
+            // The device drops every frame before a speech_control, so stop voicing them.
+            cancel_remote_voices_locked(st, &device_id, Some(seq));
+        }
+        let mut event = vec![
             ("event", "remote_speech_control".into()),
             ("at", number(support::now())),
             ("sink", REMOTE_SINK.into()),
@@ -1799,7 +1884,11 @@ impl SpeechCoordinator {
             ("remote_seq", seq.into()),
             ("action", action.into()),
             ("reason", reason.into()),
-        ]));
+        ];
+        if let Some(scope) = scope {
+            event.push(("session_key", scope.into()));
+        }
+        self.write(json_record(&event));
     }
 
     // -- Queue internals -------------------------------------------------------
@@ -1811,13 +1900,16 @@ impl SpeechCoordinator {
             self.lock().remote_mirrors.values().cloned().collect();
         for mirror in mirrors {
             // A display copy must never stop Mac speech.
-            let _ = mirror.speech(json_record(&[
-                ("kind", intent.kind.clone().into()),
-                ("source", intent.source.clone().into()),
-                ("text", intent.spoken_text.clone().into()),
-                ("relay_command_seq", opt_int(intent.command_seq)),
-                ("spoken_by", "mac".into()),
-            ]));
+            let _ = mirror.speech(remote_frame(
+                intent,
+                [
+                    ("kind", intent.kind.clone().into()),
+                    ("source", intent.source.clone().into()),
+                    ("text", intent.spoken_text.clone().into()),
+                    ("relay_command_seq", opt_int(intent.command_seq)),
+                    ("spoken_by", "mac".into()),
+                ],
+            ));
         }
     }
 
@@ -2171,6 +2263,16 @@ fn record_played_coverage(st: &mut State, intent: &SpeechIntent) {
             st.played_coverage.pop_oldest();
         }
     }
+}
+
+/// A `remote_speech` frame; RR-534: with the intent's `session_key` when it
+/// has one, so the bridge can name the agent the frame belongs to.
+fn remote_frame<const N: usize>(intent: &SpeechIntent, fields: [(&str, Value); N]) -> Json {
+    let mut frame = json_record(&fields);
+    if !intent.session_key.is_empty() {
+        frame.insert("session_key".into(), intent.session_key.clone().into());
+    }
+    frame
 }
 
 fn cancel_remote_voices_locked(st: &mut State, device_id: &str, before: Option<i64>) {
