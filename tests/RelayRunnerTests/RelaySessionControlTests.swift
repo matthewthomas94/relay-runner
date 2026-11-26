@@ -247,6 +247,104 @@ final class RelaySessionControlTests: XCTestCase {
         XCTAssertEqual(fake.startedAgents, [.sky])
     }
 
+    private var savedConfigs: [AppConfig] = []
+    private var liveConfig = AppConfig()
+
+    private func settingsControl(_ config: AppConfig) -> RelaySessionControl {
+        liveConfig = config
+        savedConfigs = []
+        var host = fake.host
+        host.config = { self.liveConfig }
+        host.saveConfig = { self.savedConfigs.append($0); self.liveConfig = $0 }
+        return RelaySessionControl(host: host)
+    }
+
+    private func settingsReply(_ control: RelaySessionControl, _ command: SettingsCommand) throws -> SettingsState {
+        let line = Data(try FrameCodec.encode(.settingsCommand(command)).dropLast())
+        guard case .settingsState(let state)? = control.handle(line: line).first else {
+            XCTFail("expected settings_state"); return SettingsState()
+        }
+        return state
+    }
+
+    /// RR-536: `get` reports the five values and the options the desktop offers, per provider.
+    func testSettingsGetMatchesDesktopForClaudeAndCodex() throws {
+        for provider in GeneralConfig.AgentProvider.allCases {
+            var config = AppConfig()
+            config.general.selectProvider(provider)
+            let state = try settingsReply(settingsControl(config), SettingsCommand(clientId: UUID().uuidString, action: .get))
+            XCTAssertNil(state.error)
+            XCTAssertEqual(state.provider, provider.rawValue)
+            XCTAssertEqual(state.model, config.general.model)
+            XCTAssertEqual(state.effort, config.general.orchestrator_effort)
+            XCTAssertEqual(state.speechSpeedPercent, Int((config.tts.rate * 100).rounded()))
+            XCTAssertEqual(state.modelOptions?.map(\.value), GeneralConfig.modelOptions(for: provider).map(\.value))
+            XCTAssertEqual(state.effortOptions?.map(\.value),
+                           GeneralConfig.reasoningEffortOptions(for: provider, model: config.general.model).map(\.value))
+            XCTAssertEqual(state.sizingOptions?.map(\.label), GeneralConfig.SubagentSizingPolicy.allCases.map(\.displayName))
+        }
+    }
+
+    func testSettingsSetSavesSpeedModelEffortAndSizing() throws {
+        var config = AppConfig()
+        config.general.selectProvider(.claude)
+        let control = settingsControl(config)
+        var state = try settingsReply(control, SettingsCommand(clientId: UUID().uuidString, action: .set, speechSpeedPercent: 130))
+        XCTAssertNil(state.error)
+        XCTAssertEqual(liveConfig.tts.rate, 1.3, accuracy: 0.0001)
+        XCTAssertEqual(state.speechSpeedPercent, 130)
+        let other = try XCTUnwrap(GeneralConfig.modelOptions(for: .claude).map(\.value).first { $0 != liveConfig.general.model })
+        state = try settingsReply(control, SettingsCommand(clientId: UUID().uuidString, action: .set, model: other))
+        XCTAssertNil(state.error)
+        XCTAssertEqual(liveConfig.general.model, other)
+        XCTAssertTrue(state.effortOptions?.map(\.value).contains(liveConfig.general.orchestrator_effort) == true,
+                      "the effort is corrected for the new model")
+        let effort = try XCTUnwrap(state.effortOptions?.last?.value)
+        state = try settingsReply(control, SettingsCommand(clientId: UUID().uuidString, action: .set, effort: effort, sizing: "user_default"))
+        XCTAssertNil(state.error)
+        XCTAssertEqual(liveConfig.general.orchestrator_effort, effort)
+        XCTAssertEqual(liveConfig.general.subagent_sizing_policy, .userDefault)
+    }
+
+    func testSettingsSetRefusesInvalidValuesAndSavesNothing() throws {
+        var config = AppConfig()
+        config.general.selectProvider(.claude)
+        let control = settingsControl(config)
+        let before = liveConfig
+        for command in [
+            SettingsCommand(clientId: UUID().uuidString, action: .set, speechSpeedPercent: 250),
+            SettingsCommand(clientId: UUID().uuidString, action: .set, speechSpeedPercent: 135),
+            SettingsCommand(clientId: UUID().uuidString, action: .set, model: "not-a-model"),
+            SettingsCommand(clientId: UUID().uuidString, action: .set, effort: "ludicrous"),
+            SettingsCommand(clientId: UUID().uuidString, action: .set, sizing: "whatever"),
+        ] {
+            let state = try settingsReply(control, command)
+            XCTAssertNotNil(state.error, "\(command)")
+            XCTAssertEqual(state.model, before.general.model)
+            XCTAssertEqual(state.speechSpeedPercent, Int((before.tts.rate * 100).rounded()))
+        }
+        XCTAssertEqual(savedConfigs.count, 0)
+        // A key outside the five is refused at decode, so nothing reaches the handler.
+        let bad = control.handle(line: Data(#"{"type":"settings_command","client_id":"x","action":"set","provider":"codex"}"#.utf8))
+        guard case .settingsState(let refused)? = bad.first else { return XCTFail("expected settings_state") }
+        XCTAssertNotNil(refused.error)
+        XCTAssertEqual(refused.provider, "claude")
+        XCTAssertEqual(liveConfig.general.provider, .claude)
+        XCTAssertEqual(savedConfigs.count, 0)
+    }
+
+    /// RR-536: a change made on the Mac is pushed once, after the baseline.
+    func testSettingsChangeOnTheMacIsPushed() throws {
+        let control = settingsControl(AppConfig())
+        XCTAssertNil(control.settingsPushIfChanged(), "the first call takes the baseline")
+        XCTAssertNil(control.settingsPushIfChanged())
+        liveConfig.tts.rate = 0.8
+        XCTAssertEqual(control.settingsPushIfChanged()?.speechSpeedPercent, 80)
+        XCTAssertNil(control.settingsPushIfChanged())
+        _ = try settingsReply(control, SettingsCommand(clientId: UUID().uuidString, action: .set, speechSpeedPercent: 150))
+        XCTAssertNil(control.settingsPushIfChanged(), "a phone's own change is not echoed as a push")
+    }
+
     /// RR-532: each new command reaches its own handler and gets one
     /// well-formed reply. RR-535: the Workspace is answered by the socket
     /// server, which needs the daemon, so `handle` validates it and says nothing.
@@ -258,11 +356,10 @@ final class RelaySessionControlTests: XCTestCase {
             return replies
         }
         XCTAssertEqual(try reply(.workspaceCommand(WorkspaceCommand(clientId: id))), [])
-        XCTAssertEqual(try reply(.settingsCommand(SettingsCommand(clientId: id, action: .get))),
-                       [.settingsState(SettingsState(error: RelayRemoteSettings.unsupported))])
-        XCTAssertEqual(try reply(.settingsCommand(SettingsCommand(clientId: UUID().uuidString, action: .set,
-                                                                  speechSpeedPercent: 150, model: "sonnet"))),
-                       [.settingsState(SettingsState(error: RelayRemoteSettings.unsupported))])
+        guard case .settingsState(let settings) = try reply(.settingsCommand(SettingsCommand(clientId: id, action: .get))) else {
+            return XCTFail("a settings_state answers settings_command")
+        }
+        XCTAssertNil(settings.error)
         XCTAssertEqual(fake.started, [])
         XCTAssertEqual(fake.stops, 0)
         // A malformed command is answered with the codec's error, as session_command is.
