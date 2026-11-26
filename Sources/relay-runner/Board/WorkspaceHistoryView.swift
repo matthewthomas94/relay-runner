@@ -65,7 +65,6 @@ struct WorkspaceHistoryView: View {
                     .padding(.horizontal, 22)
                     .frame(height: Self.headerHeight)
                     historyDetailPanel
-                        .opacity(model.isLoading ? 0.65 : 1)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .historyPanelChrome()
@@ -263,94 +262,108 @@ struct WorkspaceHistoryView: View {
         .accessibilityLabel(badge.isWarning ? "\(card.ticketID), \(card.title), \(badge.label)" : "\(card.ticketID), \(card.title)")
     }
 
+    /// Laid out like an open note: title and close button, a row of actions,
+    /// notices, then the ticket in a scroll view.
     private func historyDetail(_ card: ArtifactHistoryCard) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(card.ticketID)
-                    .font(AppTypography.font(.metadata))
-                    .foregroundStyle(ProgramBoardStyle.mutedText)
-                RelaySwap(model.detail?.card?.title ?? card.title, style: .text, alignment: .leading) { title in
-                    Text(title)
-                        .font(AppTypography.font(.sectionHeading))
-                        .foregroundStyle(ProgramBoardStyle.primaryText)
+        let detail = model.detail
+        let available = detail?.availability == "available"
+        let busy = model.isLoading
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(card.ticketID)
+                        .font(AppTypography.font(.metadata))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                    RelaySwap(detail?.card?.title ?? card.title, style: .text, alignment: .leading) { title in
+                        Text(title)
+                            .font(AppTypography.font(.screenTitle))
+                            .foregroundStyle(ProgramBoardStyle.primaryText)
+                    }
+                }
+                Spacer(minLength: 0)
+                ProgramIconButton(icon: .x, help: "Close ticket") { model.close() }
+            }
+
+            HStack(alignment: .center, spacing: 8) {
+                ProgramDetailActionButton(
+                    icon: .rotateCcw, title: "Restore",
+                    disabled: !available || busy,
+                    help: available ? "Restore ticket file" : "Ticket not open"
+                ) {
+                    Task {
+                        await model.restore(reopen: false)
+                        onWorkspaceChanged()
+                    }
+                }
+                ProgramDetailActionButton(
+                    icon: .undo2, title: "Reopen in Backlog",
+                    disabled: !available || busy,
+                    help: available ? "Reopen in backlog" : "Ticket not open"
+                ) {
+                    Task {
+                        await model.restore(reopen: true)
+                        onWorkspaceChanged()
+                    }
+                }
+                if detail?.availability == "needs_network" {
+                    ProgramDetailActionButton(
+                        icon: .arrowDown, title: "Download",
+                        disabled: busy,
+                        help: "Download ticket detail"
+                    ) {
+                        Task { await model.select(card, online: true) }
+                    }
+                    .transition(.relayElement)
+                }
+                if model.detailErrorMessage != nil {
+                    ProgramDetailActionButton(
+                        icon: .refreshCw, title: "Retry",
+                        disabled: busy,
+                        help: "Reload ticket"
+                    ) {
+                        Task { await model.select(card) }
+                    }
+                    .transition(.relayElement)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
 
-            ZStack(alignment: .topLeading) {
-                if let detail = model.detail, detail.availability != "available" {
-                    VStack(alignment: .leading, spacing: 10) {
-                        RelaySwap(
-                            detail.recovery ?? unavailableExplanation(detail.availability),
-                            style: .text,
-                            alignment: .leading
-                        ) { explanation in
-                            Text(explanation)
+            if let detail, detail.availability != "available" {
+                ProgramDetailNotice(message: detail.recovery ?? unavailableExplanation(detail.availability))
+                    .transition(.relayElement)
+            }
+            if let error = model.detailErrorMessage {
+                ProgramDetailNotice(message: error)
+                    .transition(.relayElement)
+            }
+
+            BoardOverlayScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    if detail == nil, model.detailErrorMessage == nil {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Opening ticket…")
                                 .font(AppTypography.font(.supporting))
-                                .foregroundStyle(ProgramBoardStyle.red)
+                                .foregroundStyle(ProgramBoardStyle.mutedText)
                         }
-                        if detail.availability == "needs_network" {
-                            ProgramWorkspaceActionButton(
-                                title: "Fetch verified detail", icon: .arrowDown,
-                                prominence: .primary, accessibilityLabel: "Fetch verified detail",
-                                help: "Download ticket detail"
-                            ) {
-                                Task { await model.select(card, online: true) }
-                            }
-                            .transition(.relayElement)
-                        }
+                        .transition(.relayReplacing(.element))
+                    } else if let markdown = detail?.markdown {
+                        Text(markdown)
+                            .font(AppTypography.monospacedFont(size: 12, weight: .regular))
+                            .foregroundStyle(ProgramBoardStyle.secondaryText)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .transition(.relayText)
                     }
-                    .transition(.relayReplacing(.element))
-                } else {
-                    VStack(alignment: .leading, spacing: 14) {
-                        RelayFadingScrollView {
-                            VStack(alignment: .leading, spacing: 16) {
-                                if let markdown = model.detail?.markdown {
-                                    Text(markdown)
-                                        .font(AppTypography.monospacedFont(size: 12, weight: .regular))
-                                        .foregroundStyle(ProgramBoardStyle.secondaryText)
-                                        .textSelection(.enabled)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .transition(.relayText)
-                                }
-                                dependencySummary
-                                attachmentSummary
-                            }
-                        }
-                        HStack {
-                            ProgramWorkspaceActionButton(
-                                title: "Restore detail", icon: nil,
-                                isEnabled: model.detail?.availability == "available",
-                                accessibilityLabel: "Restore detail",
-                                help: "Restore ticket file"
-                            ) {
-                                Task {
-                                    await model.restore(reopen: false)
-                                    onWorkspaceChanged()
-                                }
-                            }
-                            ProgramWorkspaceActionButton(
-                                title: "Reopen in Backlog", icon: nil, prominence: .primary,
-                                isEnabled: model.detail?.availability == "available",
-                                accessibilityLabel: "Reopen in Backlog",
-                                help: "Reopen in backlog"
-                            ) {
-                                Task {
-                                    await model.restore(reopen: true)
-                                    onWorkspaceChanged()
-                                }
-                            }
-                            Spacer()
-                        }
-                        .disabled(model.detail?.availability != "available")
-                    }
-                    .transition(.relayReplacing(.element))
+                    dependencySummary
+                    attachmentSummary
                 }
             }
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.detail)
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.dependencies)
         }
-        .padding(22)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.detailErrorMessage)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: detail?.availability)
+        .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -359,7 +372,7 @@ struct WorkspaceHistoryView: View {
         if let dependencies = model.dependencies {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Dependencies")
-                    .font(AppTypography.font(.body))
+                    .font(AppTypography.font(.cardHeading))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
                 if dependencies.dependencies.isEmpty {
                     Text("No dependencies")
@@ -389,7 +402,7 @@ struct WorkspaceHistoryView: View {
         if let attachments = model.detail?.attachments, !attachments.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Attachments")
-                    .font(AppTypography.font(.body))
+                    .font(AppTypography.font(.cardHeading))
                     .foregroundStyle(ProgramBoardStyle.primaryText)
                 ForEach(attachments) { attachment in
                     HStack {

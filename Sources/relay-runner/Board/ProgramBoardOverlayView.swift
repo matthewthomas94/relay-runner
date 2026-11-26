@@ -3679,7 +3679,7 @@ private struct ProgramDetailMetadata: View {
     }
 }
 
-private struct ProgramDetailSection: View {
+struct ProgramDetailSection: View {
     let title: String
     let text: String
 
@@ -3699,7 +3699,7 @@ private struct ProgramDetailSection: View {
     }
 }
 
-private struct ProgramDetailNotice: View {
+struct ProgramDetailNotice: View {
     let message: String
 
     var body: some View {
@@ -3716,7 +3716,7 @@ private struct ProgramDetailNotice: View {
     }
 }
 
-private struct ProgramDetailActionButton: View {
+struct ProgramDetailActionButton: View {
     let icon: LucideIcon
     let title: String
     let disabled: Bool

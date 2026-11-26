@@ -170,6 +170,8 @@ final class WorkspaceHistoryViewModel {
     /// skeleton rather than an empty list while it loads.
     var historyLoaded = false
     var errorMessage: String?
+    /// Shown inside the open ticket, as the Notes detail shows its errors.
+    var detailErrorMessage: String?
     var notice: String?
 
     init(repoPath: String, projectName: String, projectScopeToken: String?) {
@@ -213,12 +215,20 @@ final class WorkspaceHistoryViewModel {
         await refresh()
     }
 
+    /// Closes the open ticket, as the Notes detail's close button does.
+    func close() {
+        selectedCard = nil
+        detail = nil
+        dependencies = nil
+        detailErrorMessage = nil
+    }
+
     func select(_ card: ArtifactHistoryCard, online: Bool = false) async {
         selectedCard = card
         detail = nil
         dependencies = nil
         isLoading = true
-        errorMessage = nil
+        detailErrorMessage = nil
         do {
             async let fetchedDetail = OrchestratorClient.fetchArtifactHistoryDetail(
                 repoPath: repoPath,
@@ -233,10 +243,13 @@ final class WorkspaceHistoryViewModel {
                 projectScopeToken: projectScopeToken
             )
             let values = try await (fetchedDetail, fetchedDependencies)
+            // A slower reply for a ticket the user has since left is dropped.
+            guard selectedCard?.id == card.id else { return }
             detail = values.0
             dependencies = values.1
         } catch {
-            errorMessage = Self.message(for: error)
+            guard selectedCard?.id == card.id else { return }
+            detailErrorMessage = Self.message(for: error)
         }
         isLoading = false
     }
@@ -244,7 +257,7 @@ final class WorkspaceHistoryViewModel {
     func restore(reopen: Bool) async {
         guard let card = selectedCard else { return }
         isLoading = true
-        errorMessage = nil
+        detailErrorMessage = nil
         do {
             let result = try await OrchestratorClient.restoreArtifactHistory(
                 repoPath: repoPath,
@@ -263,7 +276,7 @@ final class WorkspaceHistoryViewModel {
             dependencies = nil
             await refresh()
         } catch {
-            errorMessage = Self.message(for: error)
+            detailErrorMessage = Self.message(for: error)
         }
         isLoading = false
     }
