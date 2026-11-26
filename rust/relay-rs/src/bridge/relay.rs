@@ -3,11 +3,11 @@
 //! `ensure_fifo`, `open_fifo`, `_start_intent_inbox_pump`, `_tts_fifo_reader`
 //! and `_run_relay`).
 
+use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::FileTypeExt;
-use std::collections::BTreeSet;
 use std::sync::{LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
