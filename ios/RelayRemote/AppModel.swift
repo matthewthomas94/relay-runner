@@ -85,11 +85,14 @@ final class AppModel {
             let mac = try await PairingClient(transport: SSHTransport())
                 .pair(payload, deviceKey: deviceKey, deviceID: UUID().uuidString.lowercased(),
                       deviceName: UIDevice.current.name)
+            try Task.checkCancellation()
             try pairingStore.save(mac)
             pairingState = .idle
             activate(mac)
         } catch let failure as RemoteFailure {
             pairingState = .failed(failure.userMessage)
+        } catch is CancellationError {
+            pairingState = .idle
         } catch {
             pairingState = .failed("Pairing could not be saved on this iPhone.")
         }
