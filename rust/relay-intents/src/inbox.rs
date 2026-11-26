@@ -637,6 +637,89 @@ impl IntentInbox {
         Ok(ids.len())
     }
 
+    /// Cancels the work a session held when it ended: intents it claimed, or
+    /// that wait for review, which no provider will now acknowledge. Without
+    /// this they stay unacknowledged and, routed to the focused mailbox,
+    /// hold every later command for whichever session is focused. Returns
+    /// the cancelled intents' metadata so the bridge can say what was lost;
+    /// nothing is replayed (RR-447).
+    pub fn release_ended_session_claims(&self, session_keys: &[String]) -> Result<Vec<Dict>> {
+        if session_keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let now = database::now();
+        let db = &self.connection;
+        let released = immediate(db, || {
+            let rows: Vec<(String, String)> = db
+                .prepare(&format!(
+                    "
+                SELECT intent_id, metadata_json FROM intents
+                 WHERE route != 'run_sidecar'
+                   AND state IN ('claimed', 'review_required')
+                   AND session_key IN ({})
+                 ORDER BY ordinal
+                ",
+                    placeholders(session_keys.len())
+                ))?
+                .query_map(params_from_iter(session_keys.iter()), |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            if rows.is_empty() {
+                return Ok(Vec::new());
+            }
+            let ids: Vec<String> = rows
+                .iter()
+                .map(|(intent_id, _)| intent_id.clone())
+                .collect();
+            db.execute(
+                &format!(
+                    "UPDATE intents SET state='cancelled', cancelled_at=?, \
+                     recovery_decision='ended_session_unanswered' \
+                     WHERE intent_id IN ({})",
+                    placeholders(ids.len())
+                ),
+                params_from_iter(
+                    std::iter::once(Sql::Real(now)).chain(ids.iter().cloned().map(Sql::Text)),
+                ),
+            )?;
+            self.events(
+                ids.iter().map(String::as_str),
+                "intent_cancelled",
+                "ended_session",
+                now,
+                Some((TurnState::Cancelled, "ended_session_unanswered")),
+            )?;
+            rows.iter()
+                .map(|(_, metadata)| metadata_dict(metadata))
+                .collect::<Result<Vec<Dict>>>()
+        })?;
+        if !released.is_empty() {
+            self.project_provider_turns()?;
+        }
+        Ok(released)
+    }
+
+    /// Pending intents created more than `seconds` before `now`, oldest
+    /// first, as `(command_seq, session_key, age in seconds)`.
+    pub fn pending_older_than(&self, seconds: f64, now: f64) -> Result<Vec<(i64, String, f64)>> {
+        let rows: Vec<(i64, String, f64)> = self
+            .connection
+            .prepare(
+                "
+            SELECT command_seq, session_key, created_at FROM intents
+             WHERE state='pending' AND route != 'run_sidecar' AND created_at < ?
+             ORDER BY ordinal
+            ",
+            )?
+            .query_map(params![now - seconds], |row| {
+                let created: f64 = row.get(2)?;
+                Ok((row.get(0)?, row.get(1)?, now - created))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
     /// Releases only an exact unclaimed intent, once, for its original
     /// generation.
     pub fn resume_after_recovery(
@@ -1611,6 +1694,60 @@ mod tests {
             .materialize_next(&command_path, &meta_path, "test", None)
             .unwrap();
         assert_eq!(next.unwrap().string("intent_id"), "cmd-376:item:1");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // A session that ended holding a claimed command no longer holds the
+    // focused session's queue; its command is cancelled, never replayed.
+    #[test]
+    fn an_ended_sessions_claim_stops_holding_the_focused_mailbox() {
+        let dir = std::env::temp_dir().join(format!("ended-claim-inbox-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = |name: &str| dir.join(name).to_string_lossy().into_owned();
+        let focused = (path("voice_cmd_ready"), path("voice_cmd_ready.meta"));
+        let inbox = IntentInbox::open(&path("inbox.sqlite3"), InboxOptions::default()).unwrap();
+        let mut ended = command(182);
+        ended.insert("voice_target_session_key", "ended-session");
+        ended.insert("source_text", "Why can't I see the glass effects?");
+        let mut next = command(183);
+        next.insert("voice_target_session_key", "live-session");
+        // The ended session's mailbox is gone, so its work routes to the focused one.
+        let route: MailboxRoute<'_> = &|_: &Dict| Some(focused.clone());
+
+        inbox.enqueue("ended", &ended, "continue_current").unwrap();
+        let first = inbox
+            .materialize_next(&focused.0, &focused.1, "test", Some(route))
+            .unwrap();
+        assert_eq!(first.unwrap().string("intent_id"), "cmd-182:item:1");
+        fs::remove_file(&focused.0).unwrap();
+        fs::remove_file(&focused.1).unwrap();
+        assert!(inbox.observe_claim(&ended, false, None).unwrap());
+        inbox.enqueue("next", &next, "continue_current").unwrap();
+        assert!(
+            inbox
+                .materialize_next(&focused.0, &focused.1, "test", Some(route))
+                .unwrap()
+                .is_none()
+        );
+
+        let ended_keys = ["ended-session".to_string()];
+        let released = inbox.release_ended_session_claims(&ended_keys).unwrap();
+        assert_eq!(released.len(), 1);
+        assert_eq!(
+            released[0].text("source_text"),
+            "Why can't I see the glass effects?"
+        );
+        let delivered = inbox
+            .materialize_next(&focused.0, &focused.1, "test", Some(route))
+            .unwrap();
+        assert_eq!(delivered.unwrap().string("intent_id"), "cmd-183:item:1");
+        assert!(
+            inbox
+                .release_ended_session_claims(&ended_keys)
+                .unwrap()
+                .is_empty()
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

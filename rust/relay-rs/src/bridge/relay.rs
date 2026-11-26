@@ -7,12 +7,15 @@ use std::ffi::CString;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::FileTypeExt;
-use std::sync::LazyLock;
+use std::collections::BTreeSet;
+use std::sync::{LazyLock, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use relay_intents::arbitration::{IntentRoute, WorkItemLifecycle};
+use relay_intents::inbox::IntentInbox;
 use relay_intents::pattern::{self, Regex};
+use relay_services::command_actions::agent_name;
 
 use super::authorization;
 use super::command_actions::ActionKind;
@@ -208,6 +211,7 @@ fn pump_once(bridge: &Bridge) {
     let Some(inbox) = bridge.inbox() else {
         return;
     };
+    release_ended_session_claims(bridge, &inbox);
     for (claim_file, ack_file, ownership, target_session_id) in mailboxes {
         let claimed = read_json_file(&claim_file);
         if !claimed.is_empty() {
@@ -249,9 +253,104 @@ fn pump_once(bridge: &Bridge) {
         &settings.cmd_meta_file,
         "shared-ready-file",
     );
+    log_held_commands(&inbox);
     let _guard = store::voice_state_lock();
     if let Err(error) = store::sync_deliverable_state(&settings.command_state_file, &inbox) {
         eprintln!("[voice_bridge] Could not sync intent inbox state: {error}");
+    }
+}
+
+/// Cancels what sessions held when they ended, so a command they never
+/// answered stops holding the focused session's queue, and says which
+/// request was lost so it can be asked again.
+fn release_ended_session_claims(bridge: &Bridge, inbox: &IntentInbox) {
+    let ended = targets::take_ended_voice_targets();
+    if ended.is_empty() {
+        return;
+    }
+    let keys: Vec<String> = ended
+        .iter()
+        .map(|target| target.session_key.clone())
+        .collect();
+    let released = match inbox.release_ended_session_claims(&keys) {
+        Ok(released) => released,
+        Err(error) => {
+            eprintln!("[voice_bridge] Could not release an ended session's commands: {error}");
+            return;
+        }
+    };
+    for metadata in released {
+        let session_key = metadata.text("voice_target_session_key");
+        let agent = ended
+            .iter()
+            .find(|target| target.session_key == session_key)
+            .and_then(|target| targets::session_agent(Some(target)));
+        eprintln!(
+            "[voice_bridge] Released unanswered command seq={} of ended session={session_key}",
+            metadata.text("relay_command_seq")
+        );
+        speech::queue_tts_text(
+            bridge.speech(),
+            &lost_command_notice(agent, &metadata.text("source_text")),
+            TtsOptions {
+                allow_pending_command: true,
+                ..TtsOptions::default()
+            },
+        );
+    }
+}
+
+/// What to say when an agent's session ended before it answered.
+fn lost_command_notice(agent: Option<&str>, source_text: &str) -> String {
+    let who = agent.map_or_else(|| "That agent".to_string(), agent_name);
+    let request = shortened(source_text.trim(), 120);
+    if request.is_empty() {
+        format!("{who} restarted before answering your last message, so please say it again.")
+    } else {
+        format!("{who} restarted before answering you, so please say it again: {request}")
+    }
+}
+
+/// `text` cut to at most `limit` characters at a word boundary.
+fn shortened(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(limit).collect();
+    match cut.rfind(' ') {
+        Some(space) => format!("{}…", &cut[..space]),
+        None => format!("{cut}…"),
+    }
+}
+
+/// Logs, once each, commands that have waited over ten seconds to be
+/// delivered, so a held queue shows in the bridge log. Checks once a second.
+fn log_held_commands(inbox: &IntentInbox) {
+    static LAST_CHECK: LazyLock<Mutex<Option<Instant>>> = LazyLock::new(Mutex::default);
+    static LOGGED: LazyLock<Mutex<BTreeSet<(i64, String)>>> = LazyLock::new(Mutex::default);
+    {
+        let mut last = LAST_CHECK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if last.is_some_and(|checked| checked.elapsed() < Duration::from_secs(1)) {
+            return;
+        }
+        *last = Some(Instant::now());
+    }
+    let Ok(held) = inbox.pending_older_than(10.0, crate::support::now()) else {
+        return;
+    };
+    let mut logged = LOGGED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for (seq, session_key, age) in held {
+        if logged.insert((seq, session_key.clone())) {
+            eprintln!(
+                "[voice_bridge] Command seq={seq} for session={session_key} has waited {age:.0}s \
+                 to be delivered; focused={}",
+                targets::focused_key().unwrap_or_default()
+            );
+        }
     }
 }
 
@@ -754,5 +853,24 @@ fn handle_entry(
             item.within_turn_order,
             disposition.route.as_str()
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_lost_command_notice_names_the_agent_and_the_request() {
+        assert_eq!(
+            lost_command_notice(Some("george"), "Why can't I see the glass effects?"),
+            "George restarted before answering you, so please say it again: \
+             Why can't I see the glass effects?"
+        );
+        assert_eq!(
+            lost_command_notice(None, " "),
+            "That agent restarted before answering your last message, so please say it again."
+        );
+        assert_eq!(shortened("one two three", 9), "one two…");
     }
 }

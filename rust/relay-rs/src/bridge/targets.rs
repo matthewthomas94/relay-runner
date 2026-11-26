@@ -184,6 +184,8 @@ pub struct Targets {
     pub spoken_reply_session: Option<String>,
     /// `_PUBLISHED_SPEECH_QUEUE_DEPTH`.
     pub published_queue_depth: Option<i64>,
+    /// Targets pruned since the inbox pump last released their claims.
+    ended: Vec<VoiceTarget>,
 }
 
 impl Targets {
@@ -267,6 +269,12 @@ pub fn voice_target_for_value(value: Option<&Value>) -> Option<VoiceTarget> {
 
 pub fn live_voice_targets() -> Vec<VoiceTarget> {
     lock().targets.clone()
+}
+
+/// The targets pruned since the last call, for the inbox pump to release
+/// the work they held when they ended.
+pub fn take_ended_voice_targets() -> Vec<VoiceTarget> {
+    std::mem::take(&mut lock().ended)
 }
 
 pub fn ledger_state_file() -> Option<String> {
@@ -557,6 +565,7 @@ pub fn apply_voice_focus(
             for key in targets.keys() {
                 if !live_keys.contains(&key) && Some(&key) != targets.focused_key.as_ref() {
                     if let Some(ended) = targets.remove(&key) {
+                        targets.ended.push(ended.clone());
                         pruned.push(ended);
                     }
                     targets.ownership.remove(&key);
