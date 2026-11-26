@@ -178,5 +178,125 @@
   "name": "speech_audio_flag_not_bool",
   "line": "{\"type\":\"speech\",\"seq\":1,\"kind\":\"final\",\"source\":\"orchestrator\",\"text\":\"x\",\"audio\":\"yes\"}",
   "error": "invalid_field"
+ },
+ {
+  "name": "utterance_agent_not_string",
+  "line": "{\"type\":\"utterance\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"text\":\"hi\",\"captured_at\":\"2026-10-22T09:14:03Z\",\"agent\":2}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "speech_agent_not_string",
+  "line": "{\"type\":\"speech\",\"seq\":1,\"kind\":\"final\",\"source\":\"orchestrator\",\"text\":\"x\",\"agent\":[\"george\"]}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "session_state_agents_not_array",
+  "line": "{\"type\":\"session_state\",\"app_running\":true,\"session\":\"ready\",\"agents\":{\"agent\":\"puck\"}}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "session_state_agent_not_object",
+  "line": "{\"type\":\"session_state\",\"app_running\":true,\"session\":\"ready\",\"agents\":[\"puck\"]}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "session_state_agent_missing_running",
+  "line": "{\"type\":\"session_state\",\"app_running\":true,\"session\":\"ready\",\"agents\":[{\"agent\":\"puck\",\"state\":\"ready\"}]}",
+  "error": "missing_field"
+ },
+ {
+  "name": "session_state_agent_unknown_state",
+  "line": "{\"type\":\"session_state\",\"app_running\":true,\"session\":\"ready\",\"agents\":[{\"agent\":\"puck\",\"running\":true,\"state\":\"dancing\"}]}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "session_state_agent_working_on_not_string",
+  "line": "{\"type\":\"session_state\",\"app_running\":true,\"session\":\"ready\",\"agents\":[{\"agent\":\"puck\",\"running\":true,\"state\":\"working\",\"working_on\":5}]}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "workspace_command_client_id_not_uuid",
+  "line": "{\"type\":\"workspace_command\",\"client_id\":\"abc\",\"action\":\"list\"}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "workspace_command_unknown_action",
+  "line": "{\"type\":\"workspace_command\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"action\":\"delete\"}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "workspace_command_missing_action",
+  "line": "{\"type\":\"workspace_command\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\"}",
+  "error": "missing_field"
+ },
+ {
+  "name": "workspace_state_missing_tickets",
+  "line": "{\"type\":\"workspace_state\",\"projects\":[]}",
+  "error": "missing_field"
+ },
+ {
+  "name": "workspace_state_project_not_object",
+  "line": "{\"type\":\"workspace_state\",\"projects\":[\"relay-runner\"],\"tickets\":[]}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "workspace_state_project_missing_name",
+  "line": "{\"type\":\"workspace_state\",\"projects\":[{\"id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\"}],\"tickets\":[]}",
+  "error": "missing_field"
+ },
+ {
+  "name": "workspace_state_ticket_unknown_status",
+  "line": "{\"type\":\"workspace_state\",\"projects\":[],\"tickets\":[{\"id\":\"RR-1\",\"title\":\"t\",\"status\":\"done\",\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\"}]}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "workspace_state_ticket_missing_title",
+  "line": "{\"type\":\"workspace_state\",\"projects\":[],\"tickets\":[{\"id\":\"RR-1\",\"status\":\"queued\",\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\"}]}",
+  "error": "missing_field"
+ },
+ {
+  "name": "workspace_state_ticket_agent_not_string",
+  "line": "{\"type\":\"workspace_state\",\"projects\":[],\"tickets\":[{\"id\":\"RR-1\",\"title\":\"t\",\"status\":\"queued\",\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"agent\":true}]}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "settings_command_client_id_not_uuid",
+  "line": "{\"type\":\"settings_command\",\"client_id\":\"abc\",\"action\":\"get\"}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "settings_command_unknown_action",
+  "line": "{\"type\":\"settings_command\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"action\":\"reset\"}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "settings_command_speed_fractional",
+  "line": "{\"type\":\"settings_command\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"action\":\"set\",\"speech_speed_percent\":1.3}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "settings_command_model_not_string",
+  "line": "{\"type\":\"settings_command\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"action\":\"set\",\"model\":4}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "settings_state_options_not_array",
+  "line": "{\"type\":\"settings_state\",\"model_options\":\"opus\"}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "settings_state_option_missing_label",
+  "line": "{\"type\":\"settings_state\",\"effort_options\":[{\"value\":\"low\"}]}",
+  "error": "missing_field"
+ },
+ {
+  "name": "settings_state_option_value_not_string",
+  "line": "{\"type\":\"settings_state\",\"sizing_options\":[{\"value\":1,\"label\":\"One\"}]}",
+  "error": "invalid_field"
+ },
+ {
+  "name": "settings_state_speed_not_int",
+  "line": "{\"type\":\"settings_state\",\"speech_speed_percent\":\"130\"}",
+  "error": "invalid_field"
  }
 ]

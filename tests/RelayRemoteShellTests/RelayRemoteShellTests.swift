@@ -200,9 +200,9 @@ final class RelayRemoteShellTests: XCTestCase {
     // MARK: RR-456 session-control routing
 
     /// The golden `session_state` line both codecs agree on.
-    private func vectorLine(_ name: String) throws -> String {
+    private func vectorLine(_ name: String, file: String = "frames") throws -> String {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("RelayRemoteProtocolTests/Vectors/frames.json")
+            .appendingPathComponent("RelayRemoteProtocolTests/Vectors/\(file).json")
         let entries = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
         return try XCTUnwrap(entries.first { $0["name"] as? String == name }?["line"] as? String)
     }
@@ -285,6 +285,32 @@ final class RelayRemoteShellTests: XCTestCase {
         bridge.send(#"{"type":"pong","t":2}"# + "\n")
         XCTAssertEqual(readLine(stdout), #"{"type":"pong","t":2}"#)
         XCTAssertTrue(p.isRunning)
+        try stdin.close()
+        XCTAssertEqual(waitExit(p), 0)
+    }
+
+    /// RR-532: Workspace and settings commands go to the app like session
+    /// commands; an agent-tagged utterance still goes to the bridge.
+    func testWorkspaceAndSettingsCommandsGoToTheAppWhileAttachedToTheBridge() throws {
+        let bridge = try FakeServer(path: dir + "/d.sock")
+        let app = try FakeServer(path: dir + "/c.sock")
+        defer { bridge.shutdown(); app.shutdown() }
+        let (p, stdin, stdout) = try spawn(["--device", "dev-1"])
+        bridge.accept()
+        _ = bridge.readLine()
+        let workspace = try vectorLine("workspace_command_list", file: "frames_extended")
+        let settings = try vectorLine("settings_command_set", file: "frames_extended")
+        try stdin.write(contentsOf: Data((workspace + "\n" + settings + "\n").utf8))
+        app.accept()
+        XCTAssertEqual(app.readLine(), #"{"device_id":"dev-1","type":"identify"}"#)
+        XCTAssertEqual(app.readLine(), workspace)
+        XCTAssertEqual(app.readLine(), settings)
+        let state = try vectorLine("settings_state_unsupported", file: "frames_extended")
+        app.send(state + "\n")
+        XCTAssertEqual(readLine(stdout), state)
+        let utterance = try vectorLine("utterance_agent", file: "frames_extended")
+        try stdin.write(contentsOf: Data((utterance + "\n").utf8))
+        XCTAssertEqual(bridge.readLine(), utterance)
         try stdin.close()
         XCTAssertEqual(waitExit(p), 0)
     }

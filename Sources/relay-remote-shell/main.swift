@@ -8,7 +8,8 @@ import Foundation
 // RR-456 routing for `--device`: the voice bridge's socket when a session is
 // running; otherwise the app's session-control socket, which reports the
 // session and starts or stops one. While attached to the bridge, the phone's
-// `session_command` lines go to the app socket instead. With neither socket
+// app commands (`session_command`, and RR-532's `workspace_command` and
+// `settings_command`) go to the app socket instead. With neither socket
 // listening the helper reports `session_state` with `app_running: false`.
 
 let maxLineBytes = 64 * 1024
@@ -164,8 +165,11 @@ guard writeAll(sock, identifyLine) else {
     fail("bridge_unavailable", "Relay Runner closed the connection", exitCode: 1)
 }
 
+/// Phone frames the app answers rather than the voice bridge.
+let appCommandTypes: Set<String> = ["session_command", "workspace_command", "settings_command"]
+
 /// The app's session-control socket beside the bridge, opened by the first
-/// `session_command` so its replies always follow the bridge's `welcome`.
+/// app command so its replies always follow the bridge's `welcome`.
 var control: Int32?
 
 func openControl() -> Int32? {
@@ -185,7 +189,7 @@ func closeControl() {
 /// Sends a phone line to the socket it belongs to. False when the line could
 /// not be delivered and the session must end.
 func route(_ line: Data) -> Bool {
-    guard attachedToBridge, frameType(line) == "session_command" else { return writeAll(sock, line) }
+    guard attachedToBridge, let type = frameType(line), appCommandTypes.contains(type) else { return writeAll(sock, line) }
     if control == nil { control = openControl() }
     if let fd = control, writeAll(fd, line) { return true }
     closeControl()

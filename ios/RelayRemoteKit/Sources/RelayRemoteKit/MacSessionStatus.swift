@@ -26,9 +26,13 @@ public struct MacSessionStatus: Equatable, Sendable {
     /// a session runs.
     public let activeAgent: String?
     public let runningAgents: [String]
+    /// RR-532: every agent's state, in table order, while the Mac is reached
+    /// and reports it; empty otherwise.
+    public let agents: [AgentStatus]
 
     public init(connection: RemoteSession.State, appUnavailable: Bool, mac: SessionState?, error: String?) {
         projects = mac?.projects ?? []
+        agents = connection == .connected || connection == .connectedToApp ? mac?.agents ?? [] : []
         let running = mac?.session == .ready || mac?.session == .starting
         activeAgent = running ? mac?.activeAgent : nil
         runningAgents = running ? mac?.runningAgents ?? [] : []
@@ -68,6 +72,11 @@ public struct MacSessionStatus: Equatable, Sendable {
     /// Start needs Relay Runner and no session, and a project that can start.
     public func canStart(chosen: String?) -> Bool {
         (phase == .noSession || phase == .failed) && startProject(chosen: chosen) != nil
+    }
+
+    /// RR-532: one agent's state by slug, when the Mac reports it.
+    public func agent(_ slug: String) -> AgentStatus? {
+        agents.first { $0.agent == slug }
     }
 
     /// Stop ends a session that is starting or running.

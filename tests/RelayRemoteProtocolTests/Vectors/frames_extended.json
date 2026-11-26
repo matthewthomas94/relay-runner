@@ -1,0 +1,107 @@
+[
+ {
+  "name": "utterance_agent",
+  "direction": "phone_to_mac",
+  "line": "{\"agent\":\"george\",\"captured_at\":\"2026-10-22T09:14:03Z\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"text\":\"move RR-120 to ready\",\"type\":\"utterance\"}"
+ },
+ {
+  "name": "control_agent",
+  "direction": "phone_to_mac",
+  "line": "{\"action\":\"stop\",\"agent\":\"isabella\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"type\":\"control\"}"
+ },
+ {
+  "name": "accepted_agent",
+  "direction": "mac_to_phone",
+  "line": "{\"agent\":\"george\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"relay_command_id\":\"4711-1761124443123456789-812\",\"relay_command_seq\":812,\"type\":\"accepted\"}"
+ },
+ {
+  "name": "speech_agent",
+  "direction": "mac_to_phone",
+  "line": "{\"agent\":\"george\",\"audio\":true,\"kind\":\"final\",\"relay_command_seq\":812,\"seq\":46,\"source\":\"orchestrator\",\"spoken_by\":\"phone\",\"text\":\"RR-120 is in ready and dispatching.\",\"type\":\"speech\"}"
+ },
+ {
+  "name": "speech_audio_agent",
+  "direction": "mac_to_phone",
+  "line": "{\"agent\":\"george\",\"data\":\"//FgQB/7/N4CAExhdmP+vw==\",\"format\":\"aac\",\"part\":0,\"parts\":0,\"sample_rate\":24000,\"seq\":46,\"type\":\"speech_audio\"}"
+ },
+ {
+  "name": "speech_control_agent",
+  "direction": "mac_to_phone",
+  "line": "{\"action\":\"stop\",\"agent\":\"george\",\"reason\":\"superseded\",\"seq\":47,\"type\":\"speech_control\"}"
+ },
+ {
+  "name": "status_agent",
+  "direction": "mac_to_phone",
+  "line": "{\"agent\":\"puck\",\"seq\":48,\"text\":\"worker RR-120 started\",\"type\":\"status\"}"
+ },
+ {
+  "name": "session_command_start_general",
+  "direction": "phone_to_mac",
+  "line": "{\"action\":\"start\",\"agent\":\"sky\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"type\":\"session_command\"}"
+ },
+ {
+  "name": "session_state_agents",
+  "direction": "mac_to_phone",
+  "line": "{\"active_agent\":\"george\",\"agents\":[{\"agent\":\"puck\",\"running\":true,\"state\":\"working\",\"working_on\":\"RR-120 review\"},{\"agent\":\"isabella\",\"running\":false,\"state\":\"off\"},{\"agent\":\"george\",\"running\":true,\"state\":\"playing\"},{\"agent\":\"sky\",\"running\":true,\"state\":\"listening\"}],\"app_running\":true,\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"project_name\":\"relay-runner\",\"running_agents\":[\"puck\",\"george\",\"sky\"],\"session\":\"ready\",\"type\":\"session_state\"}"
+ },
+ {
+  "name": "session_state_agents_none_running",
+  "direction": "mac_to_phone",
+  "line": "{\"agents\":[{\"agent\":\"puck\",\"running\":false,\"state\":\"off\"},{\"agent\":\"isabella\",\"running\":false,\"state\":\"off\"},{\"agent\":\"george\",\"running\":false,\"state\":\"off\"},{\"agent\":\"sky\",\"running\":false,\"state\":\"off\"}],\"app_running\":true,\"session\":\"none\",\"type\":\"session_state\"}"
+ },
+ {
+  "name": "session_state_agent_starting",
+  "direction": "mac_to_phone",
+  "line": "{\"agents\":[{\"agent\":\"puck\",\"running\":false,\"state\":\"starting\"},{\"agent\":\"isabella\",\"running\":true,\"state\":\"ready\",\"working_on\":\"café notes\"}],\"app_running\":true,\"project_id\":\"0c9e7f3a-41d2-4b8e-9a65-1f2e3d4c5b6a\",\"project_name\":\"general-tasks\",\"session\":\"starting\",\"type\":\"session_state\"}"
+ },
+ {
+  "name": "workspace_command_list",
+  "direction": "phone_to_mac",
+  "line": "{\"action\":\"list\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"type\":\"workspace_command\"}"
+ },
+ {
+  "name": "workspace_state",
+  "direction": "mac_to_phone",
+  "line": "{\"projects\":[{\"id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"name\":\"relay-runner\"},{\"id\":\"0c9e7f3a-41d2-4b8e-9a65-1f2e3d4c5b6a\",\"name\":\"general-tasks\"}],\"tickets\":[{\"agent\":\"puck\",\"id\":\"RR-120\",\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"status\":\"in_progress\",\"title\":\"Move the board to the artifact branch\"},{\"id\":\"RR-121\",\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"status\":\"queued\",\"title\":\"Queued behind RR-120\"},{\"agent\":\"sky\",\"id\":\"GT-4\",\"project_id\":\"0c9e7f3a-41d2-4b8e-9a65-1f2e3d4c5b6a\",\"status\":\"backlog\",\"title\":\"Draft the café newsletter\"}],\"type\":\"workspace_state\"}"
+ },
+ {
+  "name": "workspace_state_empty",
+  "direction": "mac_to_phone",
+  "line": "{\"projects\":[],\"tickets\":[],\"type\":\"workspace_state\"}"
+ },
+ {
+  "name": "workspace_state_unsupported",
+  "direction": "mac_to_phone",
+  "line": "{\"error\":\"The Workspace is not available from the phone on this Mac yet.\",\"projects\":[],\"tickets\":[],\"type\":\"workspace_state\"}"
+ },
+ {
+  "name": "settings_command_get",
+  "direction": "phone_to_mac",
+  "line": "{\"action\":\"get\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"type\":\"settings_command\"}"
+ },
+ {
+  "name": "settings_command_set",
+  "direction": "phone_to_mac",
+  "line": "{\"action\":\"set\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"model\":\"sonnet\",\"speech_speed_percent\":150,\"type\":\"settings_command\"}"
+ },
+ {
+  "name": "settings_command_set_effort_sizing",
+  "direction": "phone_to_mac",
+  "line": "{\"action\":\"set\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"effort\":\"high\",\"sizing\":\"user_default\",\"type\":\"settings_command\"}"
+ },
+ {
+  "name": "settings_state",
+  "direction": "mac_to_phone",
+  "line": "{\"effort\":\"medium\",\"effort_options\":[{\"label\":\"Low\",\"value\":\"low\"},{\"label\":\"Medium\",\"value\":\"medium\"},{\"label\":\"High\",\"value\":\"high\"},{\"label\":\"Extra High\",\"value\":\"xhigh\"},{\"label\":\"Max\",\"value\":\"max\"}],\"model\":\"opus\",\"model_options\":[{\"label\":\"Fable\",\"value\":\"fable\"},{\"label\":\"Opus\",\"value\":\"opus\"},{\"label\":\"Sonnet\",\"value\":\"sonnet\"},{\"label\":\"Haiku\",\"value\":\"haiku\"}],\"provider\":\"claude\",\"sizing\":\"orchestrator_decides\",\"sizing_options\":[{\"label\":\"Orchestrator decides\",\"value\":\"orchestrator_decides\"},{\"label\":\"Use my defaults\",\"value\":\"user_default\"}],\"speech_speed_percent\":130,\"type\":\"settings_state\"}"
+ },
+ {
+  "name": "settings_state_refused",
+  "direction": "mac_to_phone",
+  "line": "{\"effort\":\"medium\",\"effort_options\":[{\"label\":\"Low\",\"value\":\"low\"},{\"label\":\"Medium\",\"value\":\"medium\"},{\"label\":\"High\",\"value\":\"high\"},{\"label\":\"Extra High\",\"value\":\"xhigh\"}],\"error\":\"Max effort is not available for Sol.\",\"model\":\"sol\",\"model_options\":[{\"label\":\"Astra\",\"value\":\"astra\"},{\"label\":\"Sol\",\"value\":\"sol\"},{\"label\":\"Terra\",\"value\":\"terra\"},{\"label\":\"Luna\",\"value\":\"luna\"}],\"provider\":\"codex\",\"sizing\":\"orchestrator_decides\",\"sizing_options\":[{\"label\":\"Orchestrator decides\",\"value\":\"orchestrator_decides\"},{\"label\":\"Use my defaults\",\"value\":\"user_default\"}],\"speech_speed_percent\":130,\"type\":\"settings_state\"}"
+ },
+ {
+  "name": "settings_state_unsupported",
+  "direction": "mac_to_phone",
+  "line": "{\"error\":\"Settings cannot be changed from the phone on this Mac yet.\",\"type\":\"settings_state\"}"
+ }
+]

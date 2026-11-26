@@ -235,6 +235,7 @@ struct DebugView: View {
         case .ack(let ack): return "#\(ack.seq)"
         case .ping(let ping): return "\(ping.t)"
         case .pong(let pong): return "\(pong.t)"
+        default: return frame.typeName
         }
     }
 }

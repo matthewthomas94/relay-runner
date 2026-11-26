@@ -40,6 +40,14 @@ final class FakeMac: @unchecked Sendable {
     private(set) var sessionCommands: [SessionCommand] = []
     /// The agent the last start asked for; the Mac's default is Puck.
     private var startedAgent = "puck"
+    /// RR-532: what `session_state.agents` reports; nil is a Mac that does not.
+    var agents: [AgentStatus]?
+    /// RR-532: the app's answer to `workspace_command`.
+    var workspace = WorkspaceState(projects: [], tickets: [])
+    /// RR-532: the app's answer to each `settings_command`.
+    var settingsReply: (SettingsCommand) -> SettingsState = { _ in SettingsState() }
+    private(set) var workspaceCommands: [WorkspaceCommand] = []
+    private(set) var settingsCommands: [SettingsCommand] = []
 
     var isConnected: Bool { lock.withLock { connection != nil } }
 
@@ -73,7 +81,12 @@ final class FakeMac: @unchecked Sendable {
                      projectName: phase == .noSession ? nil : "relay-runner",
                      projects: includingProjects ? projects : nil,
                      activeAgent: phase == .noSession ? nil : startedAgent,
-                     runningAgents: phase == .noSession ? nil : [startedAgent])
+                     runningAgents: phase == .noSession ? nil : [startedAgent], agents: agents)
+    }
+
+    /// RR-532: the app pushes a changed `session_state`, as it does once a second.
+    func pushSessionState() {
+        lock.withLock { connection?.deliver(.sessionState(controlState())) }
     }
 
     func receive(_ frame: Frame, on connection: FakeConnection) {
@@ -90,6 +103,17 @@ final class FakeMac: @unchecked Sendable {
             default: break
             }
             connection.deliver(.sessionState(controlState(includingProjects: command.action == .listProjects)))
+            return
+        }
+        // RR-532: the app answers these too, on either kind of channel.
+        if case .workspaceCommand(let command) = frame {
+            workspaceCommands.append(command)
+            connection.deliver(.workspaceState(workspace))
+            return
+        }
+        if case .settingsCommand(let command) = frame {
+            settingsCommands.append(command)
+            connection.deliver(.settingsState(settingsReply(command)))
             return
         }
         if connection.isControlLink {
@@ -132,10 +156,11 @@ final class FakeMac: @unchecked Sendable {
 
     /// Emits a sequenced speech frame, held for replay while disconnected.
     @discardableResult
-    func speak(_ text: String) -> Int {
+    func speak(_ text: String, agent: String? = nil) -> Int {
         lock.lock()
         defer { lock.unlock() }
-        let frame = Frame.speech(Speech(seq: seq.next(), kind: .final, source: .orchestrator, text: text))
+        let frame = Frame.speech(Speech(seq: seq.next(), kind: .final, source: .orchestrator, text: text,
+                                        agent: agent))
         try! replay.record(frame, at: now)
         connection?.deliver(frame)
         return seq.last

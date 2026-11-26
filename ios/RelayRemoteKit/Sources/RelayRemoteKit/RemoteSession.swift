@@ -115,6 +115,16 @@ public final class RemoteSession {
     public private(set) var sessionError: String?
     /// The helper last found Relay Runner not running on the Mac.
     public private(set) var appUnavailable = false
+    /// RR-532: the Mac's latest Workspace feed, from `requestWorkspace()`.
+    public private(set) var workspace: WorkspaceState?
+    /// RR-532: the Mac's latest settings, from `requestSettings()` or
+    /// `updateSettings(...)`.
+    public private(set) var settings: SettingsState?
+    /// RR-532: why the Mac refused the last settings command, if it did.
+    public private(set) var settingsError: String?
+    /// RR-532: every agent's state from the Mac's latest `session_state`, in
+    /// table order; empty from a Mac that does not report it.
+    public var agents: [AgentStatus] { macSession?.agents ?? [] }
 
     public var resumeAfterSeq: Int? {
         guard let last = core.lastSeq, let ceiling = resumeCeiling?() else { return core.lastSeq }
@@ -192,12 +202,15 @@ public final class RemoteSession {
     }
 
     /// Queues a typed utterance and sends it when the channel is up.
+    /// RR-532: `agent` is the slug of the agent it is for (one of
+    /// `RelayRemoteProtocol.agents`); nil sends it to the agent focused on the
+    /// Mac, as before. A retry keeps its agent.
     @discardableResult
-    public func send(text: String) -> Bool {
+    public func send(text: String, agent: String? = nil) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         let utterance = Utterance(clientId: UUID().uuidString.lowercased(), text: trimmed,
-                                  capturedAt: Self.timestamp(Date()))
+                                  capturedAt: Self.timestamp(Date()), agent: agent)
         guard (try? FrameCodec.encode(.utterance(utterance))) != nil else { return false }
         if let now = core.enqueue(utterance, now: environment.now()) {
             transmit(.utterance(now))
@@ -209,10 +222,11 @@ public final class RemoteSession {
     /// Sends a control frame (stop, interrupt, cancel, play, replay) with a
     /// fresh `client_id`. Returns false when the channel is down, since a
     /// control for a reply that may already be over has no value later.
+    /// RR-532: `agent` is the slug of the agent it is for; nil is the focused one.
     @discardableResult
-    public func send(control action: ControlAction) -> Bool {
+    public func send(control action: ControlAction, agent: String? = nil) -> Bool {
         guard connection != nil, core.isWelcomed else { return false }
-        transmit(.control(Control(clientId: UUID().uuidString.lowercased(), action: action)))
+        transmit(.control(Control(clientId: UUID().uuidString.lowercased(), action: action, agent: agent)))
         return true
     }
 
@@ -221,13 +235,50 @@ public final class RemoteSession {
     /// and on a session-control channel. False when no channel is up: a
     /// start or stop the user asked for minutes ago should not run later.
     /// RR-523: `agent` is the slug of the agent a start asks for; without it
-    /// the Mac starts its most recently active agent, or Puck.
+    /// the Mac starts its most recently active agent, or Puck. RR-532: a start
+    /// without `projectID` starts in the Mac's built-in general-tasks project.
     @discardableResult
     public func send(sessionCommand action: SessionAction, projectID: String? = nil, agent: String? = nil) -> Bool {
         guard let connection, core.isEstablished else { return false }
         core.sessionCommandSent()
         sessionError = nil
         transmit(.sessionCommand(Self.sessionCommand(action, projectID: projectID, agent: agent)), on: connection)
+        return true
+    }
+
+    /// RR-532: asks the Mac for its Workspace; the answer lands in `workspace`.
+    /// Works on either kind of channel. False when no channel is up.
+    @discardableResult
+    public func requestWorkspace() -> Bool {
+        guard let connection, core.isEstablished else { return false }
+        transmit(.workspaceCommand(WorkspaceCommand(clientId: UUID().uuidString.lowercased())), on: connection)
+        return true
+    }
+
+    /// RR-532: asks the Mac for its settings; the answer lands in `settings`.
+    /// False when no channel is up.
+    @discardableResult
+    public func requestSettings() -> Bool {
+        send(settingsCommand: SettingsCommand(clientId: UUID().uuidString.lowercased(), action: .get))
+    }
+
+    /// RR-532: changes only the settings given; nil leaves one alone. Values
+    /// come from `settings`' option lists. The Mac answers with its settings
+    /// after the change, or with the unchanged ones and `settingsError` when it
+    /// refuses. False when no channel is up: a change should not land later.
+    @discardableResult
+    public func updateSettings(speechSpeedPercent: Int? = nil, model: String? = nil, effort: String? = nil,
+                               sizing: String? = nil) -> Bool {
+        send(settingsCommand: SettingsCommand(clientId: UUID().uuidString.lowercased(), action: .set,
+                                              speechSpeedPercent: speechSpeedPercent, model: model, effort: effort,
+                                              sizing: sizing))
+    }
+
+    private func send(settingsCommand command: SettingsCommand) -> Bool {
+        guard let connection, core.isEstablished else { return false }
+        core.settingsCommandSent()
+        settingsError = nil
+        transmit(.settingsCommand(command), on: connection)
         return true
     }
 
@@ -375,6 +426,9 @@ public final class RemoteSession {
             macSession = core.macSession
             sessionError = core.sessionError
             appUnavailable = core.appUnavailable
+            workspace = core.workspace
+            settings = core.settings
+            settingsError = core.settingsError
             if reaction.isNew || frame.seq == nil { onInbound?(frame) }
             if let reattach = reaction.reattach {
                 reattachNow = reattach == .now
@@ -459,7 +513,8 @@ public final class RemoteSession {
         guard let line = try? FrameCodec.encode(frame) else { return }
         connection.send(line)
         switch frame {
-        case .hello, .utterance, .control, .remoteMode, .sessionCommand: append(.sent, frame)
+        case .hello, .utterance, .control, .remoteMode, .sessionCommand, .workspaceCommand, .settingsCommand:
+            append(.sent, frame)
         default: break
         }
     }
