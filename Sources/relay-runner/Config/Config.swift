@@ -608,4 +608,6 @@ struct AwarenessConfig: Codable, Equatable {
     var message_preview: Bool = true
     var live_captions: Bool = false
     var glow_intensity: Double = 0.6
+    /// When another agent's reply starts playing, talk to that agent next.
+    var follow_speaking_agent: Bool = true
 }
