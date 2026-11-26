@@ -191,6 +191,9 @@ fn dispatch(daemon: &Daemon, request: &Request) -> Outcome<Reply> {
     if post && is(&["v1", "artifacts", "notes", "create"]) {
         return daemon.artifact_note_create(request);
     }
+    if post && is(&["v1", "artifacts", "notes", "chat"]) {
+        return daemon.artifact_note_chat(request);
+    }
     if post && n == 5 && prefix(&["v1", "artifacts", "notes"]) && s[4] == "update" {
         return daemon.artifact_note_update(request);
     }
