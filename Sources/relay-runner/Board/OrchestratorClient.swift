@@ -379,6 +379,57 @@ enum OrchestratorClient {
         )
     }
 
+    struct NoteChatResponse: Decodable, Equatable {
+        let reply: String
+        let noteIDs: [String]
+
+        private enum CodingKeys: String, CodingKey {
+            case reply
+            case noteIDs = "note_ids"
+        }
+    }
+
+    /// RR-548's chat route allows the provider 120 seconds.
+    private static let noteChatTimeout: TimeInterval = 150
+
+    /// RR-549: the request for one chat question; `note` nil asks the whole library.
+    static func noteChatRequest(
+        note: String?,
+        messages: [NoteChatMessage],
+        repoPath: String,
+        projectScopeToken: String?,
+        port: Int
+    ) -> URLRequest? {
+        var payload = artifactPayload(
+            repoPath: GlobalNoteStore.requestPath(repoPath),
+            projectScopeToken: projectScopeToken
+        )
+        if let note { payload["note"] = note }
+        payload["messages"] = messages.map { ["role": $0.role.rawValue, "text": $0.text] }
+        return postRequest(
+            path: "/v1/artifacts/notes/chat",
+            payload: payload,
+            port: port,
+            timeout: noteChatTimeout
+        )
+    }
+
+    static func chatAboutNotes(
+        note: String?,
+        messages: [NoteChatMessage],
+        repoPath: String,
+        projectScopeToken: String?
+    ) async throws -> NoteChatResponse {
+        guard let request = noteChatRequest(
+            note: note,
+            messages: messages,
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken,
+            port: readPort()
+        ) else { throw OrchestratorClientError.invalidRequest }
+        return try await response(NoteChatResponse.self, for: request)
+    }
+
     static func artifactRequest(
         path: String,
         repoPath: String,

@@ -133,3 +133,15 @@ final class DesignSystemTests: XCTestCase {
         return -1
     }
 }
+
+final class AppGlowStateTests: XCTestCase {
+    func testStateToGlowMapping() {
+        XCTAssertEqual(AppGlowState.resolve(listening: false, playing: false), .none)
+        XCTAssertEqual(AppGlowState.resolve(listening: true, playing: false), .listening)
+        XCTAssertEqual(AppGlowState.resolve(listening: false, playing: true), .playing)
+        XCTAssertEqual(AppGlowState.resolve(listening: true, playing: true), .listening)
+        XCTAssertNil(AppGlowState.none.style)
+        XCTAssertEqual(AppGlowState.listening.style?.coverage, 0.32)
+        XCTAssertEqual(AppGlowState.playing.style?.coverage, 0.44)
+    }
+}
