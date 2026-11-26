@@ -175,6 +175,11 @@ final class RelayRemoteProtocolTests: XCTestCase {
         XCTAssertEqual(workspace.tickets.map(\.agent), ["puck", nil, "sky"])
         XCTAssertNil(workspace.error)
         XCTAssertNil(Frame.workspaceState(workspace).seq, "workspace_state is not replayed")
+        XCTAssertNil(workspace.truncated)
+        guard case .workspaceState(let truncated) = try frame("workspace_state_truncated", in: extended) else {
+            return XCTFail("expected workspace_state")
+        }
+        XCTAssertEqual(truncated.truncated, true)
 
         guard case .settingsCommand(let set) = try frame("settings_command_set", in: extended) else {
             return XCTFail("expected settings_command")

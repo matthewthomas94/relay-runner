@@ -433,11 +433,16 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
     public var projects: [WorkspaceProject]
     public var tickets: [WorkspaceTicket]
     public var error: String?
+    /// RR-535: true when the Mac held more open tickets than it sends. Absent
+    /// otherwise, so an older Mac's frames decode unchanged.
+    public var truncated: Bool?
 
-    public init(projects: [WorkspaceProject], tickets: [WorkspaceTicket], error: String? = nil) {
+    public init(projects: [WorkspaceProject], tickets: [WorkspaceTicket], error: String? = nil,
+                truncated: Bool? = nil) {
         self.projects = projects
         self.tickets = tickets
         self.error = error
+        self.truncated = truncated
     }
 }
 

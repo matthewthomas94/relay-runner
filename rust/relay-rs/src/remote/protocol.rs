@@ -264,6 +264,8 @@ pub struct WorkspaceState {
     pub projects: Vec<WorkspaceProject>,
     pub tickets: Vec<WorkspaceTicket>,
     pub error: Option<String>,
+    /// RR-535: the Mac held more open tickets than it sent.
+    pub truncated: Option<bool>,
 }
 
 /// RR-532: `get`, or `set` with only the keys to change.
@@ -544,6 +546,7 @@ impl Frame {
                     .collect::<Vec<_>>();
                 out.insert("tickets", tickets);
                 opt(&mut out, "error", &f.error);
+                opt(&mut out, "truncated", &f.truncated);
             }
             Frame::SettingsCommand(f) => {
                 out.insert("client_id", f.client_id.as_str());
@@ -774,6 +777,7 @@ fn fields(type_name: &str) -> Option<&'static [Field]> {
                     req("projects", Objects(&WORKSPACE_PROJECTS)),
                     req("tickets", Objects(&TICKETS)),
                     opt("error", Str),
+                    opt("truncated", Bool),
                 ]
             }
         }
@@ -1185,6 +1189,7 @@ fn build(type_name: &str, object: &Dict) -> Frame {
             })
             .unwrap_or_default(),
             error: os("error"),
+            truncated: ob("truncated"),
         }),
         "settings_command" => Frame::SettingsCommand(SettingsCommand {
             client_id: s("client_id"),
@@ -1622,6 +1627,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             [Some("puck"), None, Some("sky")]
         );
+        assert_eq!(workspace.truncated, None);
+        let Frame::WorkspaceState(truncated) = named("frames_extended", "workspace_state_truncated")
+        else {
+            panic!("expected workspace_state");
+        };
+        assert_eq!(truncated.truncated, Some(true));
         let Frame::SettingsState(unsupported) =
             named("frames_extended", "settings_state_unsupported")
         else {

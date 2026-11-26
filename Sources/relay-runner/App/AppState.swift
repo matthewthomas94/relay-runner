@@ -4821,11 +4821,13 @@ final class AppState {
         // RR-456: the Relay Remote session-control socket, live while the app
         // runs so a paired phone can start a session when none is running.
         // RR-459: the same socket carries Relay App's commands.
-        let control = RelaySessionControl(host: remoteSessionControlHost())
+        let controlHost = remoteSessionControlHost()
+        let control = RelaySessionControl(host: controlHost)
         let commands = MainActor.assumeIsolated {
             RelayAppCommands(host: relayAppCommandHost(), session: control, remote: RelayRemoteController.shared)
         }
-        let sessionControl = RelaySessionControlServer(control: control, commands: commands)
+        let sessionControl = RelaySessionControlServer(
+            control: control, commands: commands, workspace: .live(projects: controlHost.projects))
         do {
             try sessionControl.start()
             sessionControlServer = sessionControl

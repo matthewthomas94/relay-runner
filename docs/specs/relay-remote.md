@@ -112,7 +112,7 @@ Mac -> phone
 {"type":"session_state","app_running":true,"session":"ready","project_id":"...","project_name":"relay-runner","active_agent":"george","running_agents":["puck","george"]}
 {"type":"session_state","app_running":false,"session":"none"}
 {"type":"session_state","app_running":true,"session":"ready","project_id":"...","project_name":"relay-runner","active_agent":"george","running_agents":["puck","george"],"agents":[{"agent":"puck","running":true,"state":"working","working_on":"RR-120 review"},{"agent":"isabella","running":false,"state":"off"},{"agent":"george","running":true,"state":"playing"},{"agent":"sky","running":false,"state":"off"}]}
-{"type":"workspace_state","projects":[{"id":"...","name":"relay-runner"}],"tickets":[{"id":"RR-120","title":"...","status":"in_progress","project_id":"...","agent":"puck"},{"id":"RR-121","title":"...","status":"queued","project_id":"..."}]}
+{"type":"workspace_state","projects":[{"id":"...","name":"relay-runner"}],"tickets":[{"id":"RR-120","title":"...","status":"in_progress","project_id":"...","agent":"puck"},{"id":"RR-121","title":"...","status":"queued","project_id":"..."}],"truncated":true}
 {"type":"settings_state","speech_speed_percent":130,"provider":"claude","model":"opus","effort":"medium","sizing":"orchestrator_decides","model_options":[{"value":"opus","label":"Opus"}],"effort_options":[{"value":"medium","label":"Medium"}],"sizing_options":[{"value":"orchestrator_decides","label":"Orchestrator decides"}]}
 ```
 
@@ -159,11 +159,22 @@ The Mac runs up to four named agents, by slug `puck`, `isabella`, `george` and `
 
 `workspace_command` with `action: "list"` (the only action) asks the Mac for its Workspace and is answered with one `workspace_state`:
 
-- `projects`: every registered project, `id` and `name`.
+- `projects`: every registered project, `id` and `name`, in the order the Mac lists them, general-tasks included when it is registered.
 - `tickets`: the open tickets the phone groups by lane: `id` (for example `RR-120`), `title`, `status` (`in_progress`, `queued` or `backlog`), `project_id` (an `id` from `projects`) and an optional owning `agent` slug.
 - `error`: optional, why the lists are empty when the Mac could not read them.
+- `truncated`: optional, `true` when the Mac held more open tickets than it sent.
 
-Both lists are always present, even when empty. **What ships in RR-532:** `RelayRemoteWorkspaceFeed` answers every command with empty lists and the `error` "The Workspace is not available from the phone on this Mac yet." RR-535 serves the real feed and decides whether the Mac also pushes `workspace_state` when a board changes; the phone already accepts one at any time.
+Both lists are always present, even when empty. The feed is read-only: the phone cannot create, edit or dispatch a ticket.
+
+**Source.** `RelayRemoteWorkspaceFeed` reads the daemon's program dashboard (`GET /v1/program/dashboard`, without its ready sweep), the same source the Mac's Workspace board reads, so the two agree. The lanes map one to one: the board's In progress lane (which includes verification-blocked tickets) is `in_progress`, Queued (ready, waiting on dependencies or a worker slot) is `queued` and Backlog is `backlog`. Done and cancelled tickets are never sent. A ticket is sent only under a registered project, matched by path.
+
+**Owner.** `agent` is the slug of a running agent that wrote or dispatched the ticket, from the daemon's `GET /v1/agent-presence`; when two agents list it, the more recently active one. A ticket nobody is recorded against, one an agent that has since stopped worked on, and any ticket in general-tasks (which presence never records) carry no `agent`. A presence failure sends the list without owners rather than failing it.
+
+**Pushes.** The `list` subscribes that phone's connection. While at least one phone is subscribed the Mac reads the board every 2 seconds and sends a fresh `workspace_state` to each subscriber whose last one differs, so a burst of changes is one push and an unchanged board sends none. The subscription ends when the phone disconnects; a phone that reconnects sends `list` again. The phone already accepts a `workspace_state` at any time.
+
+**Limits.** At most 200 tickets are sent, newest activity first, each title cut to 120 characters, and the frame is kept under 60 KB (the line limit is 64 KB), dropping the oldest tickets first; either cut sets `truncated`. The Mac answers within 8 seconds: a workspace service that is not running, does not answer or fails is an otherwise empty `workspace_state` whose `error` says so ("Relay Runner's workspace service is not running on this Mac.", "The Mac's workspace service did not answer in time." or "The Workspace could not be read on this Mac right now."), with `projects` still listed.
+
+**Privacy boundary.** Only the fields above leave the Mac. A ticket body, a description, a worker branch or activity line, a file path and a repository path are never sent, nor is the daemon's own error text, which can name a path. A Mac built before RR-535 answers every list with the RR-532 "not available" error and never pushes.
 
 ### Settings
 
@@ -289,6 +300,7 @@ No iOS code, SSH prototype or model inference was run while preparing this spec.
 - The coordinator's remote sink records realization from device `ack` frames, keeps the Mac's speaker closed for remote-routed speech while streaming its synthesised audio, and cancels that synthesis on every stop, with the speech event log showing the sink and first-audio latency.
 - A per-user `sshd -D -f <temporary config> -p <high port>` with a temporary host key and `authorized_keys` runs the real helper end to end on a Mac, with no privileged setup.
 - On a physical iPhone: pair by QR, send an utterance, hear the reply in the Mac's voice, lock the phone during a reply, reconnect and receive the replayed frames; repeat over Tailscale from cellular.
+- RR-535: the app tests cover the lane mapping, owners, the 200-ticket cap with `truncated`, the frame budget, the privacy boundary (no body, branch, activity or path in the frame), the error replies for an unreachable and an unanswering daemon, and, through the real session-control socket, a `list` answered and a burst of board changes pushed once. The Swift and Rust codecs share the `truncated` vectors.
 - RR-532: the kit tests cover sending to a named agent, agent-tagged speech, per-agent state updates, a Workspace round trip and settings get and set including a refused set against the scripted Mac; the app tests cover each new command reaching its own handler with a well-formed reply and a start without a project; the helper test covers the new commands reaching the app beside a bridge; the bridge test covers an agent-tagged utterance and control being delivered as before.
 - Session control (RR-456): unit tests cover the app handler, the helper's socket order and the codec vectors, and a kit loopback test runs the real helper against a scripted session-control socket that brings up the real bridge module. On a physical iPhone, with Relay Runner running and no session: the phone lists the Mac's projects, Start shows starting then ready, the phone attaches by itself and a typed or spoken request is answered, Stop ends the session on the Mac, and with Relay Runner quit the phone says it is not running.
 

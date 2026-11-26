@@ -248,24 +248,21 @@ final class RelaySessionControlTests: XCTestCase {
     }
 
     /// RR-532: each new command reaches its own handler and gets one
-    /// well-formed reply; until RR-534 to RR-536 land the replies say the
-    /// feature is not available and change nothing.
+    /// well-formed reply. RR-535: the Workspace is answered by the socket
+    /// server, which needs the daemon, so `handle` validates it and says nothing.
     func testWorkspaceAndSettingsCommandsGetWellFormedReplies() throws {
         let id = UUID().uuidString
-        func reply(_ frame: Frame) throws -> Frame {
+        func reply(_ frame: Frame) throws -> [Frame] {
             let replies = control.handle(line: Data(try FrameCodec.encode(frame).dropLast()))
-            XCTAssertEqual(replies.count, 1)
-            let only = try XCTUnwrap(replies.first)
-            XCTAssertNoThrow(try FrameCodec.encode(only), "the reply is well formed")
-            return only
+            for each in replies { XCTAssertNoThrow(try FrameCodec.encode(each), "the reply is well formed") }
+            return replies
         }
-        XCTAssertEqual(try reply(.workspaceCommand(WorkspaceCommand(clientId: id))),
-                       .workspaceState(WorkspaceState(projects: [], tickets: [], error: RelayRemoteWorkspaceFeed.unsupported)))
+        XCTAssertEqual(try reply(.workspaceCommand(WorkspaceCommand(clientId: id))), [])
         XCTAssertEqual(try reply(.settingsCommand(SettingsCommand(clientId: id, action: .get))),
-                       .settingsState(SettingsState(error: RelayRemoteSettings.unsupported)))
+                       [.settingsState(SettingsState(error: RelayRemoteSettings.unsupported))])
         XCTAssertEqual(try reply(.settingsCommand(SettingsCommand(clientId: UUID().uuidString, action: .set,
                                                                   speechSpeedPercent: 150, model: "sonnet"))),
-                       .settingsState(SettingsState(error: RelayRemoteSettings.unsupported)))
+                       [.settingsState(SettingsState(error: RelayRemoteSettings.unsupported))])
         XCTAssertEqual(fake.started, [])
         XCTAssertEqual(fake.stops, 0)
         // A malformed command is answered with the codec's error, as session_command is.
@@ -344,6 +341,73 @@ final class RelaySessionControlTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(bridge.probes, 1)
     }
 
+    /// RR-535: a `workspace_command` is answered from the feed, then the phone is
+    /// pushed a fresh `workspace_state` when the board changes, once for a burst.
+    func testWorkspaceCommandIsAnsweredThenPushedWhenTheBoardChanges() async throws {
+        let board = WorkspaceBoard(tickets: [("RR-1", "First", "backlog")])
+        let directory = "/tmp/rsw-\(UUID().uuidString.prefix(8))"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let feed = RelayRemoteWorkspaceFeed(
+            projects: { self.fake.projects }, fetchDashboard: { _ in board.snapshot }, fetchOwners: { [:] })
+        let server = RelaySessionControlServer(
+            control: control, workspace: feed, path: directory + "/c.sock", bridgePath: directory + "/b.sock",
+            tickInterval: 0.05, workspaceInterval: 0.3)
+        try server.start()
+        defer { server.stop() }
+
+        let client = try SocketClient(path: directory + "/c.sock")
+        client.send(#"{"device_id":"phone-1","type":"identify"}"#)
+        client.send(String(decoding: Data(try FrameCodec.encode(.workspaceCommand(WorkspaceCommand(clientId: UUID().uuidString))).dropLast()),
+                           as: UTF8.self))
+        let first = try await client.workspaceState()
+        XCTAssertEqual(first.tickets.map(\.id), ["RR-1"])
+        XCTAssertEqual(first.projects.map(\.id), ["p-relay", "p-notes", "p-gone"])
+        XCTAssertNil(first.error)
+
+        // Nothing changed: nothing is pushed.
+        try await Task.sleep(nanoseconds: 900_000_000)
+        XCTAssertEqual(try client.pendingWorkspaceStates(), 0)
+
+        // A burst of changes inside one interval is one push.
+        board.tickets = [("RR-1", "First", "in_progress")]
+        board.tickets.append(("RR-2", "Second", "ready"))
+        board.tickets.append(("RR-3", "Third", "backlog"))
+        let pushed = try await client.workspaceState()
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: pushed.tickets.map { ($0.id, $0.status) }),
+                       ["RR-1": .inProgress, "RR-2": .queued, "RR-3": .backlog])
+        try await Task.sleep(nanoseconds: 900_000_000)
+        XCTAssertEqual(try client.pendingWorkspaceStates(), 0)
+    }
+
+    /// RR-535: with the daemon unreachable the reply is a well-formed error, and quickly.
+    func testWorkspaceCommandWithTheDaemonDownAnswersWithAnError() async throws {
+        let directory = "/tmp/rsx-\(UUID().uuidString.prefix(8))"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        var feed = RelayRemoteWorkspaceFeed(
+            projects: { self.fake.projects },
+            fetchDashboard: { _ in
+                try await Task.sleep(nanoseconds: 60_000_000_000)
+                throw URLError(.cannotConnectToHost)
+            },
+            fetchOwners: { [:] })
+        feed.timeout = 0.3
+        let server = RelaySessionControlServer(
+            control: control, workspace: feed, path: directory + "/c.sock", bridgePath: directory + "/b.sock",
+            tickInterval: 0.05)
+        try server.start()
+        defer { server.stop() }
+        let client = try SocketClient(path: directory + "/c.sock")
+        client.send(#"{"device_id":"phone-1","type":"identify"}"#)
+        client.send(String(decoding: Data(try FrameCodec.encode(.workspaceCommand(WorkspaceCommand(clientId: UUID().uuidString))).dropLast()),
+                           as: UTF8.self))
+        let state = try await client.workspaceState()
+        XCTAssertEqual(state.error, RelayRemoteWorkspaceFeed.timedOut)
+        XCTAssertEqual(state.tickets, [])
+        XCTAssertEqual(state.projects.count, 3, "the project list still shows")
+    }
+
     func testBridgeProbeNeedsARunningBridge() throws {
         let directory = "/tmp/rsb-\(UUID().uuidString.prefix(8))"
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
@@ -383,6 +447,29 @@ private final class SocketClient {
     func send(_ line: String) {
         let data = Data((line + "\n").utf8)
         _ = data.withUnsafeBytes { write(fd, $0.baseAddress, data.count) }
+    }
+
+    /// The next `workspace_state`, skipping the session_state pushes around it.
+    @MainActor
+    func workspaceState() async throws -> WorkspaceState {
+        while true {
+            if case .workspaceState(let state) = try await frame() { return state }
+        }
+    }
+
+    /// `workspace_state` frames already waiting on the socket.
+    @MainActor
+    func pendingWorkspaceStates() throws -> Int {
+        var count = 0
+        var chunk = [UInt8](repeating: 0, count: 65536)
+        let n = read(fd, &chunk, chunk.count)
+        if n > 0 { buffer.append(contentsOf: chunk[0..<n]) }
+        while let newline = buffer.firstIndex(of: 0x0A) {
+            let line = Data(buffer[buffer.startIndex..<newline])
+            buffer = Data(buffer[buffer.index(after: newline)...])
+            if case .workspaceState = try FrameCodec.decode(line) { count += 1 }
+        }
+        return count
     }
 
     @MainActor

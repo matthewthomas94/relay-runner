@@ -235,6 +235,11 @@
   "error": "missing_field"
  },
  {
+  "name": "workspace_state_truncated_not_bool",
+  "line": "{\"type\":\"workspace_state\",\"projects\":[],\"tickets\":[],\"truncated\":\"yes\"}",
+  "error": "invalid_field"
+ },
+ {
   "name": "workspace_state_project_not_object",
   "line": "{\"type\":\"workspace_state\",\"projects\":[\"relay-runner\"],\"tickets\":[]}",
   "error": "invalid_field"
