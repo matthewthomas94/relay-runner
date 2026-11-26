@@ -202,22 +202,34 @@ struct WorkspaceMenuBarStrip: View {
                 }
             }
             .padding(WorkspaceNavigationStyle.listPadding)
-            if let updater = workspace.updater, let version = updater.availableVersion {
+        }
+        .frame(height: BoardSurfaceLayout.navigationHeight)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: workspace.availableTabs)
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: workspace.selectedTab)
+        .onTapGesture { }
+    }
+}
+
+/// "Update available" sits just before the clock at the strip's far end,
+/// once Sparkle finds a newer release.
+struct WorkspaceMenuBarUpdateButton: View {
+    let updater: RelayUpdaterController?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack {
+            if let updater, let version = updater.availableVersion {
                 WorkspaceNavigationButton(
                     title: "Update available",
                     icon: .arrowDownToLine,
-                    accessibilityLabel: "Update available tab, version \(version)",
+                    accessibilityLabel: "Update available, version \(version)",
                     help: "Download update",
                     action: { updater.checkForUpdates() }
                 )
                 .transition(.relayElement)
             }
         }
-        .frame(height: BoardSurfaceLayout.navigationHeight)
-        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: workspace.availableTabs)
-        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: workspace.selectedTab)
-        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: workspace.updater?.availableVersion)
-        .onTapGesture { }
+        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: updater?.availableVersion)
     }
 }
 
