@@ -22,6 +22,8 @@ final class AppModel {
     private(set) var paired: PairedMac?
     private(set) var session: RemoteSession?
     private(set) var voice: VoiceController?
+    /// The Agents tab's chats, selection and per-agent state (RR-540).
+    let agents: AgentsModel
     private(set) var pairingState = PairingState.idle
     private(set) var startupError: String?
     /// The Workspace tab's selected project tab (RR-543); nil is All. Lives
@@ -57,9 +59,11 @@ final class AppModel {
     @ObservationIgnored private let playbackModePreference: PlaybackModePreference
 
     init(remoteModePreference: RemoteModePreference = RemoteModePreference(),
-         playbackModePreference: PlaybackModePreference = PlaybackModePreference()) {
+         playbackModePreference: PlaybackModePreference = PlaybackModePreference(),
+         agents: AgentsModel? = nil) {
         self.remoteModePreference = remoteModePreference
         self.playbackModePreference = playbackModePreference
+        self.agents = agents ?? AgentsModel()
         remoteMode = remoteModePreference.isOn
         playbackMode = playbackModePreference.mode
     }
@@ -108,6 +112,7 @@ final class AppModel {
         voice = nil
         session?.stop()
         session = nil
+        agents.session = nil
         if let mac = paired { UserDefaults.standard.removeObject(forKey: Self.resumeKey(mac)) }
         paired = nil
         try? pairingStore.clear()
@@ -125,7 +130,7 @@ final class AppModel {
         case .background:
             isForeground = false
             saveResumePoint()
-            // A reply still playing, or hands-free still listening, keeps the
+            // A reply still playing, or an utterance still recording, keeps the
             // channel open; `audioBecameIdle` closes it afterwards.
             if voice?.isAudioActive != true { session?.stop() }
         default:
@@ -153,6 +158,14 @@ final class AppModel {
         voice.playbackMode = playbackMode
         voice.onAudioIdle = { [weak self] in self?.audioBecameIdle() }
         self.voice = voice
+        // Each reply is filed under its agent's chat before it plays, and a
+        // spoken request goes to the selected agent like a typed one.
+        agents.session = session
+        session.onInbound = { [weak self] frame in
+            self?.agents.receive(frame)
+            self?.voice?.receive(frame)
+        }
+        voice.onSpokenRequest = { [weak self] text in self?.agents.send(text) }
         if isForeground { session.start() }
     }
 

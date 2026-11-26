@@ -107,6 +107,14 @@ public final class SpeechPlaybackQueue {
         return entries.last(where: { $0.state == .waiting && !$0.released })?.text
     }
 
+    /// RR-540: the seqs of every reply waiting for Play in `.onDemand` mode,
+    /// oldest first. The app files each seq under its agent, so a reply can be
+    /// played from that agent's chat with `play(seq:skipping:)`.
+    public var waitingSeqs: [Int] {
+        guard mode == .onDemand else { return [] }
+        return entries.filter { $0.state == .waiting && !$0.released && $0.text != nil }.map(\.seq)
+    }
+
     /// The highest seq a reconnect may resume after without losing audio: one
     /// below the first reply whose stream is still incomplete, so the Mac
     /// replays that frame with its parts. `nil` when nothing is missing.
@@ -273,6 +281,20 @@ public final class SpeechPlaybackQueue {
             entries[index].state = .resolved(played: false)
         }
         entries[latest].released = true
+        log("speech play requested")
+        pump()
+    }
+
+    /// RR-540: the Play control of one agent's chat in `.onDemand` mode: play
+    /// the waiting reply `seq`. The waiting replies in `skipping` (that agent's
+    /// older ones) are acknowledged unplayed; other agents' replies keep waiting.
+    public func play(seq: Int, skipping: Set<Int> = []) {
+        guard mode == .onDemand, let index = index(of: seq), entries[index].state == .waiting else { return }
+        for other in entries.indices where skipping.contains(entries[other].seq) && entries[other].seq != seq
+            && entries[other].state == .waiting {
+            entries[other].state = .resolved(played: false)
+        }
+        entries[index].released = true
         log("speech play requested")
         pump()
     }

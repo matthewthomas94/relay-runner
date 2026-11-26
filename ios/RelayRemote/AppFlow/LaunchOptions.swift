@@ -9,6 +9,8 @@ import Foundation
 /// - `--tab=<agents|workspace|settings>` opens the app on a tab,
 /// - `--workspace-sample=<list|empty|error|unreachable|truncated>` fills the Workspace tab
 ///   with sample data instead of the Mac's,
+/// - `--agents-sample=<ready|holding|playing|not-running|unreachable|long-draft>`
+///   shows the Agents tab with sample data in one of its states (RR-540),
 /// - `--reset-onboarding` forgets that onboarding finished, as a fresh install.
 /// Release builds ignore them.
 struct LaunchOptions: Equatable {
@@ -18,6 +20,7 @@ struct LaunchOptions: Equatable {
     var tab: MainTab?
     var pairingStep: String?
     var workspaceSample: String?
+    var agentsSample: String?
     var resetsOnboarding = false
 
     init(arguments: [String]) {
@@ -32,6 +35,7 @@ struct LaunchOptions: Equatable {
             if let value = Self.value(of: "--pairing-step", in: argument) { pairingStep = value }
             if let value = Self.value(of: "--workspace-sample", in: argument) { workspaceSample = value }
             if let value = Self.value(of: "--tab", in: argument) { tab = MainTab(rawValue: value) }
+            if let value = Self.value(of: "--agents-sample", in: argument) { agentsSample = value }
         }
     }
 

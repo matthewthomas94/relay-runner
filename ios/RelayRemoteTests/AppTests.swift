@@ -100,10 +100,7 @@ final class AppTests: XCTestCase {
                                     endpoints: MacEndpointResolver(mac: mac))
         let voice = VoiceController(session: session)
         voice.remoteMode = false
-        voice.pressToTalkBegan()
-        XCTAssertFalse(voice.isListening)
-        voice.mode = .handsFree
-        voice.startListening()
+        voice.pressToTalkBegan(agent: "george")
         XCTAssertFalse(voice.isListening)
         XCTAssertFalse(voice.isAudioActive)
     }
