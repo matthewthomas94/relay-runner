@@ -153,4 +153,29 @@ final class WorkspaceHistoryTests: XCTestCase {
         XCTAssertTrue(tab.contains("model.historyProjects"))
     }
 
+    func testClosingTheOpenTicketClearsItAndItsError() {
+        let model = WorkspaceHistoryViewModel(repoPath: "/tmp/repo", projectName: "repo", projectScopeToken: nil)
+        model.selectedCard = ArtifactHistoryCard(
+            artifactID: "ticket-a", ticketID: "RR-1", title: "A", status: "done",
+            activityAt: "2026-11-26T00:00:00Z", state: "archived", attachmentCount: 0, attachmentBytes: 0
+        )
+        model.detailErrorMessage = "Could not open"
+        model.errorMessage = "List error"
+        model.close()
+        XCTAssertNil(model.selectedCard)
+        XCTAssertNil(model.detail)
+        XCTAssertNil(model.dependencies)
+        XCTAssertNil(model.detailErrorMessage)
+        XCTAssertEqual(model.errorMessage, "List error", "Closing a ticket leaves the list's error alone")
+    }
+
+    func testHistoryDetailUsesTheNotesDetailControls() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/relay-runner/Board")
+        let view = try String(contentsOf: root.appendingPathComponent("WorkspaceHistoryView.swift"), encoding: .utf8)
+        XCTAssertTrue(view.contains("ProgramIconButton(icon: .x, help: \"Close ticket\")"))
+        XCTAssertTrue(view.contains("ProgramDetailActionButton("))
+        XCTAssertFalse(view.contains(".disabled(model.detail?.availability"), "Buttons carry their own disabled style")
+    }
 }
