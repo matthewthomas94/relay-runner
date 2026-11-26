@@ -367,7 +367,7 @@ enum SharedActionButtonProminence {
     case primary
     case secondary
     case icon
-    /// The danger button: a dark red tint with a red label.
+    /// The danger button: the secondary glass surface with a red label.
     case danger
 }
 
@@ -392,11 +392,11 @@ extension SharedActionButtonPalette {
         stroke: SettingsSurfaceColor.focusRing
     )
 
-    /// Danger button: a dark red tint with a red label and icon.
+    /// Danger button: the secondary glass surface with a red label and icon.
     static let settingsDanger = SharedActionButtonPalette(
-        foreground: GraphicalTheme.dangerForeground,
-        fill: GraphicalTheme.dangerFill,
-        stroke: SettingsSurfaceColor.focusRing
+        foreground: GraphicalTheme.error,
+        fill: settingsSecondary.fill,
+        stroke: settingsSecondary.stroke
     )
 
     /// Primary button: white glass at 85%, black label, no border.
@@ -419,20 +419,17 @@ struct SharedActionButtonSurface: View {
         )
 
         // Glass action fills; a disabled button drops to the resting action
-        // fill. Hover lightens: neutral-4 over a dark fill, white over the
-        // primary, a warmer tint over danger. Focus draws the accent ring.
+        // fill. Hover lightens: neutral-4 over a dark fill (danger included),
+        // white over the primary. Focus draws the accent ring.
         shape
             .fill(presentation.isEnabled ? palette.fill : BoardDarkSurfaceStyle.cardFill)
-            // Kit primary and danger buttons lift with the small shadow on hover.
-            .graphicalShadow(.s, isVisible: presentation.isHovered && (prominence == .primary || prominence == .danger))
+                // Kit primary buttons lift with the small shadow on hover.
+            .graphicalShadow(.s, isVisible: presentation.isHovered && prominence == .primary)
             .overlay(shape.fill(GraphicalTheme.neutral4.opacity(presentation.sharedFillOpacity(for: prominence))))
             .overlay(shape.fill(GraphicalTheme.neutral10.opacity(
                 prominence == .primary && presentation.isEnabled && presentation.isHovered ? 0.6 : 0
             )))
             .overlay(shape.strokeBorder(BoardDarkSurfaceStyle.glassRim, lineWidth: prominence == .primary ? 0 : 1))
-            .overlay(shape.fill(GraphicalTheme.dangerForeground.opacity(
-                prominence == .danger && presentation.isEnabled && presentation.isHovered ? 0.12 : 0
-            )))
             .overlay(
                 shape.stroke(
                     palette.stroke.opacity(presentation.sharedStrokeOpacity(for: prominence)),
@@ -550,7 +547,7 @@ struct SettingsActionButton: View {
                 if prominence != .icon {
                     RelaySwap(title, style: .text, alignment: .leading) { title in
                         Text(title)
-                            .font(AppTypography.font(prominence == .secondary ? .button : .primaryButton))
+                            .font(AppTypography.font(prominence == .primary ? .primaryButton : .button))
                     }
                 }
             }
@@ -698,18 +695,18 @@ struct SettingsActionPresentation: Equatable {
 extension SettingsActionPresentation {
     func sharedFillOpacity(for prominence: SharedActionButtonProminence) -> Double {
         switch prominence {
-        case .primary, .danger:
+        case .primary:
             return fillOpacity
-        case .secondary, .icon:
+        case .secondary, .icon, .danger:
             return neutralFillOpacity
         }
     }
 
     func sharedStrokeOpacity(for prominence: SharedActionButtonProminence) -> Double {
         switch prominence {
-        case .primary, .danger:
+        case .primary:
             return strokeOpacity
-        case .secondary, .icon:
+        case .secondary, .icon, .danger:
             return neutralStrokeOpacity
         }
     }
