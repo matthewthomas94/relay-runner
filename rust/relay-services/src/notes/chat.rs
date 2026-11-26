@@ -234,7 +234,7 @@ const STOP_WORDS: [&str; 40] = [
 ];
 
 /// Lower-case words of at least three characters, without common words.
-fn words(text: &str) -> BTreeSet<String> {
+pub(crate) fn words(text: &str) -> BTreeSet<String> {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|word| word.chars().count() >= 3)
         .map(str::to_lowercase)
@@ -450,7 +450,7 @@ pub fn provider_failure(error: &Error) -> Option<(u16, Dict)> {
     let (status, message, retryable) = match code {
         "timeout" => (
             504,
-            "The notes chat took longer than two minutes and was stopped. Try again.",
+            "The chat took longer than two minutes and was stopped. Try again.",
             true,
         ),
         "subscription_unverified" => (
@@ -516,17 +516,24 @@ pub fn parse_reply(provider: &str, raw: &[u8]) -> Result<String> {
 }
 
 /// The production chat provider: the `[general]` provider and model behind
-/// the note metadata worker's gates.
+/// the note metadata worker's gates. The ticket history chat (RR-550) is the
+/// same provider with its own system prompt.
 pub struct NoteChatProvider {
     pub gates: NoteMetadataGenerator,
     pub timeout: Duration,
+    pub system_prompt: &'static str,
 }
 
 impl NoteChatProvider {
     pub fn new(gates: NoteMetadataGenerator) -> Self {
+        Self::with_system_prompt(gates, SYSTEM_PROMPT)
+    }
+
+    pub fn with_system_prompt(gates: NoteMetadataGenerator, system_prompt: &'static str) -> Self {
         Self {
             gates,
             timeout: PROCESS_TIMEOUT,
+            system_prompt,
         }
     }
 }
@@ -541,9 +548,16 @@ impl Chat for NoteChatProvider {
         // The only files: Codex's instructions and answer, in a private
         // directory removed when the call ends.
         let directory = TemporaryDirectory::new("note-chat")?;
-        fs::write(directory.0.join("instructions.txt"), SYSTEM_PROMPT)?;
+        fs::write(directory.0.join("instructions.txt"), self.system_prompt)?;
         let mut raw = run_process(
-            &command(&provider, &binary, &model, &directory.0),
+            &one_shot_command(
+                &provider,
+                &binary,
+                &model,
+                &directory.0,
+                self.system_prompt,
+                None,
+            ),
             prompt.as_bytes(),
             &directory.0,
             cancel,

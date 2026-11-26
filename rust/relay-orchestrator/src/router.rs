@@ -178,6 +178,9 @@ fn dispatch(daemon: &Daemon, request: &Request) -> Outcome<Reply> {
     if post && is(&["v1", "artifacts", "retention", "retry"]) {
         return daemon.artifact_retention_retry(request);
     }
+    if post && is(&["v1", "artifacts", "history", "chat"]) {
+        return daemon.artifact_history_chat(request);
+    }
     if post
         && n == 5
         && prefix(&["v1", "artifacts", "history"])

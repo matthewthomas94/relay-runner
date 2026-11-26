@@ -2,6 +2,8 @@ import SwiftUI
 
 struct WorkspaceHistoryView: View {
     @Bindable var model: WorkspaceHistoryViewModel
+    /// RR-550: the History chat, kept per repository and per ticket.
+    let chat: WorkspaceHistoryChatModel
     let onClose: () -> Void
     var onWorkspaceChanged: () -> Void = {}
     /// Shown as a Workspace tab: it fills the page as two panels, and
@@ -194,17 +196,16 @@ struct WorkspaceHistoryView: View {
                     .id(card.id)
                     .transition(.relayReplacing(.surface))
             } else {
-                VStack(spacing: 10) {
-                    LucideImage(.rotateCcwClock, size: 32)
-                        .foregroundStyle(ProgramBoardStyle.mutedText)
-                    Text("Select a historical ticket")
-                        .foregroundStyle(ProgramBoardStyle.secondaryText)
-                    Text("Search completed work without restoring ticket files.")
-                        .font(AppTypography.font(.supporting))
-                        .foregroundStyle(ProgramBoardStyle.mutedText)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 390)
-                }
+                // RR-550: with no ticket open the panel chats with the
+                // repository's history, as Notes chats with the library.
+                NoteChatPanel(
+                    chat: chat,
+                    scope: model.chatScope,
+                    placeholder: "Ask about this project's history",
+                    hintTitle: "Ask about this project's history",
+                    hintDetail: "Select a ticket to ask about just that ticket."
+                )
+                .padding(20)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .transition(.relayReplacing(.surface))
             }
@@ -358,8 +359,20 @@ struct WorkspaceHistoryView: View {
                     attachmentSummary
                 }
             }
+            // RR-550: the ticket stays above the chat, as a note's summary
+            // does; a long one scrolls on its own.
+            .frame(minHeight: 120, maxHeight: 280, alignment: .top)
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.detail)
             .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.dependencies)
+
+            NoteChatPanel(
+                chat: chat,
+                scope: model.chatScope,
+                placeholder: "Ask about this ticket",
+                hintTitle: "Ask about this ticket",
+                hintDetail: "Answers draw on the ticket text available on this Mac."
+            )
+            .frame(maxHeight: .infinity)
         }
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: model.detailErrorMessage)
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: detail?.availability)

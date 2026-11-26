@@ -153,6 +153,16 @@ struct WorkspaceHistoryBadge: Equatable {
     }
 }
 
+/// RR-550: what a Workspace History chat asks about — one repository's
+/// whole history (`artifactID` nil), or one of its historical tickets.
+struct WorkspaceHistoryChatScope: Hashable {
+    let repoPath: String
+    let artifactID: String?
+}
+
+/// One in-memory conversation per repository and per historical ticket.
+typealias WorkspaceHistoryChatModel = ChatThreadModel<WorkspaceHistoryChatScope>
+
 @Observable
 final class WorkspaceHistoryViewModel {
     let repoPath: String
@@ -178,6 +188,12 @@ final class WorkspaceHistoryViewModel {
         self.repoPath = repoPath
         self.projectName = projectName
         self.projectScopeToken = projectScopeToken
+    }
+
+    /// RR-550: the conversation History shows — the open ticket's, or this
+    /// repository's when no ticket is open.
+    var chatScope: WorkspaceHistoryChatScope {
+        WorkspaceHistoryChatScope(repoPath: repoPath, artifactID: selectedCard?.artifactID)
     }
 
     func refresh() async {

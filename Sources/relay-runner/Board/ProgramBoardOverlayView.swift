@@ -296,6 +296,7 @@ struct ProgramBoardOverlayView: View {
             if let history = model.history {
                 WorkspaceHistoryView(
                     model: history,
+                    chat: model.historyChat,
                     onClose: onHistoryClose,
                     onWorkspaceChanged: onHistoryChanged,
                     isEmbedded: true,
@@ -3697,16 +3698,17 @@ private struct NoteChatPinnedSummary: View {
 }
 
 /// RR-549: one scope's chat thread with its composer pinned at the bottom.
-private struct NoteChatPanel: View {
-    let chat: NoteChatModel
-    let scope: NoteChatScope
+/// RR-550's Workspace History chat shows the same panel.
+struct NoteChatPanel<Scope: Hashable>: View {
+    let chat: ChatThreadModel<Scope>
+    let scope: Scope
     let placeholder: String
     let hintTitle: String
     let hintDetail: String
     @FocusState private var composerFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private static let bottomID = "note-chat-bottom"
+    private static var bottomID: String { "note-chat-bottom" }
 
     private var conversation: NoteChatConversation { chat.conversation(for: scope) }
 
