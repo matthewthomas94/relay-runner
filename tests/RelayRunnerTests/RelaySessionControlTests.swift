@@ -477,6 +477,50 @@ final class RelaySessionControlTests: XCTestCase {
         XCTAssertEqual(try client.pendingWorkspaceStates(), 0)
     }
 
+    /// RR-551: `get` is answered with that one ticket and does not subscribe the
+    /// phone to board pushes; one with no ids is a well-formed error.
+    func testGetIsAnsweredWithTheTicketAndSubscribesToNothing() async throws {
+        let board = WorkspaceBoard(tickets: [("RR-1", "First", "backlog")])
+        let directory = "/tmp/rsg-\(UUID().uuidString.prefix(8))"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let feed = RelayRemoteWorkspaceFeed(
+            projects: { self.fake.projects }, fetchDashboard: { _ in board.snapshot }, fetchOwners: { [:] },
+            loadTicket: { item in
+                let ticket = Ticket(id: "RR-1", title: "First", status: .backlog, priority: .medium, dependsOn: [],
+                                    runId: nil, canceled: false, order: 1, description: nil, body: "\nThe body.\n")
+                return ProgramTicketDetail(item: item, identity: nil, ticket: ticket, ticketPath: nil, description: nil,
+                                           acceptanceCriteria: nil, imageAttachments: [], unavailableMessage: nil)
+            })
+        let server = RelaySessionControlServer(
+            control: control, workspace: feed, path: directory + "/c.sock", bridgePath: directory + "/b.sock",
+            tickInterval: 0.05, workspaceInterval: 0.1)
+        try server.start()
+        defer { server.stop() }
+        let client = try SocketClient(path: directory + "/c.sock")
+        client.send(#"{"device_id":"phone-1","type":"identify"}"#)
+        func line(_ command: WorkspaceCommand) throws -> String {
+            String(decoding: Data(try FrameCodec.encode(.workspaceCommand(command)).dropLast()), as: UTF8.self)
+        }
+        client.send(try line(WorkspaceCommand(clientId: UUID().uuidString, action: .get, projectId: "p-relay",
+                                              ticketId: "RR-1")))
+        let reply = try await client.workspaceTicket()
+        XCTAssertEqual(reply.ticketId, "RR-1")
+        XCTAssertEqual(reply.title, "First")
+        XCTAssertEqual(reply.status, .backlog)
+        XCTAssertEqual(reply.markdown, "\nThe body.\n")
+        XCTAssertNil(reply.error)
+        // A body is never pushed: no board change reaches a phone that only asked for a ticket.
+        board.tickets = [("RR-1", "First", "in_progress")]
+        try await Task.sleep(nanoseconds: 600_000_000)
+        XCTAssertEqual(try client.pendingWorkspaceStates(), 0)
+
+        client.send(try line(WorkspaceCommand(clientId: UUID().uuidString, action: .get)))
+        let bad = try await client.workspaceTicket()
+        XCTAssertEqual(bad.error, RelayRemoteWorkspaceFeed.unidentifiedTicket)
+        XCTAssertNil(bad.markdown)
+    }
+
     /// RR-535: with the daemon unreachable the reply is a well-formed error, and quickly.
     func testWorkspaceCommandWithTheDaemonDownAnswersWithAnError() async throws {
         let directory = "/tmp/rsx-\(UUID().uuidString.prefix(8))"
@@ -551,6 +595,14 @@ private final class SocketClient {
     func workspaceState() async throws -> WorkspaceState {
         while true {
             if case .workspaceState(let state) = try await frame() { return state }
+        }
+    }
+
+    /// The next `workspace_ticket`, skipping the session_state pushes around it.
+    @MainActor
+    func workspaceTicket() async throws -> WorkspaceTicketDetail {
+        while true {
+            if case .workspaceTicket(let ticket) = try await frame() { return ticket }
         }
     }
 

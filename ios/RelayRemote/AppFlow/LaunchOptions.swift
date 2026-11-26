@@ -9,6 +9,8 @@ import Foundation
 /// - `--tab=<agents|workspace|settings>` opens the app on a tab,
 /// - `--workspace-sample=<list|empty|error|unreachable|truncated>` fills the Workspace tab
 ///   with sample data instead of the Mac's,
+/// - `--ticket-sample=<short|long|loading|error|truncated|unsupported|done>` opens the Workspace
+///   tab's ticket modal on sample data (add `--workspace-sample=unreachable` for the banner),
 /// - `--sample-settings` fills the Settings tab with sample data, unpaired,
 /// - `--scroll-bottom` opens scrolling screens at their end,
 /// - `--reset-onboarding` forgets that onboarding finished, as a fresh install.
@@ -20,6 +22,7 @@ struct LaunchOptions: Equatable {
     var tab: MainTab?
     var pairingStep: String?
     var workspaceSample: String?
+    var ticketSample: String?
     var resetsOnboarding = false
     var sampleSettings = false
     var scrollsToBottom = false
@@ -37,6 +40,7 @@ struct LaunchOptions: Equatable {
             if let value = Self.value(of: "--stage", in: argument) { stage = AppStage(rawValue: value) }
             if let value = Self.value(of: "--pairing-step", in: argument) { pairingStep = value }
             if let value = Self.value(of: "--workspace-sample", in: argument) { workspaceSample = value }
+            if let value = Self.value(of: "--ticket-sample", in: argument) { ticketSample = value }
             if let value = Self.value(of: "--tab", in: argument) { tab = MainTab(rawValue: value) }
         }
     }

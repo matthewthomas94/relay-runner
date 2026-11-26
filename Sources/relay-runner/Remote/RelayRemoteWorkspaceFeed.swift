@@ -8,8 +8,11 @@ import RelayRemoteProtocol
 /// fresh one while the board changes (docs/specs/relay-remote.md, "Workspace
 /// feed"). The feed reads the same source as the desktop Workspace board, the
 /// daemon's program dashboard, so the phone and the Mac agree. It is
-/// read-only and sends only the fields `WorkspaceState` carries: never a
-/// ticket body, a file path or a repository path.
+/// read-only. The list sends only the fields `WorkspaceState` carries: never a
+/// ticket body, a file path or a repository path. RR-551: a ticket's body is
+/// sent only in answer to a `get` for that one ticket (`ticket(projectID:ticketID:)`),
+/// read the way the desktop Workspace reads an open ticket, without its
+/// frontmatter and without any path.
 struct RelayRemoteWorkspaceFeed {
     typealias Project = RelaySessionControlHost.Project
 
@@ -19,6 +22,10 @@ struct RelayRemoteWorkspaceFeed {
     static let daemonDown = "Relay Runner's workspace service is not running on this Mac."
     static let timedOut = "The Mac's workspace service did not answer in time."
     static let unreadable = "The Workspace could not be read on this Mac right now."
+    static let unknownProject = "That project is not available on this Mac."
+    static let unknownTicket = "That ticket no longer exists."
+    static let unreadableTicket = "That ticket could not be read on this Mac right now."
+    static let unidentifiedTicket = "That ticket could not be identified."
 
     /// Open tickets sent at most, newest activity first.
     static let ticketLimit = 200
@@ -26,6 +33,8 @@ struct RelayRemoteWorkspaceFeed {
     static let titleLimit = 120
     /// A frame stays well inside `RelayRemoteProtocol.maxLineBytes`.
     static let frameBudget = 60 * 1024
+    /// RR-551: a `get` reply's title is cut to this many characters.
+    static let ticketTitleLimit = 300
 
     /// Registered projects in display order. Called on the main actor.
     var projects: () -> [Project]
@@ -33,6 +42,8 @@ struct RelayRemoteWorkspaceFeed {
     var fetchDashboard: ([String]) async throws -> ProgramDashboardSnapshot
     /// Ticket owners, keyed by `ownerKey`, or empty when the daemon cannot say.
     var fetchOwners: () async -> [String: String]
+    /// RR-551: reads one ticket the way the desktop Workspace shows it.
+    var loadTicket: (ProgramStatusItem) -> ProgramTicketDetail = { ProgramTicketDetail.load(item: $0) }
     var timeout: TimeInterval = 8
 
     /// The live feed: the daemon's dashboard without its ready sweep, and its
@@ -71,6 +82,98 @@ struct RelayRemoteWorkspaceFeed {
             return WorkspaceState(projects: summaries, tickets: [], error: Self.message(for: error))
         }
     }
+
+    // MARK: One ticket (RR-551)
+
+    /// The text of one ticket, for the phone's `get`. Never throws and never
+    /// waits longer than `timeout`: every failure is a `workspace_ticket` whose
+    /// `error` the phone can show. Only a ticket in a registered, available
+    /// project that `load()` would list is served, or one that has since become
+    /// done; its frontmatter and its paths never leave the Mac.
+    func ticket(projectID: String, ticketID: String) async -> WorkspaceTicketDetail {
+        func failure(_ message: String) -> WorkspaceTicketDetail {
+            WorkspaceTicketDetail(projectId: projectID, ticketId: ticketID, error: message)
+        }
+        let registered = await MainActor.run { projects() }
+        guard let project = registered.first(where: { $0.id == projectID && $0.availability == "available" }) else {
+            return failure(Self.unknownProject)
+        }
+        do {
+            let fetchDashboard = fetchDashboard
+            let fetchOwners = fetchOwners
+            let (snapshot, owners) = try await Self.withTimeout(timeout) {
+                async let owners = fetchOwners()
+                return (try await fetchDashboard([project.path]), await owners)
+            }
+            let normalized = ProgramBoardProjectPath.normalized(project.path)
+            let lanes: [(ProgramStatusResponse, TicketDetailStatus)] = [
+                (snapshot.inProgressWork, .inProgress), (snapshot.readyWork, .queued),
+                (snapshot.backlogWork, .backlog), (snapshot.doneWork, .done),
+            ]
+            for (lane, status) in lanes {
+                guard let item = lane.items.first(where: { candidate in
+                    guard candidate.ticketID == ticketID, let path = candidate.project?.path,
+                          ProgramBoardProjectPath.normalized(path) == normalized else { return false }
+                    if status == .done { return Self.isDone(candidate.status) || Self.isDone(candidate.ticketState) }
+                    return !Self.isClosed(candidate.status) && !Self.isClosed(candidate.ticketState)
+                }) else { continue }
+                return Self.detail(of: loadTicket(item), item: item, projectID: projectID, ticketID: ticketID,
+                                   status: status, agent: owners[Self.ownerKey(path: normalized, ticketID: ticketID)])
+            }
+            return failure(Self.unknownTicket)
+        } catch {
+            return failure(Self.message(for: error))
+        }
+    }
+
+    /// The reply for a ticket that was found on the board.
+    static func detail(of loaded: ProgramTicketDetail, item: ProgramStatusItem, projectID: String, ticketID: String,
+                       status: TicketDetailStatus, agent: String?) -> WorkspaceTicketDetail {
+        guard let ticket = loaded.ticket else {
+            let onDisk = loaded.ticketPath.map { FileManager.default.fileExists(atPath: $0) } ?? false
+            return WorkspaceTicketDetail(projectId: projectID, ticketId: ticketID,
+                                         error: onDisk ? unreadableTicket : unknownTicket)
+        }
+        var reply = WorkspaceTicketDetail(projectId: projectID, ticketId: ticketID,
+                                          title: String(ticket.title.prefix(ticketTitleLimit)), status: status,
+                                          agent: agent)
+        // The body is cut to its cap, then further while JSON escaping would
+        // push the frame past one protocol line.
+        var limit = WorkspaceTicketDetail.maxMarkdownBytes
+        while true {
+            let (markdown, cut) = cap(ticket.body, bytes: limit)
+            reply.markdown = markdown
+            reply.truncated = cut ? true : nil
+            do {
+                _ = try FrameCodec.encode(.workspaceTicket(reply))
+                return reply
+            } catch FrameError.lineTooLong(let size) where limit > 0 {
+                limit = max(0, limit - max(256, size - RelayRemoteProtocol.maxLineBytes))
+            } catch {
+                reply.markdown = nil
+                reply.truncated = nil
+                reply.error = unreadableTicket
+                return reply
+            }
+        }
+    }
+
+    /// `text` cut to at most `bytes` of UTF-8 on a character boundary, and
+    /// whether it was cut.
+    static func cap(_ text: String, bytes: Int) -> (String, Bool) {
+        guard text.utf8.count > bytes else { return (text, false) }
+        var used = 0
+        var end = text.startIndex
+        for index in text.indices {
+            let next = text.index(after: index)
+            used += text.utf8.distance(from: index, to: next)
+            if used > bytes { break }
+            end = next
+        }
+        return (String(text[..<end]), true)
+    }
+
+    private static func isDone(_ value: String?) -> Bool { value?.lowercased() == "done" }
 
     // MARK: Building the frame
 

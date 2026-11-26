@@ -44,6 +44,9 @@ final class FakeMac: @unchecked Sendable {
     var agents: [AgentStatus]?
     /// RR-532: the app's answer to `workspace_command`.
     var workspace = WorkspaceState(projects: [], tickets: [])
+    /// RR-551: the app's answer to a `get`. Nil is a Mac that predates it, which
+    /// rejects the unknown action as an invalid field.
+    var ticketReply: ((WorkspaceCommand) -> WorkspaceTicketDetail)?
     /// RR-532: the app's answer to each `settings_command`.
     var settingsReply: (SettingsCommand) -> SettingsState = { _ in SettingsState() }
     private(set) var workspaceCommands: [WorkspaceCommand] = []
@@ -114,6 +117,14 @@ final class FakeMac: @unchecked Sendable {
         // RR-532: the app answers these too, on either kind of channel.
         if case .workspaceCommand(let command) = frame {
             workspaceCommands.append(command)
+            if command.action == .get {
+                if let reply = ticketReply?(command) {
+                    connection.deliver(.workspaceTicket(reply))
+                } else {
+                    connection.deliver(.error(ErrorFrame(code: "invalid_field", message: "Frame rejected")))
+                }
+                return
+            }
             connection.deliver(.workspaceState(workspace))
             return
         }

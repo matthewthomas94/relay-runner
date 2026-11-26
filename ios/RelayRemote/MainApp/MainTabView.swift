@@ -9,10 +9,12 @@ struct MainTabView: View {
 
     /// Debug only: sample Workspace data for a screenshot (`LaunchOptions`).
     private let workspaceSample: String?
+    private let ticketSample: TicketSample?
 
-    init(model: AppModel, initialTab: MainTab = .agents, workspaceSample: String? = nil) {
+    init(model: AppModel, initialTab: MainTab = .agents, workspaceSample: String? = nil, ticketSample: String? = nil) {
         self.model = model
         self.workspaceSample = workspaceSample
+        self.ticketSample = TicketSample.debugSample(ticketSample, unreachable: workspaceSample == "unreachable")
         _selection = State(initialValue: initialTab)
     }
 
@@ -26,5 +28,14 @@ struct MainTabView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .glassTabBar { GlassTabBar(selection: $selection) }
+        // RR-551: the ticket modal covers the tab bar too, and what is behind it is out of reach.
+        .disabled(model.isTicketOpen)
+        .accessibilityHidden(model.isTicketOpen)
+        .overlay { TicketModalView(model: model, sample: ticketSample) }
+        // Banners float over the modal and its scrim, so they are drawn here, last.
+        .overlayPreferenceValue(FloatingBannerKey.self) { banner in
+            Color.clear.ignoresSafeArea().relayBanner(banner)
+        }
+        .onAppear { if let ticketSample { model.showSampleTicket(ticketSample.row) } }
     }
 }
