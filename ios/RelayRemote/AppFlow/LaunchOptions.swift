@@ -7,6 +7,8 @@ import Foundation
 /// - `--stage=<splash|permissions|pairing|tutorial|app>` starts at a stage,
 /// - `--pairing-step=<scan|check>` opens the pairing flow on a step,
 /// - `--tab=<agents|workspace|settings>` opens the app on a tab,
+/// - `--permission-step=<microphone|localNetwork|camera|notifications>` opens the
+///   permissions stage on that step even if it was already decided,
 /// - `--reset-onboarding` forgets that onboarding finished, as a fresh install.
 /// Release builds ignore them.
 struct LaunchOptions: Equatable {
@@ -16,6 +18,7 @@ struct LaunchOptions: Equatable {
     var tab: MainTab?
     var pairingStep: String?
     var resetsOnboarding = false
+    var permissionStep: PermissionStep?
 
     init(arguments: [String]) {
         for argument in arguments {
@@ -27,6 +30,7 @@ struct LaunchOptions: Equatable {
             if argument == "--reset-onboarding" { resetsOnboarding = true }
             if let value = Self.value(of: "--stage", in: argument) { stage = AppStage(rawValue: value) }
             if let value = Self.value(of: "--pairing-step", in: argument) { pairingStep = value }
+            if let value = Self.value(of: "--permission-step", in: argument) { permissionStep = PermissionStep(rawValue: value) }
             if let value = Self.value(of: "--tab", in: argument) { tab = MainTab(rawValue: value) }
         }
     }

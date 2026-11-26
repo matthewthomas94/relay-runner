@@ -8,10 +8,12 @@ import XCTest
 final class AppTests: XCTestCase {
     func testInfoPlistDeclaresUsageStringsAndBonjourServices() {
         let info = Bundle.main.infoDictionary ?? [:]
-        for key in ["NSMicrophoneUsageDescription", "NSSpeechRecognitionUsageDescription",
+        for key in ["NSMicrophoneUsageDescription",
                     "NSLocalNetworkUsageDescription", "NSCameraUsageDescription"] {
             XCTAssertFalse((info[key] as? String ?? "").isEmpty, key)
         }
+        XCTAssertNil(info["NSSpeechRecognitionUsageDescription"],
+                     "SpeechTranscriber needs only the microphone; nothing uses SFSpeechRecognizer")
         XCTAssertEqual(info["NSBonjourServices"] as? [String], ["_ssh._tcp"])
         XCTAssertEqual(info["UIBackgroundModes"] as? [String], ["audio"],
                        "audio keeps a reply playing with the screen locked; the session is active only while recording or playing")

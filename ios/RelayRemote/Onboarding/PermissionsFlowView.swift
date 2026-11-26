@@ -1,12 +1,32 @@
 import SwiftUI
 
-/// Permissions (06–11): microphone, speech recognition, local network,
-/// camera, notifications. A placeholder until RR-538.
+/// Permissions (06–11): one step per permission, each a hero line, a
+/// "Grant permission" button that raises the system prompt, and Skip.
 struct PermissionsFlowView: View {
     let onFinished: () -> Void
 
+    @State private var model: PermissionsFlowModel
+
+    @MainActor
+    init(model: PermissionsFlowModel? = nil, onFinished: @escaping () -> Void) {
+        _model = State(initialValue: model ?? PermissionsFlowModel())
+        self.onFinished = onFinished
+    }
+
     var body: some View {
-        OnboardingHeroLayout(hero: "Permissions", onSkip: onFinished,
-                             action: OnboardingAction(title: "Continue", perform: onFinished))
+        Group {
+            if let step = model.current {
+                OnboardingHeroLayout(hero: step.hero, onSkip: { model.skip() },
+                                     action: OnboardingAction(title: "Grant permission") {
+                                         Task { await model.grant() }
+                                     })
+            } else {
+                Color.clear
+            }
+        }
+        .task { await model.load(startingAt: LaunchOptions.current.permissionStep) }
+        .onChange(of: model.isLoaded && model.current == nil) { _, finished in
+            if finished { onFinished() }
+        }
     }
 }
