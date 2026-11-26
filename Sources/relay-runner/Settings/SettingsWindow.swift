@@ -341,7 +341,11 @@ private struct SettingsContent: View {
                 keepAwake: appState.keepAwake
             )
         case .awareness:
-            AwarenessSettingsTab(config: autoSave.binding(\.awareness))
+            AwarenessSettingsTab(
+                config: autoSave.binding(\.awareness),
+                stt: autoSave.binding(\.stt),
+                tts: autoSave.binding(\.tts)
+            )
         case .relayRemote:
             RelayRemoteSettingsTab(controller: RelayRemoteController.shared)
         }

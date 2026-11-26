@@ -7,7 +7,6 @@ struct STTSettingsTab: View {
     var cameraPermission: TrueWhisperCameraPermission
     var onTrueWhisperTemplatesChanged: () -> Void = {}
     var operatingSystem = ProcessInfo.processInfo.operatingSystemVersion
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         SettingsStack {
@@ -57,29 +56,6 @@ struct STTSettingsTab: View {
                 }
             }
 
-            if config.input_mode == "push_to_talk" || config.input_mode == "caps_lock_toggle" {
-                SettingsSection("Activation") {
-                    if config.input_mode == "push_to_talk" {
-                        SettingsControlRow("Push-to-talk Key") {
-                            KeyCaptureView(label: "Push-to-talk Key", showsLabel: false, value: $config.push_to_talk_key)
-                        }
-                        .transition(.relayReplacing(.element))
-                    }
-
-                    if config.input_mode == "caps_lock_toggle" {
-                        SettingsControlRow(
-                            "Record With",
-                            description: Self.activationDescription(holdsToTalk: config.holdsToTalk)
-                        ) {
-                            SettingsSegmentedPicker("Record With", selection: activationMode, options: Self.activationOptions)
-                                .notchHint("Choose record keys")
-                        }
-                        .transition(.relayReplacing(.element))
-                    }
-                }
-                .transition(.relayElement)
-            }
-
             SettingsSection("Voice Activity") {
                 SettingsControlRow("VAD Sensitivity") {
                     SettingsMenuPicker("VAD Sensitivity", selection: $config.vad_sensitivity, options: [
@@ -96,30 +72,6 @@ struct STTSettingsTab: View {
                 onTemplatesChanged: onTrueWhisperTemplatesChanged
             )
         }
-        .animation(RelayMotion.change(reduceMotion: reduceMotion), value: config.input_mode)
-    }
-
-    static let activationOptions: [(label: String, value: String)] = [
-        (label: "Hold ⌃ + ⌥", value: SttConfig.ActivationMode.hold),
-        (label: "Caps Lock", value: SttConfig.ActivationMode.capsLock),
-    ]
-
-    static func activationDescription(holdsToTalk: Bool) -> String {
-        holdsToTalk
-            ? "Hold Control and Option to record. Release to send."
-            : "Press Caps Lock to open the mic. Press it again to send."
-    }
-
-    /// Choosing Caps Lock also clears a custom activation key saved by an
-    /// earlier version, so the switch always means the key it names.
-    private var activationMode: Binding<String> {
-        Binding(
-            get: { config.holdsToTalk ? SttConfig.ActivationMode.hold : SttConfig.ActivationMode.capsLock },
-            set: { mode in
-                config.activation_mode = mode
-                if mode == SttConfig.ActivationMode.capsLock { config.activation_key = "Caps Lock" }
-            }
-        )
     }
 
     /// Models this Mac can load. Phonon 2 needs macOS 15, so macOS 14 only
