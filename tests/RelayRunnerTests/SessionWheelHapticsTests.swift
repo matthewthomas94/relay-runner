@@ -92,7 +92,7 @@ final class SessionWheelHapticsTests: XCTestCase {
         model.refresh(sessions: [.init(id: "a", name: "A")])
         model.runningAgents = [.puck]
         model.activeAgent = .puck
-        let stop = geometry.sessionGlyphPoint(0, label: "PK")
+        let stop = geometry.sessionGlyphPoint(0, label: "Puck")
         model.hover(at: stop)
         XCTAssertEqual(SessionWheelHaptics.target(at: stop, model: model), .action(slot: 0, index: 0))
         XCTAssertNil(agent(1))
