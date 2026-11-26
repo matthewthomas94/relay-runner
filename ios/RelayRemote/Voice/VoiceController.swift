@@ -6,17 +6,13 @@ import RelayRemoteProtocol
 /// Speech on the phone (RR-429): spoken requests become `utterance` frames,
 /// `speech` frames play here in the Mac's voice when it streams one (RR-458)
 /// and in the phone's own voice otherwise, while the Mac stays silent, and the
-/// stop, replay and cancel buttons send `control` frames. Two input modes: push to
-/// talk (hold the button) and hands-free (continuous listening with the kit's
-/// endpointer deciding where an utterance ends).
+/// stop, replay and cancel buttons send `control` frames. One utterance at a
+/// time: `pressToTalkBegan` opens it and `pressToTalkEnded` sends it, whether
+/// the Talk control is held or toggled (RR-540; there is no hands-free mode).
+/// RR-540: controls name the agent they are for.
 @MainActor
 @Observable
 final class VoiceController {
-    enum Mode: String, CaseIterable {
-        case pushToTalk = "Push to talk"
-        case handsFree = "Hands-free"
-    }
-
     enum Activity: Equatable {
         case idle
         case listening
@@ -26,9 +22,6 @@ final class VoiceController {
         case speaking
     }
 
-    var mode = Mode.pushToTalk {
-        didSet { if mode != oldValue { modeChanged() } }
-    }
     /// The Remote mode switch (RR-454): the microphone opens only while it is
     /// on. Off, the Mac listens and speaks; `speech` frames it voiced arrive
     /// with `spoken_by: mac` and the playback queue only shows them.
@@ -41,6 +34,9 @@ final class VoiceController {
     }
     /// The newest reply waiting for Play in play-on-demand mode.
     private(set) var waitingReply: String?
+    /// RR-540: every reply waiting for Play, oldest first, and the seq playing now.
+    private(set) var waitingSeqs: [Int] = []
+    private(set) var currentSeq: Int?
     private(set) var activity = Activity.idle
     private(set) var transcript = ""
     private(set) var isListening = false
@@ -51,6 +47,10 @@ final class VoiceController {
     var isAudioActive: Bool { audio.isActive }
     /// Fires when recording and playback have both ended.
     @ObservationIgnored var onAudioIdle: (() -> Void)?
+    /// RR-540: takes a finished transcript, so the app can file it in the
+    /// agent's chat and send it to that agent. Without it the transcript goes
+    /// to the focused agent.
+    @ObservationIgnored var onSpokenRequest: ((String) -> Void)?
 
     @ObservationIgnored private let session: RemoteSession
     @ObservationIgnored private let audio = AudioSessionController()
@@ -58,8 +58,10 @@ final class VoiceController {
     @ObservationIgnored private let player = AudioQueueSpeechPlayer()
     @ObservationIgnored private let recognizer = SpeechRecognizer()
     @ObservationIgnored private let queue: SpeechPlaybackQueue
-    @ObservationIgnored private var endpointer = UtteranceEndpointer()
     @ObservationIgnored private var utteranceOpen = false
+    /// The user let go (true) or cancelled (false) while the utterance was
+    /// still opening; it closes that way once open.
+    @ObservationIgnored private var closeWhenOpen: Bool?
     @ObservationIgnored private var busy = false
 
     init(session: RemoteSession) {
@@ -69,44 +71,43 @@ final class VoiceController {
         }
         queue.onPlaybackStateChange = { [weak self] speaking in self?.playbackChanged(speaking) }
         queue.onChange = { [weak self] in self?.queueChanged() }
-        session.onInbound = { [weak self] frame in self?.queue.receive(frame) }
         session.resumeCeiling = { [weak self] in self?.queue.resumeCeiling }
-        recognizer.onLevel = { [weak self] level, time in self?.observeLevel(level, at: time) }
         recognizer.onTranscript = { [weak self] text in self?.transcript = text }
         audio.onInterruption = { [weak self] interruption in self?.interrupted(interruption) }
         audio.onRouteLost = { [weak self] in self?.routeLost() }
         Task { await recognizer.prepare(prompting: false) }
     }
 
-    // MARK: - Push to talk
+    // MARK: - Talk
 
-    func pressToTalkBegan() {
-        guard remoteMode, mode == .pushToTalk, !utteranceOpen, !busy else { return }
+    /// Opens an utterance for `agent` (nil: the focused agent).
+    func pressToTalkBegan(agent: String? = nil) {
+        guard remoteMode, !utteranceOpen, !busy, !isListening else { return }
         isListening = true
-        bargeIn()
+        closeWhenOpen = nil
+        bargeIn(agent: agent)
         Task { await openUtterance() }
     }
 
+    /// Finishes the utterance and sends its transcript.
     func pressToTalkEnded() {
-        guard mode == .pushToTalk else { return }
-        isListening = false
-        Task { await closeUtterance(send: true) }
+        finishTalking(send: true)
     }
 
-    // MARK: - Hands-free
-
-    func startListening() {
-        guard remoteMode, mode == .handsFree, !isListening else { return }
-        isListening = true
-        endpointer = UtteranceEndpointer()
-        bargeIn()
-        Task { await openUtterance() }
+    /// RR-540: drops the utterance without sending it.
+    func cancelTalking() {
+        finishTalking(send: false)
     }
 
-    func stopListening() {
+    private func finishTalking(send: Bool) {
         guard isListening else { return }
         isListening = false
-        Task { await closeUtterance(send: false) }
+        if utteranceOpen, !busy {
+            Task { await closeUtterance(send: send) }
+        } else {
+            // A quick tap: close once the utterance has opened.
+            closeWhenOpen = send
+        }
     }
 
     // MARK: - Controls
@@ -114,16 +115,21 @@ final class VoiceController {
     /// Starting to talk is the interrupt: silence the phone, tell the Mac to
     /// stop, and only then open the utterance. The local stop happens even
     /// when the channel is down. Replay is unaffected (the Mac keeps the reply).
-    private func bargeIn() {
+    private func bargeIn(agent: String?) {
         queue.stopAll()
         synthesizer.stopSpeaking()
-        session.send(control: .stop)
+        session.send(control: .stop, agent: agent)
     }
 
-    /// Silences the phone at once and asks the Mac to stop as well.
-    func stop() {
+    /// Silences the phone at once and asks the Mac to stop each of `agents`
+    /// (empty: the focused agent).
+    func stop(agents: [String] = []) {
         queue.stopAll()
-        session.send(control: .stop)
+        if agents.isEmpty {
+            session.send(control: .stop)
+        } else {
+            for agent in agents { session.send(control: .stop, agent: agent) }
+        }
     }
 
     /// The Play control in play-on-demand mode.
@@ -131,15 +137,25 @@ final class VoiceController {
         queue.play()
     }
 
+    /// RR-540: plays one agent's waiting reply, skipping its older ones.
+    func play(seq: Int, skipping: Set<Int>) {
+        queue.play(seq: seq, skipping: skipping)
+    }
+
     /// The replayed reply plays at once in either playback mode.
-    func replay() {
+    func replay(agent: String? = nil) {
         queue.playNextReply()
-        session.send(control: .replay)
+        session.send(control: .replay, agent: agent)
     }
 
     func cancel() {
         queue.stopAll()
         session.send(control: .cancel)
+    }
+
+    /// RR-540: every inbound frame from the session, for the playback queue.
+    func receive(_ frame: Frame) {
+        queue.receive(frame)
     }
 
     /// Called when the Mac is forgotten: release the microphone and speaker.
@@ -151,14 +167,6 @@ final class VoiceController {
     }
 
     // MARK: - Internals
-
-    private func modeChanged() {
-        if isListening {
-            isListening = false
-            Task { await closeUtterance(send: false) }
-        }
-        transcript = ""
-    }
 
     private func remoteModeChanged() {
         guard !remoteMode else { return }
@@ -175,7 +183,13 @@ final class VoiceController {
     private func openUtterance() async {
         guard remoteMode, !utteranceOpen, !busy else { return }
         busy = true
-        defer { busy = false }
+        defer {
+            busy = false
+            if let send = closeWhenOpen {
+                closeWhenOpen = nil
+                Task { await closeUtterance(send: send) }
+            }
+        }
         if readiness != .ready {
             await recognizer.prepare(prompting: true)
         }
@@ -190,7 +204,6 @@ final class VoiceController {
             utteranceOpen = true
             transcript = ""
             lastProblem = nil
-            endpointer.reset()
             if queue.isSpeaking {
                 // Playback began while the utterance was opening.
                 recognizer.pauseFeeding()
@@ -219,39 +232,18 @@ final class VoiceController {
         utteranceOpen = false
         busy = false
         if !text.isEmpty {
-            session.send(text: text)
-            transcript = text
-        } else if send {
-            transcript = ""
+            if let onSpokenRequest {
+                onSpokenRequest(text)
+            } else {
+                session.send(text: text)
+            }
         }
-        let keepMicrophone = mode == .handsFree && isListening
-        if !keepMicrophone {
-            recognizer.stopCapture()
-            try? audio.setRecording(false)
-        }
+        // The text box shows the transcript only while the user talks.
+        transcript = ""
+        recognizer.stopCapture()
+        try? audio.setRecording(false)
         refreshActivity()
-        continueHandsFreeIfNeeded()
         notifyIfIdle()
-    }
-
-    /// Hands-free keeps one utterance open whenever the phone is not speaking.
-    private func continueHandsFreeIfNeeded() {
-        guard mode == .handsFree, isListening, !utteranceOpen, !busy, !queue.isSpeaking else { return }
-        Task { await openUtterance() }
-    }
-
-    private func observeLevel(_ level: Float, at time: TimeInterval) {
-        guard mode == .handsFree, isListening, utteranceOpen, !busy, !queue.isSpeaking else { return }
-        switch endpointer.observe(level: level, at: time) {
-        case .none:
-            break
-        case .started:
-            activity = .hearing
-        case .ended:
-            Task { await closeUtterance(send: true) }
-        case .discarded:
-            Task { await closeUtterance(send: false) }
-        }
     }
 
     private func playbackChanged(_ speaking: Bool) {
@@ -261,18 +253,12 @@ final class VoiceController {
             if utteranceOpen {
                 // Do not transcribe the phone's own voice.
                 recognizer.pauseFeeding()
-                endpointer.reset()
             }
         } else {
             refreshActivity()
-            if mode == .handsFree, isListening, utteranceOpen {
-                Task {
-                    await closeUtterance(send: false)
-                }
-            } else if utteranceOpen {
+            if utteranceOpen {
                 // Audio heard during playback was dropped; resume from here.
                 recognizer.resumeFeeding()
-                endpointer.reset()
             } else {
                 notifyIfIdle()
             }
@@ -287,7 +273,7 @@ final class VoiceController {
                 player.pause()
             }
             if utteranceOpen {
-                if mode == .pushToTalk { isListening = false }
+                isListening = false
                 Task { await closeUtterance(send: false) }
             }
         case .ended(let shouldResume):
@@ -298,18 +284,19 @@ final class VoiceController {
             if player.isPaused {
                 if shouldResume { player.resume() } else { player.stop() }
             }
-            continueHandsFreeIfNeeded()
         }
     }
 
     private func routeLost() {
         guard utteranceOpen else { return }
-        if mode == .pushToTalk { isListening = false }
+        isListening = false
         Task { await closeUtterance(send: false) }
     }
 
     private func queueChanged() {
         waitingReply = queue.waitingReply
+        waitingSeqs = queue.waitingSeqs
+        currentSeq = queue.currentSeq
         if queue.isSpeaking { refreshActivity() }
     }
 
