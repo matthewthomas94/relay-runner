@@ -460,6 +460,7 @@ struct ProgramBoardOverlayView: View {
             if let detail = model.selectedNoteDetail {
                 ProgramNoteDetailPanel(
                     detail: detail,
+                    chat: model.noteChat,
                     captureSnapshot: model.noteCaptureSnapshot,
                     theme: model.theme,
                     onClose: onNoteClose,
@@ -476,20 +477,16 @@ struct ProgramBoardOverlayView: View {
                 .id(detail.item.id)
                 .transition(.programBoardLeaving(.surface, replacing: true))
             } else {
-                VStack(spacing: 10) {
-                    LucideImage(.notebookText, size: 32)
-                        .foregroundStyle(ProgramBoardStyle.mutedText)
-                    Text("Select a note")
-                        .font(AppTypography.font(.sectionHeading))
-                        .foregroundStyle(ProgramBoardStyle.secondaryText)
-                    Text("Your transcripts and summaries, all in one place.")
-                        .font(AppTypography.font(.supporting))
-                        .foregroundStyle(ProgramBoardStyle.mutedText)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 390)
-                }
+                // RR-549: with no note selected the panel chats with the library.
+                NoteChatPanel(
+                    chat: model.noteChat,
+                    scope: .library,
+                    placeholder: "Ask about your notes",
+                    hintTitle: "Ask about all your notes",
+                    hintDetail: "Select a note to ask about just that note."
+                )
+                .padding(20)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .accessibilityElement(children: .combine)
                 .transition(.relayReplacing(.surface))
             }
         }
@@ -2752,6 +2749,7 @@ private struct ProgramWorkCard: View {
 
 private struct ProgramNoteDetailPanel: View {
     let detail: ProgramBoardNoteDetail
+    let chat: NoteChatModel
     let captureSnapshot: MeetingNoteCoordinatorSnapshot
     let theme: ParticleFieldRenderer.Theme?
     let onClose: () -> Void
@@ -2978,41 +2976,34 @@ private struct ProgramNoteDetailPanel: View {
                     .transition(.relayElement)
             }
 
-            BoardOverlayScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    if let summary = detail.item.card.metadata?.summary {
-                        ProgramDetailSection(title: "Summary", text: summary)
-                            .textSelection(.enabled)
-                            .transition(.relayElement)
-                    }
-                    if detail.isLoading {
-                        HStack(spacing: 8) {
-                            ProgressView().controlSize(.small)
-                            Text("Opening note…")
-                                .font(AppTypography.font(.supporting))
-                                .foregroundStyle(ProgramBoardStyle.mutedText)
-                        }
-                        .transition(.relayReplacing(.element))
-                    }
-                }
-                .animation(
-                    RelayMotion.change(reduceMotion: reduceMotion),
-                    value: [detail.isLoading, detail.item.card.metadata?.summary != nil]
-                )
-                .overlay(alignment: .topLeading) {
-                    ProgramTicketDetailTopBoundaryMarker()
-                        .frame(width: 1, height: 1)
-                }
-                .overlay(alignment: .bottomLeading) {
-                    ProgramTicketDetailBottomBoundaryMarker()
-                        .frame(width: 1, height: 1)
-                }
+            // RR-549: the summary stays pinned above the chat thread.
+            if let summary = detail.item.card.metadata?.summary {
+                NoteChatPinnedSummary(text: summary)
+                    .transition(.relayElement)
             }
+            if detail.isLoading {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Opening note…")
+                        .font(AppTypography.font(.supporting))
+                        .foregroundStyle(ProgramBoardStyle.mutedText)
+                }
+                .transition(.relayReplacing(.element))
+            }
+
+            NoteChatPanel(
+                chat: chat,
+                scope: .note(noteID: detail.item.card.noteID, projectPath: detail.item.projectPath),
+                placeholder: "Ask about this note",
+                hintTitle: "Ask about this note",
+                hintDetail: "Answers draw on its summary and transcript."
+            )
+            .frame(maxHeight: .infinity)
         }
         .animation(RelayMotion.change(reduceMotion: reduceMotion), value: motionState)
     }
 
-    /// Everything that inserts or removes a control or notice above the transcript.
+    /// Everything that inserts or removes a control, notice or the summary above the chat.
     private var motionState: [AnyHashable] {
         [
             showsStop,
@@ -3024,6 +3015,8 @@ private struct ProgramNoteDetailPanel: View {
             captureErrorMessage,
             recoveryErrorMessage,
             detail.errorMessage,
+            detail.isLoading,
+            detail.item.card.metadata?.summary != nil,
         ]
     }
     private var captureErrorMessage: String? {
@@ -3683,6 +3676,180 @@ private struct ProgramDetailMetadata: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// RR-549: the note summary, pinned above the chat; a long one scrolls on its own.
+private struct NoteChatPinnedSummary: View {
+    let text: String
+
+    var body: some View {
+        ViewThatFits(in: .vertical) {
+            section
+            RelayFadingScrollView { section }
+        }
+        .frame(maxHeight: 180, alignment: .top)
+    }
+
+    private var section: some View {
+        ProgramDetailSection(title: "Summary", text: text)
+    }
+}
+
+/// RR-549: one scope's chat thread with its composer pinned at the bottom.
+private struct NoteChatPanel: View {
+    let chat: NoteChatModel
+    let scope: NoteChatScope
+    let placeholder: String
+    let hintTitle: String
+    let hintDetail: String
+    @FocusState private var composerFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private static let bottomID = "note-chat-bottom"
+
+    private var conversation: NoteChatConversation { chat.conversation(for: scope) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ZStack {
+                if conversation.messages.isEmpty {
+                    hint.transition(.relayReplacing(.text))
+                } else {
+                    thread.transition(.relayReplacing(.surface))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .animation(RelayMotion.change(reduceMotion: reduceMotion), value: conversation.messages.isEmpty)
+            composer
+        }
+    }
+
+    private var hint: some View {
+        VStack(spacing: 6) {
+            Text(hintTitle)
+                .font(AppTypography.font(.sectionHeading))
+                .foregroundStyle(ProgramBoardStyle.secondaryText)
+            Text(hintDetail)
+                .font(AppTypography.font(.supporting))
+                .foregroundStyle(ProgramBoardStyle.mutedText)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: 390)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var thread: some View {
+        ScrollViewReader { proxy in
+            RelayFadingScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(conversation.messages) { message in
+                        NoteChatMessageRow(message: message)
+                            .transition(.relayElement)
+                    }
+                    if conversation.isPending {
+                        Text("Thinking…")
+                            .font(AppTypography.font(.supporting))
+                            .foregroundStyle(ProgramBoardStyle.mutedText)
+                            .transition(.relayReplacing(.text))
+                    }
+                    if let message = conversation.errorMessage {
+                        HStack(alignment: .center, spacing: 8) {
+                            ProgramDetailNotice(message: message)
+                            ProgramDetailActionButton(
+                                icon: .refreshCw, title: "Retry",
+                                disabled: !conversation.canRetry,
+                                help: "Ask again"
+                            ) {
+                                chat.retry(in: scope)
+                            }
+                        }
+                        .transition(.relayElement)
+                    }
+                    Color.clear.frame(height: 1).id(Self.bottomID)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: conversation.messages)
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: conversation.isPending)
+                .animation(RelayMotion.change(reduceMotion: reduceMotion), value: conversation.errorMessage)
+            }
+            // A short thread sits against the composer, as in any chat.
+            .defaultScrollAnchor(.bottom)
+            .onAppear { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+            .onChange(of: conversation.messages.count) { _, _ in scrollToNewest(proxy) }
+            .onChange(of: conversation.isPending) { _, _ in scrollToNewest(proxy) }
+            .onChange(of: conversation.errorMessage) { _, _ in scrollToNewest(proxy) }
+        }
+    }
+
+    private func scrollToNewest(_ proxy: ScrollViewProxy) {
+        withAnimation(RelayMotion.change(reduceMotion: reduceMotion)) {
+            proxy.scrollTo(Self.bottomID, anchor: .bottom)
+        }
+    }
+
+    private var composer: some View {
+        HStack(alignment: .center, spacing: 8) {
+            TextField(
+                placeholder,
+                text: Binding(
+                    get: { conversation.draft },
+                    set: { chat.setDraft($0, for: scope) }
+                ),
+                prompt: Text(""),
+                axis: .vertical
+            )
+            .appPlaceholder(placeholder, when: conversation.draft.isEmpty)
+            .textFieldStyle(.plain)
+            .font(AppTypography.font(.field))
+            .foregroundStyle(ProgramBoardStyle.primaryText)
+            .lineLimit(1...6)
+            .padding(.horizontal, GraphicalTheme.spaceS)
+            .padding(.vertical, 8)
+            .frame(minHeight: ProgramTicketPanelStyle.compactFieldHeight)
+            .background(ProgramTicketFieldBackground(isFocused: composerFocused))
+            .focused($composerFocused)
+            .disabled(conversation.isPending)
+            .onKeyPress(.return, phases: .down) { press in
+                chat.handleReturn(shift: press.modifiers.contains(.shift), in: scope)
+                return .handled
+            }
+            .accessibilityLabel(placeholder)
+            ProgramIconButton(icon: .arrowRight, help: "Send", isEnabled: conversation.canSend) {
+                chat.send(in: scope)
+            }
+        }
+    }
+}
+
+private struct NoteChatMessageRow: View {
+    let message: NoteChatMessage
+
+    var body: some View {
+        switch message.role {
+        case .user:
+            HStack(spacing: 0) {
+                Spacer(minLength: 48)
+                text
+                    .foregroundStyle(ProgramBoardStyle.primaryText)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(ProgramCardBackground(cornerRadius: 12))
+            }
+            .accessibilityLabel("You: \(message.text)")
+        case .assistant:
+            text
+                .foregroundStyle(ProgramBoardStyle.secondaryText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var text: some View {
+        Text(message.text)
+            .font(AppTypography.font(.label))
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
     }
 }
 
