@@ -93,10 +93,14 @@ struct SessionWheelLiquidBackdrop: View {
                                                         width: radius * 2, height: radius * 2)), with: .color(.black))
                     for slot in 0..<geometry.slotCount where frames[slot].progress > 0 {
                         let frame = frames[slot]
+                        // The session submenu's backing spans its whole arc, past its own cell.
+                        let isSession = slot == geometry.sessionSlots.first
                         let shape = SessionWheelSector(slot: slot, innerRadius: geometry.actionInnerRadius,
                                                        outerRadius: geometry.actionOuterRadius,
                                                        cornerRadius: SessionWheelGeometry.actionCornerRadius,
-                                                       padding: geometry.segmentGap)
+                                                       padding: geometry.segmentGap,
+                                                       arcStart: isSession ? -geometry.sessionSubmenuArc / 2 : nil,
+                                                       arcWidth: isSession ? geometry.sessionSubmenuArc : nil)
                         let transform = CGAffineTransform(translationX: rect.midX, y: rect.midY)
                             .scaledBy(x: frame.scale, y: frame.scale)
                             .translatedBy(x: -rect.midX, y: -rect.midY)

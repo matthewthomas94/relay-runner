@@ -543,14 +543,18 @@ struct ProgramBoardOverlayView: View {
             .allowsHitTesting(!dotMatrixPresentation.isVisible)
             .zIndex(2)
 
-            WorkspaceMenuBarClock()
-                .frame(height: BoardSurfaceLayout.navigationHeight)
-                .padding(.top, BoardSurfaceLayout.navigationTopPadding)
-                .padding(.trailing, 20)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .blur(radius: backgroundBlurRadius)
-                .allowsHitTesting(false)
-                .zIndex(2)
+            HStack(spacing: 12) {
+                WorkspaceMenuBarUpdateButton(updater: workspace.updater)
+                    .allowsHitTesting(!dotMatrixPresentation.isVisible)
+                WorkspaceMenuBarClock()
+                    .allowsHitTesting(false)
+            }
+            .frame(height: BoardSurfaceLayout.navigationHeight)
+            .padding(.top, BoardSurfaceLayout.navigationTopPadding)
+            .padding(.trailing, 20)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .blur(radius: backgroundBlurRadius)
+            .zIndex(2)
 
             // Tabs, and the Workspace states within the work tab, swap as pages.
             ZStack(alignment: .topLeading) {

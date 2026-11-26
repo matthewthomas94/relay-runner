@@ -48,8 +48,9 @@ struct SessionWheelView: View {
         let submenus = submenus ?? .init(slot: submenuSlot)
         return ZStack {
             Color.clear.contentShape(Rectangle()).onTapGesture { point in
-                let slot = geometry.slot(at: point)
-                if !geometry.contains(point, submenuSlot: submenus[slot] > 0 ? slot : nil) { dismiss() }
+                if !geometry.contains(point, submenuSlot: geometry.submenuSlot(at: point) { submenus[$0] > 0 }) {
+                    dismiss()
+                }
             }
             // Pure black, like the notch and the recording pill; the glass is on the tiles.
             SessionWheelLiquidBackdrop(progress: submenus, reduceMotion: reduceMotion)
@@ -254,7 +255,7 @@ struct SessionWheelView: View {
         return item.isRunning ? ProgramBoardStyle.primaryText : ProgramBoardStyle.mutedText
     }
 
-    /// RR-521: an agent segment shows its two-letter label then its plus or X.
+    /// RR-521: an agent segment shows the agent's name then its plus or X.
     private func agentItemButton(_ item: SessionWheelAgent, index: Int, slot: Int) -> some View {
         let action = item.labelAction
         return submenuButton(index: index, slot: slot, title: action.title, help: model.caption(for: action),
