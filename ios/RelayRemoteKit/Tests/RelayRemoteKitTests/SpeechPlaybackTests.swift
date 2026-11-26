@@ -50,6 +50,34 @@ final class SpeechPlaybackTests: XCTestCase {
         .speech(Speech(seq: seq, kind: .final, source: .orchestrator, text: text, relayCommandSeq: 7, spokenBy: .mac))
     }
 
+    /// RR-540: one agent's Play plays that agent's reply and skips only its
+    /// older ones; another agent's reply keeps waiting and holds later acks.
+    func testPlayingOneWaitingReplyLeavesOtherAgentsWaiting() {
+        queue.mode = .onDemand
+        queue.receive(speech(1, "Puck's reply."))
+        queue.receive(speech(2, "George's first."))
+        queue.receive(speech(3, "George's second."))
+        XCTAssertEqual(queue.waitingSeqs, [1, 2, 3])
+        XCTAssertEqual(synthesizer.spoken, [])
+
+        queue.play(seq: 3, skipping: [2])
+        XCTAssertEqual(synthesizer.spoken, ["George's second."])
+        XCTAssertEqual(queue.currentSeq, 3)
+        XCTAssertEqual(queue.waitingSeqs, [1])
+        XCTAssertEqual(acks, [], "seq 1 still waits, so nothing after it is acknowledged")
+
+        synthesizer.finishCurrent()
+        queue.play(seq: 1)
+        synthesizer.finishCurrent()
+        XCTAssertEqual(synthesizer.spoken, ["George's second.", "Puck's reply."])
+        XCTAssertEqual(acks, [Ack(seq: 1, played: true), Ack(seq: 2, played: false), Ack(seq: 3, played: true)])
+        XCTAssertEqual(queue.waitingSeqs, [])
+
+        queue.mode = .autoPlay
+        queue.play(seq: 9)
+        XCTAssertEqual(queue.waitingSeqs, [], "auto-play has nothing waiting")
+    }
+
     func testMacSpokenFramesAreShownNotSpokenAndAckedPlayedAtOnce() {
         queue.receive(macSpeech(1, "Kokoro has this one."))
         XCTAssertEqual(synthesizer.spoken, [])

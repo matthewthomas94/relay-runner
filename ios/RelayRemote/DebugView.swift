@@ -52,10 +52,6 @@ struct DebugView: View {
 
             Section("Voice") {
                 if let voice = model.voice {
-                    Picker("Mode", selection: Bindable(voice).mode) {
-                        ForEach(VoiceController.Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
                     Picker("Playback", selection: Bindable(model).playbackMode) {
                         ForEach(PlaybackMode.allCases, id: \.self) { Text(Self.playbackLabel($0)).tag($0) }
                     }
@@ -72,16 +68,9 @@ struct DebugView: View {
                     if !voice.transcript.isEmpty {
                         Text(voice.transcript).italic()
                     }
-                    Group {
-                        if voice.mode == .pushToTalk {
-                            HoldToTalkButton(isHeld: voice.isListening, began: voice.pressToTalkBegan,
-                                             ended: voice.pressToTalkEnded)
-                        } else {
-                            Toggle("Listen", isOn: Binding(get: { voice.isListening },
-                                                           set: { $0 ? voice.startListening() : voice.stopListening() }))
-                        }
-                    }
-                    .disabled(!voice.remoteMode)
+                    HoldToTalkButton(isHeld: voice.isListening, began: { voice.pressToTalkBegan() },
+                                     ended: voice.pressToTalkEnded)
+                        .disabled(!voice.remoteMode)
                     HStack {
                         Button("Stop", systemImage: "stop.fill") { voice.stop() }
                         Spacer()

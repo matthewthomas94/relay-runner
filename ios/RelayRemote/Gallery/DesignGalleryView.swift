@@ -3,7 +3,7 @@ import SwiftUI
 
 /// The pages of the reference gallery, each one screen tall for screenshots.
 enum GalleryPage: String, CaseIterable, Identifiable {
-    case type, controls, glyphs, orbs, listening, playback
+    case type, controls, modal, glyphs, orbs, listening, playback
 
     var id: String { rawValue }
 
@@ -11,6 +11,7 @@ enum GalleryPage: String, CaseIterable, Identifiable {
         switch self {
         case .type: return "Type"
         case .controls: return "Controls"
+        case .modal: return "Modal"
         case .glyphs: return "Glyph"
         case .orbs: return "Orb"
         case .listening: return "Listening"
@@ -46,6 +47,7 @@ struct DesignGalleryView: View {
                 switch page {
                 case .type: TypePage()
                 case .controls: ControlsPage()
+                case .modal: ModalPage()
                 case .glyphs: GlyphsPage()
                 case .orbs: OrbsPage()
                 case .listening: FieldPage(style: .listening, reveal: $reveal)
@@ -160,6 +162,44 @@ private struct ControlsPage: View {
             }
         }
         .padding(.horizontal, 16)
+    }
+}
+
+/// RR-551: the modal over a page of rows, short and then long. Starts open;
+/// close it with any of its gestures and open it again from the buttons.
+private struct ModalPage: View {
+    @State private var content: Size? = .short
+
+    private enum Size { case short, long }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            GalleryHeading("Modal · glass panel over a 60% scrim")
+            HStack(spacing: 8) {
+                Button("Short") { content = .short }.buttonStyle(.relaySecondary)
+                Button("Long") { content = .long }.buttonStyle(.relaySecondary)
+            }
+            ForEach(0..<6, id: \.self) { row in
+                GlassPanel { Text("A row behind the modal \(row + 1)").relayTextStyle(.body) }
+            }
+        }
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .overlay {
+            RelayModal(isPresented: content != nil, onClose: { content = nil }) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("RR-551 · relay-runner").relayTextStyle(.caption).foregroundStyle(RelayColor.neutral7)
+                    Text("A ticket title in the card style").relayTextStyle(.cardTitle)
+                    Text("In progress · George").relayTextStyle(.body)
+                }
+            } content: {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(0..<(content == .long ? 30 : 2), id: \.self) { line in
+                        Text("Body line \(line + 1) inside the scrolling part of the panel.").relayTextStyle(.body)
+                    }
+                }
+            }
+        }
     }
 }
 

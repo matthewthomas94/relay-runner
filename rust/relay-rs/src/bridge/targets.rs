@@ -38,6 +38,9 @@ pub struct VoiceTarget {
     pub app_session_id: String,
     pub recovery_generation: String,
     pub project_name: String,
+    /// RR-534: the session's provider is ready for input. The app sends
+    /// `"ready": false` in `__FOCUS__` while it starts; absent means ready.
+    pub ready: bool,
 }
 
 /// `ProviderSessionOwnership`: app-authorized provider replacement, without
@@ -374,6 +377,7 @@ pub fn install_startup_voice_target(
         app_session_id: crate::support::env_text("RELAY_APP_SESSION_ID"),
         recovery_generation: crate::support::env_text("RELAY_RECOVERY_GENERATION"),
         project_name: String::new(),
+        ready: true,
     };
     let mut targets = lock();
     targets.targets.clear();
@@ -439,6 +443,7 @@ pub fn voice_target_from_focus(payload: &Dict) -> Option<VoiceTarget> {
         app_session_id: payload.text("app_session_id"),
         recovery_generation: payload.text("recovery_generation"),
         project_name: payload.text("project_name"),
+        ready: payload.get("ready").is_none_or(Value::truthy),
         spool_dir: spool,
         session_key: key,
     })

@@ -15,6 +15,7 @@
 //! map to a status: `NoteContractError` and `ValueError` are 400,
 //! `ArtifactValidationError` is 422.
 
+pub mod chat;
 pub mod contract;
 pub mod global;
 pub mod metadata;

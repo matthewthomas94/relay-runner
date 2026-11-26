@@ -14,7 +14,9 @@ use relay_artifacts::{paths, toml};
 use relay_intents::json::{Dict, Value};
 use relay_services::continuity::lifecycle::ContinuityLifecycleAdapter;
 use relay_services::general_work::GeneralWork;
+use relay_services::history_chat;
 use relay_services::notes::NoteManager;
+use relay_services::notes::chat::{Chat, NoteChatProvider};
 use relay_services::notes::global::GlobalNoteLibrary;
 use relay_services::notes::metadata::{NoteMetadataGenerator, NoteMetadataQueue};
 use relay_services::notes::project::ProjectNoteManager;
@@ -667,6 +669,11 @@ pub struct Daemon {
     pub personal_storage: Arc<PersonalFileStorage>,
     pub general_work: Arc<GeneralWork>,
     pub note_metadata: Option<NoteMetadataQueue>,
+    /// RR-548: the one-shot provider `POST /v1/artifacts/notes/chat` asks.
+    pub note_chat: Arc<dyn Chat>,
+    /// RR-550: the same provider with the ticket history chat's prompt, for
+    /// `POST /v1/artifacts/history/chat`.
+    pub history_chat: Arc<dyn Chat>,
 
     /// `[orchestrator] agent`, or `[general] provider`.
     pub agent_kind: String,
@@ -762,16 +769,24 @@ impl Daemon {
                 String::new()
             }
         };
-        let note_metadata = Some(NoteMetadataQueue::new(
-            Arc::new(NoteMetadataGenerator::new(
+        let note_provider = || {
+            NoteMetadataGenerator::new(
                 Box::new(|| load_config(None).unwrap_or_default()),
                 Box::new(|provider: &str, configured: &str| {
                     find_agent_bin(provider, configured)
                         .map_err(|failure| relay_services::Error::runtime(failure.message))
                 }),
-            )),
+            )
+        };
+        let note_metadata = Some(NoteMetadataQueue::new(
+            Arc::new(note_provider()),
             Duration::from_secs(2),
             128,
+        ));
+        let note_chat: Arc<dyn Chat> = Arc::new(NoteChatProvider::new(note_provider()));
+        let history_chat: Arc<dyn Chat> = Arc::new(NoteChatProvider::with_system_prompt(
+            note_provider(),
+            history_chat::SYSTEM_PROMPT,
         ));
         let daemon = Arc::new(Self {
             port: Mutex::new(port),
@@ -805,6 +820,8 @@ impl Daemon {
             personal_storage,
             general_work,
             note_metadata,
+            note_chat,
+            history_chat,
             agent_kind: agent,
             agent_bin: Mutex::new(agent_bin),
             board_lock: Mutex::new(()),

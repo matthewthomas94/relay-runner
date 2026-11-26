@@ -214,7 +214,7 @@ Datagrams on `BRIDGE_CONTROL_SOCK`, at most 4096 bytes. macOS refuses back-to-ba
 | anything unknown | Ignored. | process/test_ping_and_unknown_commands_leave_the_bridge_running |
 | `reload` | `reload_config` to speech. | process/test_reload_rereads_the_speech_configuration |
 | `shutdown` | Clean stop. | process/test_shutdown_request_stops_the_bridge_and_removes_its_files |
-| `__FOCUS__:<json>` | Focuses or registers (`focus: false`) a session; invalid payloads are rejected; a focus switch leaves speech alone (RR-488). | sessions/test_focus_moves_turns_to_the_focused_session, sessions/test_invalid_focus_payloads_are_rejected, sessions/test_focus_false_registers_without_focusing, sessions/test_focus_switch_leaves_playing_speech_alone |
+| `__FOCUS__:<json>` | Focuses or registers (`focus: false`) a session; invalid payloads are rejected; a focus switch leaves speech alone (RR-488). RR-534: `"ready": false` marks a session whose provider is still starting; absent means ready. | sessions/test_focus_moves_turns_to_the_focused_session, sessions/test_invalid_focus_payloads_are_rejected, sessions/test_focus_false_registers_without_focusing, sessions/test_focus_switch_leaves_playing_speech_alone |
 | `__REPLAY__:<json>` | `control_session` to speech with `play`, then `replay` when not handled; nothing for an unknown session. | sessions/test_replay_asks_speech_to_play_then_replay_the_session |
 | `__SESSION_PLAYBACK__:<json>` | `control_session` to speech: `stop` only stops; `play` falls back to `replay`. The bridge reads nothing out itself. | sessions/test_session_playback_asks_speech_for_the_session |
 | `{"type": "continuity_recovery", …}` | Answers on its `reply_path`. | restart/test_invalid_continuity_recovery_reports_failure_to_its_reply_path |
@@ -339,6 +339,7 @@ The bridge serves this socket in-process with the Rust Relay Remote server (RR-4
 | Controls act as their FIFO tokens. | remote/test_controls_act_as_their_fifo_tokens, remote/test_interrupt_control_publishes_an_interrupt_command |
 | `hello` attaches the device as speech sink, or as mirror with remote mode off. | remote/test_hello_attaches_the_device_as_speech_sink, remote/test_remote_mode_off_moves_the_device_to_mirror, remote/test_hello_with_remote_mode_off_attaches_a_mirror |
 | Speech reaches the device; acks reach speech; a reconnect replays what it missed. | remote/test_speech_for_a_sink_reaches_the_device_as_speech_frames, remote/test_ack_is_passed_to_speech, remote/test_reconnect_replays_the_speech_it_missed |
+| RR-534: an utterance naming an agent reaches that agent's session, keeps its remote origin, is authorised against that session and leaves focus alone; `accepted` names the agent, the focused one for an unaddressed utterance; a control naming an agent acts on that session's speech only; an utterance for an agent with no session posts a `remote_agent` `start` datagram and is delivered once when its session is registered and ready. | remote/test_utterance_naming_an_agent_reaches_that_agents_session, remote/test_utterance_without_an_agent_is_tagged_with_the_focused_agent, remote/test_control_naming_an_agent_acts_on_that_agents_speech, remote/test_utterance_to_a_stopped_agent_starts_it_and_waits_until_ready |
 
 ## Restart
 

@@ -630,6 +630,15 @@ final class ProcessManager {
         (value as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
 
+    /// RR-534: whether the provider session recorded in a spool's
+    /// `voice_provider_session_id` file has an active turn.
+    static func providerTurnActive(forSpoolFile path: String) -> Bool {
+        guard let providerSessionID = (try? String(contentsOfFile: path, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !providerSessionID.isEmpty else { return false }
+        return providerTurnActive(providerTurnsURL: URL(fileURLWithPath: voiceProviderTurnsPath),
+                                  providerSessionID: providerSessionID)
+    }
+
     static func providerTurnActive(
         providerTurnsURL: URL,
         providerSessionID: String? = nil

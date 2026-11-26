@@ -47,6 +47,8 @@ struct OnboardingHeroLayout<Accessory: View, Secondary: View>: View {
     let hero: HeroText
     var onSkip: (() -> Void)?
     var action: OnboardingAction?
+    /// False lets the app-wide state glows behind the screen show through.
+    var drawsBackground = true
     @ViewBuilder var accessory: Accessory
     @ViewBuilder var secondary: Secondary
 
@@ -55,11 +57,13 @@ struct OnboardingHeroLayout<Accessory: View, Secondary: View>: View {
     static var actionBottom: CGFloat { 40 }
 
     init(hero: HeroText, onSkip: (() -> Void)? = nil, action: OnboardingAction? = nil,
+         drawsBackground: Bool = true,
          @ViewBuilder accessory: () -> Accessory = { EmptyView() },
          @ViewBuilder secondary: () -> Secondary = { EmptyView() }) {
         self.hero = hero
         self.onSkip = onSkip
         self.action = action
+        self.drawsBackground = drawsBackground
         self.accessory = accessory()
         self.secondary = secondary()
     }
@@ -101,7 +105,7 @@ struct OnboardingHeroLayout<Accessory: View, Secondary: View>: View {
                 .padding(.trailing, 20)
             }
         }
-        .background(RelayColor.neutral1)
+        .background { if drawsBackground { RelayColor.neutral1 } }
     }
 }
 

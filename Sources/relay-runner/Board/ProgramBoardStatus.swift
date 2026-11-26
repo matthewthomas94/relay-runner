@@ -438,6 +438,15 @@ struct ProgramBoardNoteDetail: Equatable {
         pasteboard.clearContents()
         return pasteboard.setString(markdown, forType: .string)
     }
+
+    var canCopyTranscript: Bool { !isLoading && transcript?.isEmpty == false }
+
+    @discardableResult
+    func copyTranscript(to pasteboard: NSPasteboard = .general) -> Bool {
+        guard canCopyTranscript, let transcript else { return false }
+        pasteboard.clearContents()
+        return pasteboard.setString(transcript, forType: .string)
+    }
 }
 
 struct ProgramBoardCreateDraft: Equatable {
@@ -1609,6 +1618,8 @@ final class ProgramBoardViewModel {
     var notesLoaded = false
     /// Why the last notes refresh failed; shown above the library until one succeeds.
     var noteLoadErrorMessage: String?
+    /// RR-549: the Notes chat, one conversation per note and one for the library.
+    @ObservationIgnored let noteChat = NoteChatModel()
     var noteCaptureSnapshot = MeetingNoteCoordinatorSnapshot(
         phase: .idle,
         noteID: nil,
@@ -1619,6 +1630,9 @@ final class ProgramBoardViewModel {
         errorMessage: nil
     )
     var history: WorkspaceHistoryViewModel?
+    /// RR-550: the History chat, one conversation per repository and per
+    /// historical ticket, kept while History switches repositories.
+    @ObservationIgnored let historyChat = WorkspaceHistoryChatModel()
     /// Projects History can show. Read from the project registry, so History
     /// opens before the Work board has loaded its snapshot.
     var historyProjects: [ProgramBoardProjectTarget] = []

@@ -376,17 +376,28 @@ public struct AgentStatus: Codable, Equatable, Sendable {
 
 public enum WorkspaceAction: String, Codable, Sendable {
     case list
+    /// RR-551: one ticket's text, answered with `workspace_ticket`.
+    case get
 }
 
 /// Asks the Mac for its Workspace: the registered projects and their open
-/// tickets. Answered with `workspace_state`.
+/// tickets (`list`, answered with `workspace_state`), or, with `get`, the
+/// text of the ticket `ticketId` in project `projectId` (RR-551, answered
+/// with `workspace_ticket`).
 public struct WorkspaceCommand: Codable, Equatable, Sendable {
     public var clientId: String
     public var action: WorkspaceAction
+    /// `get` only: the `id` of the ticket's entry in `workspace_state.projects`.
+    public var projectId: String?
+    /// `get` only: the ticket id, for example `RR-120`.
+    public var ticketId: String?
 
-    public init(clientId: String, action: WorkspaceAction = .list) {
+    public init(clientId: String, action: WorkspaceAction = .list, projectId: String? = nil,
+                ticketId: String? = nil) {
         self.clientId = clientId
         self.action = action
+        self.projectId = projectId
+        self.ticketId = ticketId
     }
 }
 
@@ -428,15 +439,58 @@ public struct WorkspaceTicket: Codable, Equatable, Sendable {
 }
 
 /// The Mac's answer to `workspace_command`. `error` says why the list is
-/// empty when the Mac could not read it.
+/// empty when the Mac could not read it. RR-543: `truncated` is true when the
+/// Mac left tickets out to keep the list short; absent means complete.
 public struct WorkspaceState: Codable, Equatable, Sendable {
     public var projects: [WorkspaceProject]
     public var tickets: [WorkspaceTicket]
     public var error: String?
+    public var truncated: Bool?
 
-    public init(projects: [WorkspaceProject], tickets: [WorkspaceTicket], error: String? = nil) {
+    public init(projects: [WorkspaceProject], tickets: [WorkspaceTicket], error: String? = nil,
+                truncated: Bool? = nil) {
         self.projects = projects
         self.tickets = tickets
+        self.error = error
+        self.truncated = truncated
+    }
+}
+
+/// The lanes a `workspace_ticket` can name: the list's three, plus `done` for
+/// a ticket that finished while the phone had it open (RR-551).
+public enum TicketDetailStatus: String, Codable, Sendable {
+    case inProgress = "in_progress"
+    case queued, backlog, done
+}
+
+/// The Mac's answer to `workspace_command` `get` (RR-551): one ticket's text.
+/// `markdown` is the ticket's body, everything after its frontmatter,
+/// unchanged and at most `maxMarkdownBytes` of UTF-8; `truncated` is true when
+/// it was cut. When the Mac cannot serve the ticket it sends `error` in place
+/// of `markdown`, still naming the project and ticket it was asked for.
+public struct WorkspaceTicketDetail: Codable, Equatable, Sendable {
+    /// The most body text the Mac sends, in UTF-8 bytes.
+    public static let maxMarkdownBytes = 64 * 1024
+
+    public var projectId: String
+    public var ticketId: String
+    public var title: String?
+    public var status: TicketDetailStatus?
+    /// The agent that owns it, by slug, when one does.
+    public var agent: String?
+    public var markdown: String?
+    public var truncated: Bool?
+    public var error: String?
+
+    public init(projectId: String, ticketId: String, title: String? = nil, status: TicketDetailStatus? = nil,
+                agent: String? = nil, markdown: String? = nil, truncated: Bool? = nil, error: String? = nil) {
+        self.projectId = projectId
+        self.ticketId = ticketId
+        self.title = title
+        self.status = status
+        self.agent = agent
+        self.markdown = markdown
+        self.truncated = truncated
         self.error = error
     }
 }
@@ -540,6 +594,7 @@ public enum Frame: Equatable, Sendable {
     case sessionState(SessionState)
     case workspaceCommand(WorkspaceCommand)
     case workspaceState(WorkspaceState)
+    case workspaceTicket(WorkspaceTicketDetail)
     case settingsCommand(SettingsCommand)
     case settingsState(SettingsState)
 
@@ -563,6 +618,7 @@ public enum Frame: Equatable, Sendable {
         case .sessionState: return "session_state"
         case .workspaceCommand: return "workspace_command"
         case .workspaceState: return "workspace_state"
+        case .workspaceTicket: return "workspace_ticket"
         case .settingsCommand: return "settings_command"
         case .settingsState: return "settings_state"
         }
@@ -629,6 +685,7 @@ extension Frame: Codable {
         case .sessionState(let f): try f.encode(to: encoder)
         case .workspaceCommand(let f): try f.encode(to: encoder)
         case .workspaceState(let f): try f.encode(to: encoder)
+        case .workspaceTicket(let f): try f.encode(to: encoder)
         case .settingsCommand(let f): try f.encode(to: encoder)
         case .settingsState(let f): try f.encode(to: encoder)
         }
@@ -656,6 +713,7 @@ extension Frame: Codable {
         case "session_state": self = .sessionState(try SessionState(from: decoder))
         case "workspace_command": self = .workspaceCommand(try WorkspaceCommand(from: decoder))
         case "workspace_state": self = .workspaceState(try WorkspaceState(from: decoder))
+        case "workspace_ticket": self = .workspaceTicket(try WorkspaceTicketDetail(from: decoder))
         case "settings_command": self = .settingsCommand(try SettingsCommand(from: decoder))
         case "settings_state": self = .settingsState(try SettingsState(from: decoder))
         default: throw FrameError.unknownType(type)

@@ -17,6 +17,24 @@ struct RelaySessionControlHost {
         let name: String
         /// RR-523: the agent this session runs.
         var agent: SessionAgent = .puck
+        /// RR-534: its provider is ready for input.
+        var ready = true
+    }
+
+    /// RR-534: what each agent is doing, from the sources the notch glyph
+    /// resolves (`NotchSessionStatus.resolve`) and the agent cards.
+    struct Activity: Equatable {
+        /// The agent a launch was accepted for, before its session is live.
+        var launching: SessionAgent?
+        /// The agent receiving the Mac recording (the notch's Listening).
+        var listening: SessionAgent?
+        /// The agent whose reply is playing (the notch's Playing).
+        var playing: SessionAgent?
+        /// Agents running a turn: the notch's Working for the active agent,
+        /// and every agent whose provider turn is active.
+        var working: Set<SessionAgent> = []
+        /// The card's "Currently working on" description, per agent.
+        var workingOn: [SessionAgent: String] = [:]
     }
 
     struct Snapshot: Equatable {
@@ -28,6 +46,8 @@ struct RelaySessionControlHost {
         var launching = false
         /// Why Start is unavailable right now, worded as the session wheel words it.
         var startBlockedReason: String?
+        /// RR-534: per-agent activity for `session_state.agents`.
+        var activity = Activity()
     }
 
     /// Registered projects in display order (`ProjectRegistryV2Service.projects()`).
@@ -45,14 +65,18 @@ struct RelaySessionControlHost {
     /// without `project_id` uses, as the Mac's own Start Session does. Nil
     /// when the registry cannot provide it.
     var generalTasksProjectID: () -> String? = { nil }
+    /// RR-536: the app's config and `AppState.saveConfig`, which the phone's
+    /// `settings_command` reads and changes.
+    var config: () -> AppConfig = { AppConfig() }
+    var saveConfig: (AppConfig) -> Void = { _ in }
 }
 
 /// The app's side of remote session control (RR-456), shared by every
 /// connection on the session-control socket. The forced-command helper opens
 /// each connection with `identify`; the phone then sends `hello`, `ping` and
 /// `session_command` frames. Commands are answered, and changes pushed, as
-/// `session_state`. RR-532: `workspace_command` and `settings_command` are
-/// answered here too, each by its own handler. The phone's provider, model
+/// `session_state`. RR-532: `settings_command` is answered here too, by its
+/// own handler; `workspace_command` is validated here and answered by the server. The phone's provider, model
 /// and effort are not chosen by a start: a session started from the phone
 /// uses the Mac's defaults and is otherwise identical to one started from the
 /// Workspace. Main-thread only, like the `AppState` it calls; the server hops
@@ -66,6 +90,8 @@ final class RelaySessionControl {
     /// Set by `stop` until the sessions are gone, so the phone sees `none` at once.
     private var stopRequested = false
     private var lastPushed: SessionState?
+    /// The settings the phone last saw, answered or pushed (RR-536).
+    private var lastSettings: SettingsState?
     /// Whether the voice bridge's Relay Remote socket answers `status` with
     /// `running`. The server probes it before every line and tick.
     var bridgeAccepting = false
@@ -83,6 +109,9 @@ final class RelaySessionControl {
         case "identify":
             return [.sessionState(state(includingProjects: true))]
         case "ping", "session_command", "workspace_command", "settings_command":
+            if type == "settings_command", let reply = RelayRemoteSettings.refusal(forKeysIn: object, host: host) {
+                return [.settingsState(reply)]
+            }
             let frame: Frame
             do {
                 frame = try FrameCodec.decode(line)
@@ -93,8 +122,13 @@ final class RelaySessionControl {
             switch frame {
             case .ping(let ping): return [.pong(Pong(t: ping.t))]
             case .sessionCommand(let command): return [.sessionState(perform(command))]
-            case .workspaceCommand(let command): return [.workspaceState(RelayRemoteWorkspaceFeed.reply(to: command))]
-            case .settingsCommand(let command): return [.settingsState(RelayRemoteSettings.reply(to: command))]
+            // RR-535: the Workspace needs the daemon, so the socket server answers it
+            // asynchronously (`RelaySessionControlServer.serveWorkspace`).
+            case .workspaceCommand: return []
+            case .settingsCommand(let command):
+                let reply = RelayRemoteSettings.reply(to: command, host: host)
+                lastSettings = RelayRemoteSettings.state(host.config())
+                return [.settingsState(reply)]
             default: return []
             }
         default:
@@ -107,6 +141,15 @@ final class RelaySessionControl {
         let current = state()
         guard current != lastPushed else { return nil }
         lastPushed = current
+        return current
+    }
+
+    /// RR-536: the settings, when they changed on the Mac since the phone last
+    /// saw them. The first call only takes the baseline.
+    func settingsPushIfChanged() -> SettingsState? {
+        let current = RelayRemoteSettings.state(host.config())
+        defer { lastSettings = current }
+        guard let last = lastSettings, last != current else { return nil }
         return current
     }
 
@@ -143,7 +186,8 @@ final class RelaySessionControl {
             result.activeAgent = snapshot.activeAgent?.slug
             result.runningAgents = SessionAgent.allCases.filter(running.contains).map(\.slug)
         }
-        result.agents = RelayRemoteAgents.states(snapshot)
+        result.agents = RelayRemoteAgents.states(snapshot, sessionReady: bridgeAccepting && !stopRequested,
+                                                 stopping: stopRequested)
         if let error { result.error = error }
         if includingProjects {
             result.projects = host.projects().map {
@@ -189,8 +233,11 @@ final class RelaySessionControl {
     }
 
     private func start(projectID: String?, agent: SessionAgent?) -> SessionState {
-        // RR-532: no project is the built-in general-tasks project.
-        guard let projectID = projectID.flatMap({ $0.isEmpty ? nil : $0 }) ?? host.generalTasksProjectID() else {
+        // RR-532: no project is the built-in general-tasks project. RR-534:
+        // while a session runs, a named agent with no project starts beside
+        // it in the running project, as the Mac's "+" does.
+        let running = agent == nil ? nil : host.snapshot().live.first?.projectID
+        guard let projectID = projectID.flatMap({ $0.isEmpty ? nil : $0 }) ?? running ?? host.generalTasksProjectID() else {
             return state(error: "Choose a project to start.")
         }
         guard let project = host.projects().first(where: { $0.id == projectID }) else {
@@ -249,6 +296,10 @@ final class RelaySessionControlServer: @unchecked Sendable {
         let source: DispatchSourceRead
         var buffer = Data()
         var role = Role.undecided
+        /// RR-535: set by the phone's `workspace_command`; it then gets a
+        /// `workspace_state` whenever the board changes.
+        var workspaceSubscribed = false
+        var lastWorkspace: WorkspaceState?
 
         init(fd: Int32, source: DispatchSourceRead) {
             self.fd = fd
@@ -261,16 +312,25 @@ final class RelaySessionControlServer: @unchecked Sendable {
     private let tickInterval: TimeInterval
     private let control: RelaySessionControl
     private let commands: RelayAppCommands?
+    private let workspace: RelayRemoteWorkspaceFeed?
+    private let workspaceInterval: TimeInterval
     private let queue = DispatchQueue(label: "com.relayrunner.session-control")
     // Confined to `queue`.
     private var listenSource: DispatchSourceRead?
     private var timer: DispatchSourceTimer?
     private var clients: [ObjectIdentifier: Client] = [:]
+    private var workspacePollInFlight = false
+    private var lastWorkspacePoll = Date.distantPast
 
-    init(control: RelaySessionControl, commands: RelayAppCommands? = nil, path: String = defaultSocketPath,
-         bridgePath: String = defaultBridgeSocketPath, tickInterval: TimeInterval = 1) {
+    /// `workspaceInterval` is the least time between two Workspace board reads
+    /// (RR-535), so a burst of changes becomes one push.
+    init(control: RelaySessionControl, commands: RelayAppCommands? = nil, workspace: RelayRemoteWorkspaceFeed? = nil,
+         path: String = defaultSocketPath, bridgePath: String = defaultBridgeSocketPath, tickInterval: TimeInterval = 1,
+         workspaceInterval: TimeInterval = 2) {
         self.control = control
         self.commands = commands
+        self.workspace = workspace
+        self.workspaceInterval = workspaceInterval
         self.path = path
         self.bridgePath = bridgePath
         self.tickInterval = tickInterval
@@ -351,7 +411,18 @@ final class RelaySessionControlServer: @unchecked Sendable {
             let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any]
             let isAppCommand = object?["type"] as? String == "app_command"
             if client.role == .undecided { client.role = isAppCommand ? .app : .remote }
-            if isAppCommand { perform(object ?? [:], for: client) } else { sessionLines.append(line) }
+            if isAppCommand {
+                perform(object ?? [:], for: client)
+            } else if client.role == .remote, object?["type"] as? String == "workspace_command",
+                      case .workspaceCommand(let command)? = try? FrameCodec.decode(line) {
+                if command.action == .get {
+                    serveTicket(command, to: client)
+                } else {
+                    serveWorkspace(to: client)
+                }
+            } else {
+                sessionLines.append(line)
+            }
         }
         lines = sessionLines
         guard !lines.isEmpty else { return }
@@ -382,15 +453,88 @@ final class RelaySessionControlServer: @unchecked Sendable {
         }
     }
 
+    /// RR-535: answers a `workspace_command` with the board as it is now, and
+    /// subscribes the connection to its changes. A malformed command never
+    /// reaches here; it is answered by `RelaySessionControl.handle` instead.
+    private func serveWorkspace(to client: Client) {
+        client.workspaceSubscribed = true
+        Task { [self] in
+            let state = await workspace?.load() ?? RelayRemoteWorkspaceFeed.unavailable
+            let line = try? FrameCodec.encode(.workspaceState(state))
+            queue.async { [self] in
+                guard clients[ObjectIdentifier(client)] === client, let line else { return }
+                client.lastWorkspace = state
+                write([line], to: client)
+            }
+        }
+    }
+
+    /// RR-551: answers a `workspace_command` `get` with that one ticket's text.
+    /// It does not subscribe the connection: a ticket body is never pushed.
+    private func serveTicket(_ command: WorkspaceCommand, to client: Client) {
+        guard let projectID = command.projectId, let ticketID = command.ticketId else {
+            let reply = WorkspaceTicketDetail(projectId: command.projectId ?? "", ticketId: command.ticketId ?? "",
+                                              error: RelayRemoteWorkspaceFeed.unidentifiedTicket)
+            return write([try? FrameCodec.encode(.workspaceTicket(reply))].compactMap { $0 }, to: client)
+        }
+        Task { [self] in
+            let reply = await workspace?.ticket(projectID: projectID, ticketID: ticketID)
+                ?? WorkspaceTicketDetail(projectId: projectID, ticketId: ticketID,
+                                         error: RelayRemoteWorkspaceFeed.unavailable.error)
+            let line = try? FrameCodec.encode(.workspaceTicket(reply))
+            queue.async { [self] in
+                guard clients[ObjectIdentifier(client)] === client, let line else { return }
+                write([line], to: client)
+            }
+        }
+    }
+
+    /// While a phone is subscribed, reads the board at most every
+    /// `workspaceInterval` and pushes a `workspace_state` to each subscriber
+    /// whose last one differs.
+    private func pollWorkspace() {
+        guard let workspace, !workspacePollInFlight,
+              clients.values.contains(where: { $0.workspaceSubscribed }),
+              Date().timeIntervalSince(lastWorkspacePoll) >= workspaceInterval else { return }
+        workspacePollInFlight = true
+        lastWorkspacePoll = Date()
+        Task { [self] in
+            let state = await workspace.load()
+            let line = try? FrameCodec.encode(.workspaceState(state))
+            queue.async { [self] in
+                workspacePollInFlight = false
+                guard let line else { return }
+                for client in Array(clients.values) where client.workspaceSubscribed && client.lastWorkspace != state {
+                    client.lastWorkspace = state
+                    write([line], to: client)
+                }
+            }
+        }
+    }
+
     private func tick() {
+        pollWorkspace()
         guard clients.values.contains(where: { $0.role != .app }) else { return }
         let accepting = Self.bridgeAccepting(at: bridgePath)
         DispatchQueue.main.async { [self] in
             control.bridgeAccepting = accepting
-            guard let line = control.pushIfChanged().flatMap({ try? FrameCodec.encode(.sessionState($0)) }) else { return }
+            let lines = [control.pushIfChanged().map(Frame.sessionState),
+                         control.settingsPushIfChanged().map(Frame.settingsState)]
+                .compactMap { $0.flatMap { try? FrameCodec.encode($0) } }
+            guard !lines.isEmpty else { return }
             queue.async { [self] in
-                for client in Array(clients.values) where client.role != .app { write([line], to: client) }
+                for client in Array(clients.values) where client.role != .app { write(lines, to: client) }
             }
+        }
+    }
+
+    /// RR-534: push a changed `session_state` now instead of on the next
+    /// tick, so a phone sees an agent become ready before the bridge delivers
+    /// a message held for it. Main thread, like the control it reads.
+    func pushChangedState() {
+        guard let line = control.pushIfChanged().flatMap({ try? FrameCodec.encode(.sessionState($0)) }) else { return }
+        queue.async { [self] in
+            for client in Array(clients.values) where client.role != .app { write([line], to: client) }
         }
     }
 

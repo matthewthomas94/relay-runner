@@ -247,33 +247,206 @@ final class RelaySessionControlTests: XCTestCase {
         XCTAssertEqual(fake.startedAgents, [.sky])
     }
 
+    private var savedConfigs: [AppConfig] = []
+    private var liveConfig = AppConfig()
+
+    private func settingsControl(_ config: AppConfig) -> RelaySessionControl {
+        liveConfig = config
+        savedConfigs = []
+        var host = fake.host
+        host.config = { self.liveConfig }
+        host.saveConfig = { self.savedConfigs.append($0); self.liveConfig = $0 }
+        return RelaySessionControl(host: host)
+    }
+
+    private func settingsReply(_ control: RelaySessionControl, _ command: SettingsCommand) throws -> SettingsState {
+        let line = Data(try FrameCodec.encode(.settingsCommand(command)).dropLast())
+        guard case .settingsState(let state)? = control.handle(line: line).first else {
+            XCTFail("expected settings_state"); return SettingsState()
+        }
+        return state
+    }
+
+    /// RR-536: `get` reports the five values and the options the desktop offers, per provider.
+    func testSettingsGetMatchesDesktopForClaudeAndCodex() throws {
+        for provider in GeneralConfig.AgentProvider.allCases {
+            var config = AppConfig()
+            config.general.selectProvider(provider)
+            let state = try settingsReply(settingsControl(config), SettingsCommand(clientId: UUID().uuidString, action: .get))
+            XCTAssertNil(state.error)
+            XCTAssertEqual(state.provider, provider.rawValue)
+            XCTAssertEqual(state.model, config.general.model)
+            XCTAssertEqual(state.effort, config.general.orchestrator_effort)
+            XCTAssertEqual(state.speechSpeedPercent, Int((config.tts.rate * 100).rounded()))
+            XCTAssertEqual(state.modelOptions?.map(\.value), GeneralConfig.modelOptions(for: provider).map(\.value))
+            XCTAssertEqual(state.effortOptions?.map(\.value),
+                           GeneralConfig.reasoningEffortOptions(for: provider, model: config.general.model).map(\.value))
+            XCTAssertEqual(state.sizingOptions?.map(\.label), GeneralConfig.SubagentSizingPolicy.allCases.map(\.displayName))
+        }
+    }
+
+    func testSettingsSetSavesSpeedModelEffortAndSizing() throws {
+        var config = AppConfig()
+        config.general.selectProvider(.claude)
+        let control = settingsControl(config)
+        var state = try settingsReply(control, SettingsCommand(clientId: UUID().uuidString, action: .set, speechSpeedPercent: 130))
+        XCTAssertNil(state.error)
+        XCTAssertEqual(liveConfig.tts.rate, 1.3, accuracy: 0.0001)
+        XCTAssertEqual(state.speechSpeedPercent, 130)
+        let other = try XCTUnwrap(GeneralConfig.modelOptions(for: .claude).map(\.value).first { $0 != liveConfig.general.model })
+        state = try settingsReply(control, SettingsCommand(clientId: UUID().uuidString, action: .set, model: other))
+        XCTAssertNil(state.error)
+        XCTAssertEqual(liveConfig.general.model, other)
+        XCTAssertTrue(state.effortOptions?.map(\.value).contains(liveConfig.general.orchestrator_effort) == true,
+                      "the effort is corrected for the new model")
+        let effort = try XCTUnwrap(state.effortOptions?.last?.value)
+        state = try settingsReply(control, SettingsCommand(clientId: UUID().uuidString, action: .set, effort: effort, sizing: "user_default"))
+        XCTAssertNil(state.error)
+        XCTAssertEqual(liveConfig.general.orchestrator_effort, effort)
+        XCTAssertEqual(liveConfig.general.subagent_sizing_policy, .userDefault)
+    }
+
+    func testSettingsSetRefusesInvalidValuesAndSavesNothing() throws {
+        var config = AppConfig()
+        config.general.selectProvider(.claude)
+        let control = settingsControl(config)
+        let before = liveConfig
+        for command in [
+            SettingsCommand(clientId: UUID().uuidString, action: .set, speechSpeedPercent: 250),
+            SettingsCommand(clientId: UUID().uuidString, action: .set, speechSpeedPercent: 135),
+            SettingsCommand(clientId: UUID().uuidString, action: .set, model: "not-a-model"),
+            SettingsCommand(clientId: UUID().uuidString, action: .set, effort: "ludicrous"),
+            SettingsCommand(clientId: UUID().uuidString, action: .set, sizing: "whatever"),
+        ] {
+            let state = try settingsReply(control, command)
+            XCTAssertNotNil(state.error, "\(command)")
+            XCTAssertEqual(state.model, before.general.model)
+            XCTAssertEqual(state.speechSpeedPercent, Int((before.tts.rate * 100).rounded()))
+        }
+        XCTAssertEqual(savedConfigs.count, 0)
+        // A key outside the five is refused at decode, so nothing reaches the handler.
+        let bad = control.handle(line: Data(#"{"type":"settings_command","client_id":"x","action":"set","provider":"codex"}"#.utf8))
+        guard case .settingsState(let refused)? = bad.first else { return XCTFail("expected settings_state") }
+        XCTAssertNotNil(refused.error)
+        XCTAssertEqual(refused.provider, "claude")
+        XCTAssertEqual(liveConfig.general.provider, .claude)
+        XCTAssertEqual(savedConfigs.count, 0)
+    }
+
+    /// RR-536: a change made on the Mac is pushed once, after the baseline.
+    func testSettingsChangeOnTheMacIsPushed() throws {
+        let control = settingsControl(AppConfig())
+        XCTAssertNil(control.settingsPushIfChanged(), "the first call takes the baseline")
+        XCTAssertNil(control.settingsPushIfChanged())
+        liveConfig.tts.rate = 0.8
+        XCTAssertEqual(control.settingsPushIfChanged()?.speechSpeedPercent, 80)
+        XCTAssertNil(control.settingsPushIfChanged())
+        _ = try settingsReply(control, SettingsCommand(clientId: UUID().uuidString, action: .set, speechSpeedPercent: 150))
+        XCTAssertNil(control.settingsPushIfChanged(), "a phone's own change is not echoed as a push")
+    }
+
     /// RR-532: each new command reaches its own handler and gets one
-    /// well-formed reply; until RR-534 to RR-536 land the replies say the
-    /// feature is not available and change nothing.
+    /// well-formed reply. RR-535: the Workspace is answered by the socket
+    /// server, which needs the daemon, so `handle` validates it and says nothing.
     func testWorkspaceAndSettingsCommandsGetWellFormedReplies() throws {
         let id = UUID().uuidString
-        func reply(_ frame: Frame) throws -> Frame {
+        func reply(_ frame: Frame) throws -> [Frame] {
             let replies = control.handle(line: Data(try FrameCodec.encode(frame).dropLast()))
-            XCTAssertEqual(replies.count, 1)
-            let only = try XCTUnwrap(replies.first)
-            XCTAssertNoThrow(try FrameCodec.encode(only), "the reply is well formed")
-            return only
+            for each in replies { XCTAssertNoThrow(try FrameCodec.encode(each), "the reply is well formed") }
+            return replies
         }
-        XCTAssertEqual(try reply(.workspaceCommand(WorkspaceCommand(clientId: id))),
-                       .workspaceState(WorkspaceState(projects: [], tickets: [], error: RelayRemoteWorkspaceFeed.unsupported)))
-        XCTAssertEqual(try reply(.settingsCommand(SettingsCommand(clientId: id, action: .get))),
-                       .settingsState(SettingsState(error: RelayRemoteSettings.unsupported)))
-        XCTAssertEqual(try reply(.settingsCommand(SettingsCommand(clientId: UUID().uuidString, action: .set,
-                                                                  speechSpeedPercent: 150, model: "sonnet"))),
-                       .settingsState(SettingsState(error: RelayRemoteSettings.unsupported)))
+        XCTAssertEqual(try reply(.workspaceCommand(WorkspaceCommand(clientId: id))), [])
+        guard case .settingsState(let settings)? = try reply(.settingsCommand(SettingsCommand(clientId: id, action: .get))).first else {
+            return XCTFail("a settings_state answers settings_command")
+        }
+        XCTAssertNil(settings.error)
         XCTAssertEqual(fake.started, [])
         XCTAssertEqual(fake.stops, 0)
         // A malformed command is answered with the codec's error, as session_command is.
         let bad = control.handle(line: Data(#"{"type":"workspace_command","client_id":"abc","action":"list"}"#.utf8))
         XCTAssertEqual(bad, [.error(ErrorFrame(code: "invalid_field", message: "Frame rejected"))])
-        // Per-agent state is not reported yet, so session_state is unchanged.
-        fake.snapshot = .init(live: [.init(projectID: "p-relay", name: "relay-runner")], activeAgent: .puck)
-        XCTAssertNil(try XCTUnwrap(state(control.handle(line: command(.state)))).agents)
+    }
+
+    /// RR-534: every agent is reported, running or not, and each state the
+    /// desktop shows is pushed as it changes, without the phone asking.
+    func testAgentsReportEveryAgentThroughItsLifecycle() throws {
+        func george(_ pushed: SessionState?, file: StaticString = #filePath, line: UInt = #line) -> AgentStatus? {
+            guard let pushed else {
+                XCTFail("expected a push", file: file, line: line)
+                return nil
+            }
+            XCTAssertEqual(pushed.agents?.map(\.agent), ["puck", "isabella", "george", "sky"], file: file, line: line)
+            return pushed.agents?.first { $0.agent == "george" }
+        }
+        let off = try XCTUnwrap(state(control.handle(line: command(.state))))
+        XCTAssertEqual(off.agents?.map(\.state), [.off, .off, .off, .off])
+        XCTAssertEqual(off.agents?.map(\.running), [false, false, false, false])
+        _ = control.pushIfChanged()
+
+        fake.snapshot.launching = true
+        fake.snapshot.activity.launching = .george
+        XCTAssertEqual(george(control.pushIfChanged())?.state, .starting)
+        XCTAssertEqual(george(control.state())?.running, false)
+
+        fake.snapshot = .init(live: [.init(projectID: "p-relay", name: "relay-runner", agent: .george, ready: false)],
+                              activeAgent: .george)
+        control.bridgeAccepting = true
+        let live = george(control.pushIfChanged())
+        XCTAssertEqual(live?.state, .starting, "its provider is still starting")
+        XCTAssertEqual(live?.running, true)
+
+        fake.snapshot.live[0].ready = true
+        XCTAssertEqual(george(control.pushIfChanged())?.state, .ready)
+        XCTAssertNil(control.pushIfChanged(), "an unchanged state is not pushed again")
+
+        fake.snapshot.activity.working = [.george]
+        fake.snapshot.activity.workingOn = [.george: "Relay Remote routing"]
+        let working = george(control.pushIfChanged())
+        XCTAssertEqual(working?.state, .working)
+        XCTAssertEqual(working?.workingOn, "Relay Remote routing")
+
+        fake.snapshot.activity.playing = .george
+        XCTAssertEqual(george(control.pushIfChanged())?.state, .playing)
+        fake.snapshot.activity = .init()
+        let rested = george(control.pushIfChanged())
+        XCTAssertEqual(rested?.state, .ready)
+        XCTAssertNil(rested?.workingOn)
+        XCTAssertEqual(control.state().agents?.filter { $0.agent != "george" }.map(\.state), [.off, .off, .off])
+    }
+
+    /// RR-534: a background agent's own turn is reported, while the active
+    /// one listens; a stopped agent's description is not shown.
+    func testEachAgentReportsItsOwnActivity() throws {
+        fake.snapshot = .init(live: [.init(projectID: "p-relay", name: "relay-runner", agent: .puck),
+                                     .init(projectID: "p-relay", name: "relay-runner", agent: .sky)],
+                              activeAgent: .puck,
+                              activity: .init(listening: .puck, working: [.sky],
+                                              workingOn: [.sky: "Settings review", .george: "Old work"]))
+        control.bridgeAccepting = true
+        let agents = try XCTUnwrap(control.state().agents)
+        XCTAssertEqual(agents.map(\.state), [.listening, .off, .off, .working])
+        XCTAssertEqual(agents.map(\.workingOn), [nil, nil, nil, "Settings review"])
+    }
+
+    /// RR-534: with a session running, a named agent and no project starts
+    /// beside it in the running project, as the Mac's "+" does.
+    func testANamedAgentWithoutAProjectStartsBesideTheRunningSession() throws {
+        var host = fake.host
+        host.generalTasksProjectID = { "p-general" }
+        control = RelaySessionControl(host: host)
+        fake.snapshot = .init(live: [.init(projectID: "p-notes", name: "notes", agent: .puck)], activeAgent: .puck)
+        control.bridgeAccepting = true
+        let reply = try XCTUnwrap(state(control.handle(line: command(.start, agent: "isabella"))))
+        XCTAssertNil(reply.error)
+        XCTAssertEqual(fake.started, ["/repos/notes"])
+        XCTAssertEqual(fake.startedAgents, [.isabella])
+    }
+
+    /// RR-534: the bridge's request to start an agent for a phone message.
+    func testTheBridgesStartRequestNamesAKnownAgent() {
+        XCTAssertEqual(RelayRemoteAgents.startRequest(["source": "remote_agent", "state": "start", "agent": "george"]), .george)
+        XCTAssertNil(RelayRemoteAgents.startRequest(["source": "remote_agent", "state": "start", "agent": "oberon"]))
+        XCTAssertNil(RelayRemoteAgents.startRequest(["source": "remote_device", "state": "start", "agent": "george"]))
     }
 
     func testStopEndsTheSessionAndReportsNoneAtOnce() throws {
@@ -344,6 +517,117 @@ final class RelaySessionControlTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(bridge.probes, 1)
     }
 
+    /// RR-535: a `workspace_command` is answered from the feed, then the phone is
+    /// pushed a fresh `workspace_state` when the board changes, once for a burst.
+    func testWorkspaceCommandIsAnsweredThenPushedWhenTheBoardChanges() async throws {
+        let board = WorkspaceBoard(tickets: [("RR-1", "First", "backlog")])
+        let directory = "/tmp/rsw-\(UUID().uuidString.prefix(8))"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let feed = RelayRemoteWorkspaceFeed(
+            projects: { self.fake.projects }, fetchDashboard: { _ in board.snapshot }, fetchOwners: { [:] })
+        let server = RelaySessionControlServer(
+            control: control, workspace: feed, path: directory + "/c.sock", bridgePath: directory + "/b.sock",
+            tickInterval: 0.05, workspaceInterval: 0.3)
+        try server.start()
+        defer { server.stop() }
+
+        let client = try SocketClient(path: directory + "/c.sock")
+        client.send(#"{"device_id":"phone-1","type":"identify"}"#)
+        client.send(String(decoding: Data(try FrameCodec.encode(.workspaceCommand(WorkspaceCommand(clientId: UUID().uuidString))).dropLast()),
+                           as: UTF8.self))
+        let first = try await client.workspaceState()
+        XCTAssertEqual(first.tickets.map(\.id), ["RR-1"])
+        XCTAssertEqual(first.projects.map(\.id), ["p-relay", "p-notes", "p-gone"])
+        XCTAssertNil(first.error)
+
+        // Nothing changed: nothing is pushed.
+        try await Task.sleep(nanoseconds: 900_000_000)
+        XCTAssertEqual(try client.pendingWorkspaceStates(), 0)
+
+        // A burst of changes inside one interval is one push.
+        board.tickets = [("RR-1", "First", "in_progress")]
+        board.tickets.append(("RR-2", "Second", "ready"))
+        board.tickets.append(("RR-3", "Third", "backlog"))
+        let pushed = try await client.workspaceState()
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: pushed.tickets.map { ($0.id, $0.status) }),
+                       ["RR-1": .inProgress, "RR-2": .queued, "RR-3": .backlog])
+        try await Task.sleep(nanoseconds: 900_000_000)
+        XCTAssertEqual(try client.pendingWorkspaceStates(), 0)
+    }
+
+    /// RR-551: `get` is answered with that one ticket and does not subscribe the
+    /// phone to board pushes; one with no ids is a well-formed error.
+    func testGetIsAnsweredWithTheTicketAndSubscribesToNothing() async throws {
+        let board = WorkspaceBoard(tickets: [("RR-1", "First", "backlog")])
+        let directory = "/tmp/rsg-\(UUID().uuidString.prefix(8))"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let feed = RelayRemoteWorkspaceFeed(
+            projects: { self.fake.projects }, fetchDashboard: { _ in board.snapshot }, fetchOwners: { [:] },
+            loadTicket: { item in
+                let ticket = Ticket(id: "RR-1", title: "First", status: .backlog, priority: .medium, dependsOn: [],
+                                    runId: nil, canceled: false, order: 1, description: nil, body: "\nThe body.\n")
+                return ProgramTicketDetail(item: item, identity: nil, ticket: ticket, ticketPath: nil, description: nil,
+                                           acceptanceCriteria: nil, imageAttachments: [], unavailableMessage: nil)
+            })
+        let server = RelaySessionControlServer(
+            control: control, workspace: feed, path: directory + "/c.sock", bridgePath: directory + "/b.sock",
+            tickInterval: 0.05, workspaceInterval: 0.1)
+        try server.start()
+        defer { server.stop() }
+        let client = try SocketClient(path: directory + "/c.sock")
+        client.send(#"{"device_id":"phone-1","type":"identify"}"#)
+        func line(_ command: WorkspaceCommand) throws -> String {
+            String(decoding: Data(try FrameCodec.encode(.workspaceCommand(command)).dropLast()), as: UTF8.self)
+        }
+        client.send(try line(WorkspaceCommand(clientId: UUID().uuidString, action: .get, projectId: "p-relay",
+                                              ticketId: "RR-1")))
+        let reply = try await client.workspaceTicket()
+        XCTAssertEqual(reply.ticketId, "RR-1")
+        XCTAssertEqual(reply.title, "First")
+        XCTAssertEqual(reply.status, .backlog)
+        XCTAssertEqual(reply.markdown, "\nThe body.\n")
+        XCTAssertNil(reply.error)
+        // A body is never pushed: no board change reaches a phone that only asked for a ticket.
+        board.tickets = [("RR-1", "First", "in_progress")]
+        try await Task.sleep(nanoseconds: 600_000_000)
+        XCTAssertEqual(try client.pendingWorkspaceStates(), 0)
+
+        client.send(try line(WorkspaceCommand(clientId: UUID().uuidString, action: .get)))
+        let bad = try await client.workspaceTicket()
+        XCTAssertEqual(bad.error, RelayRemoteWorkspaceFeed.unidentifiedTicket)
+        XCTAssertNil(bad.markdown)
+    }
+
+    /// RR-535: with the daemon unreachable the reply is a well-formed error, and quickly.
+    func testWorkspaceCommandWithTheDaemonDownAnswersWithAnError() async throws {
+        let directory = "/tmp/rsx-\(UUID().uuidString.prefix(8))"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        var feed = RelayRemoteWorkspaceFeed(
+            projects: { self.fake.projects },
+            fetchDashboard: { _ in
+                try await Task.sleep(nanoseconds: 60_000_000_000)
+                throw URLError(.cannotConnectToHost)
+            },
+            fetchOwners: { [:] })
+        feed.timeout = 0.3
+        let server = RelaySessionControlServer(
+            control: control, workspace: feed, path: directory + "/c.sock", bridgePath: directory + "/b.sock",
+            tickInterval: 0.05)
+        try server.start()
+        defer { server.stop() }
+        let client = try SocketClient(path: directory + "/c.sock")
+        client.send(#"{"device_id":"phone-1","type":"identify"}"#)
+        client.send(String(decoding: Data(try FrameCodec.encode(.workspaceCommand(WorkspaceCommand(clientId: UUID().uuidString))).dropLast()),
+                           as: UTF8.self))
+        let state = try await client.workspaceState()
+        XCTAssertEqual(state.error, RelayRemoteWorkspaceFeed.timedOut)
+        XCTAssertEqual(state.tickets, [])
+        XCTAssertEqual(state.projects.count, 3, "the project list still shows")
+    }
+
     func testBridgeProbeNeedsARunningBridge() throws {
         let directory = "/tmp/rsb-\(UUID().uuidString.prefix(8))"
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
@@ -383,6 +667,37 @@ private final class SocketClient {
     func send(_ line: String) {
         let data = Data((line + "\n").utf8)
         _ = data.withUnsafeBytes { write(fd, $0.baseAddress, data.count) }
+    }
+
+    /// The next `workspace_state`, skipping the session_state pushes around it.
+    @MainActor
+    func workspaceState() async throws -> WorkspaceState {
+        while true {
+            if case .workspaceState(let state) = try await frame() { return state }
+        }
+    }
+
+    /// The next `workspace_ticket`, skipping the session_state pushes around it.
+    @MainActor
+    func workspaceTicket() async throws -> WorkspaceTicketDetail {
+        while true {
+            if case .workspaceTicket(let ticket) = try await frame() { return ticket }
+        }
+    }
+
+    /// `workspace_state` frames already waiting on the socket.
+    @MainActor
+    func pendingWorkspaceStates() throws -> Int {
+        var count = 0
+        var chunk = [UInt8](repeating: 0, count: 65536)
+        let n = read(fd, &chunk, chunk.count)
+        if n > 0 { buffer.append(contentsOf: chunk[0..<n]) }
+        while let newline = buffer.firstIndex(of: 0x0A) {
+            let line = Data(buffer[buffer.startIndex..<newline])
+            buffer = Data(buffer[buffer.index(after: newline)...])
+            if case .workspaceState = try FrameCodec.decode(line) { count += 1 }
+        }
+        return count
     }
 
     @MainActor
