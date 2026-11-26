@@ -51,6 +51,19 @@ final class RemoteSessionTests: XCTestCase {
         }
     }
 
+    func testStateChangesAreReportedOnceEach() async throws {
+        let transport = FakeTransport(mac: FakeMac(), outcomes: [.fail(.unreachable), .fail(.unreachable), .connect])
+        let session = Fixtures.session(transport: transport, clock: TestClock())
+        var states: [RemoteSession.State] = []
+        session.onStateChange = { states.append($0) }
+        session.start()
+        await eventually { session.state == .connected }
+        session.stop()
+
+        XCTAssertEqual(states, [.connecting, .waiting(retryIn: 0.5), .connecting, .waiting(retryIn: 1), .connecting,
+                                .connected, .idle])
+    }
+
     func testStableConnectionResetsBackoffButAFlappingOneDoesNot() async throws {
         let clock = TestClock()
         let mac = FakeMac()

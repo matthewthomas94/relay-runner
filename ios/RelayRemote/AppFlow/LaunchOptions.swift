@@ -19,7 +19,10 @@ import Foundation
 ///   tab's ticket modal on sample data (add `--workspace-sample=unreachable` for the banner),
 /// - `--sample-settings` fills the Settings tab with sample data, unpaired,
 /// - `--scroll-bottom` opens scrolling screens at their end,
-/// - `--reset-onboarding` forgets that onboarding finished, as a fresh install.
+/// - `--reset-onboarding` forgets that onboarding finished, as a fresh install,
+/// - `--scripted-mac=<seconds>` connects to a scripted Mac inside the app that
+///   sends a reply from George every `seconds`, and `--scripted-mac-drop=<seconds>`
+///   makes it unreachable after `seconds` (RR-545, reply notifications).
 /// Release builds ignore them.
 struct LaunchOptions: Equatable {
     var showsGallery = false
@@ -35,6 +38,8 @@ struct LaunchOptions: Equatable {
     var permissionStep: PermissionStep?
     var sampleSettings = false
     var scrollsToBottom = false
+    var scriptedMacReplyEvery: Double?
+    var scriptedMacDropAfter: Double?
 
     init(arguments: [String]) {
         for argument in arguments {
@@ -54,6 +59,8 @@ struct LaunchOptions: Equatable {
             if let value = Self.value(of: "--tab", in: argument) { tab = MainTab(rawValue: value) }
             if let value = Self.value(of: "--agents-sample", in: argument) { agentsSample = value }
             if let value = Self.value(of: "--tutorial-step", in: argument) { tutorialSample = value }
+            if let value = Self.value(of: "--scripted-mac", in: argument) { scriptedMacReplyEvery = Double(value) }
+            if let value = Self.value(of: "--scripted-mac-drop", in: argument) { scriptedMacDropAfter = Double(value) }
         }
     }
 

@@ -172,6 +172,16 @@ final class VoiceController {
         queue.receive(frame)
     }
 
+    /// RR-545: holds the audio session in the background for `reason`, or
+    /// releases it. Returns whether the session is held. Releasing with nothing
+    /// recording or playing reports the audio idle.
+    @discardableResult
+    func setKeepAlive(_ on: Bool, for reason: KeepAliveReason) -> Bool {
+        let held = (try? audio.setKeepAlive(on, for: reason)) != nil && audio.isKeepingAlive
+        if !on { notifyIfIdle() }
+        return held
+    }
+
     /// Called when the Mac is forgotten: release the microphone and speaker.
     func shutdown() {
         isListening = false

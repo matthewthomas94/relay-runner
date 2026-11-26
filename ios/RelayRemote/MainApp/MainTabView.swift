@@ -37,5 +37,7 @@ struct MainTabView: View {
             Color.clear.ignoresSafeArea().relayBanner(banner)
         }
         .onAppear { if let ticketSample { model.showSampleTicket(ticketSample.row) } }
+        // RR-545: a tapped reply notification opens the Agents tab on its agent.
+        .onChange(of: model.agentsTabRequests) { selection = .agents }
     }
 }
