@@ -7,16 +7,7 @@ struct TTSSettingsTab: View {
 
     var body: some View {
         SettingsStack {
-            SettingsSection("Playback") {
-                SettingsControlRow("Playback Mode") {
-                    SettingsSegmentedPicker("Playback Mode", selection: $config.auto_play, options: [
-                        (label: "Auto-play", value: true),
-                        (label: "Queue", value: false),
-                    ])
-                }
-
-                SettingsDivider()
-
+            SettingsSection("Voice") {
                 SettingsControlRow("Speech Speed") {
                     SettingsSlider(value: $config.rate, in: 0.5...2.0, step: 0.1,
                                    label: { "\(String(format: "%.1f", $0))x" })

@@ -262,7 +262,7 @@ final class CapsLockGestureTests: XCTestCase {
     func testActivationModeDefaultsToHoldOnlyOnAFreshInstall() {
         XCTAssertTrue(SttConfig.freshInstall().holdsToTalk)
         XCTAssertFalse(SttConfig().holdsToTalk)
-        XCTAssertEqual(STTSettingsTab.activationOptions.map(\.value), [
+        XCTAssertEqual(AwarenessSettingsTab.activationOptions.map(\.value), [
             SttConfig.ActivationMode.hold, SttConfig.ActivationMode.capsLock,
         ])
         XCTAssertEqual(OverlayController.sendHint(holdsToTalk: true), "Release Control and Option to send")

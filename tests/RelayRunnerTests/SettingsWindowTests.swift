@@ -356,7 +356,14 @@ final class SettingsWindowTests: XCTestCase {
 
         XCTAssertFalse(contents.contains("Picker(\"Input Device\""))
         XCTAssertFalse(contents.contains("Picker(\"Input Mode\""))
-        XCTAssertTrue(contents.contains("config.input_mode == \"push_to_talk\""))
+        XCTAssertFalse(contents.contains("input_mode == \"push_to_talk\""))
+
+        let interface = try String(
+            contentsOf: root.appendingPathComponent("Sources/relay-runner/Settings/AwarenessSettingsTab.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(interface.contains("stt.input_mode == \"push_to_talk\""))
+        XCTAssertTrue(interface.contains("SettingsSegmentedPicker(\"Playback Mode\""))
     }
 
     func testKeyCaptureExposesAccessibleResetAndCancelRecovery() throws {
