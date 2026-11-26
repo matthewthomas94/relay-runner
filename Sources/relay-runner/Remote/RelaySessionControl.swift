@@ -45,6 +45,10 @@ struct RelaySessionControlHost {
     /// without `project_id` uses, as the Mac's own Start Session does. Nil
     /// when the registry cannot provide it.
     var generalTasksProjectID: () -> String? = { nil }
+    /// RR-536: the app's config and `AppState.saveConfig`, which the phone's
+    /// `settings_command` reads and changes.
+    var config: () -> AppConfig = { AppConfig() }
+    var saveConfig: (AppConfig) -> Void = { _ in }
 }
 
 /// The app's side of remote session control (RR-456), shared by every
@@ -66,6 +70,8 @@ final class RelaySessionControl {
     /// Set by `stop` until the sessions are gone, so the phone sees `none` at once.
     private var stopRequested = false
     private var lastPushed: SessionState?
+    /// The settings the phone last saw, answered or pushed (RR-536).
+    private var lastSettings: SettingsState?
     /// Whether the voice bridge's Relay Remote socket answers `status` with
     /// `running`. The server probes it before every line and tick.
     var bridgeAccepting = false
@@ -83,6 +89,9 @@ final class RelaySessionControl {
         case "identify":
             return [.sessionState(state(includingProjects: true))]
         case "ping", "session_command", "workspace_command", "settings_command":
+            if type == "settings_command", let reply = RelayRemoteSettings.refusal(forKeysIn: object, host: host) {
+                return [.settingsState(reply)]
+            }
             let frame: Frame
             do {
                 frame = try FrameCodec.decode(line)
@@ -94,7 +103,10 @@ final class RelaySessionControl {
             case .ping(let ping): return [.pong(Pong(t: ping.t))]
             case .sessionCommand(let command): return [.sessionState(perform(command))]
             case .workspaceCommand(let command): return [.workspaceState(RelayRemoteWorkspaceFeed.reply(to: command))]
-            case .settingsCommand(let command): return [.settingsState(RelayRemoteSettings.reply(to: command))]
+            case .settingsCommand(let command):
+                let reply = RelayRemoteSettings.reply(to: command, host: host)
+                lastSettings = RelayRemoteSettings.state(host.config())
+                return [.settingsState(reply)]
             default: return []
             }
         default:
@@ -107,6 +119,15 @@ final class RelaySessionControl {
         let current = state()
         guard current != lastPushed else { return nil }
         lastPushed = current
+        return current
+    }
+
+    /// RR-536: the settings, when they changed on the Mac since the phone last
+    /// saw them. The first call only takes the baseline.
+    func settingsPushIfChanged() -> SettingsState? {
+        let current = RelayRemoteSettings.state(host.config())
+        defer { lastSettings = current }
+        guard let last = lastSettings, last != current else { return nil }
         return current
     }
 
@@ -387,9 +408,12 @@ final class RelaySessionControlServer: @unchecked Sendable {
         let accepting = Self.bridgeAccepting(at: bridgePath)
         DispatchQueue.main.async { [self] in
             control.bridgeAccepting = accepting
-            guard let line = control.pushIfChanged().flatMap({ try? FrameCodec.encode(.sessionState($0)) }) else { return }
+            let lines = [control.pushIfChanged().map(Frame.sessionState),
+                         control.settingsPushIfChanged().map(Frame.settingsState)]
+                .compactMap { $0.flatMap { try? FrameCodec.encode($0) } }
+            guard !lines.isEmpty else { return }
             queue.async { [self] in
-                for client in Array(clients.values) where client.role != .app { write([line], to: client) }
+                for client in Array(clients.values) where client.role != .app { write(lines, to: client) }
             }
         }
     }

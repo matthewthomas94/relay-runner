@@ -5545,7 +5545,9 @@ final class AppState {
             message: { [weak self] in self?.contextSwitchMessage },
             generalTasksProjectID: { [weak self] in
                 (try? self?.projectRegistryV2?.ensureGeneralTasksProject())?.projectID
-            }
+            },
+            config: { [weak self] in self?.relayAppConfig ?? AppConfig() },
+            saveConfig: { [weak self] in self?.saveRelayAppConfig($0) }
         )
     }
 
