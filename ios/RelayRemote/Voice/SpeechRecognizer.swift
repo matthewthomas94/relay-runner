@@ -5,7 +5,7 @@ import Speech
 /// On-device transcription with `SpeechAnalyzer` and `SpeechTranscriber`
 /// (RR-421), fed from an `AVAudioEngine` input tap. One analyzer serves one
 /// utterance: the caller decides where an utterance ends (push-to-talk
-/// release, or the hands-free endpointer), calls `finishUtterance()` for the
+/// release or the second tap), calls `finishUtterance()` for the
 /// final text, and starts the next one.
 @MainActor
 final class SpeechRecognizer {

@@ -28,7 +28,8 @@ final class AppModel {
     /// The Agents tab's chats, selection and per-agent state (RR-540).
     let agents: AgentsModel
     private(set) var pairingState = PairingState.idle
-    private(set) var startupError: String?
+    /// Set when the device key could not be created; pairing reports it.
+    @ObservationIgnored private var keyFailure: String?
     /// The Workspace tab's selected project tab (RR-543); nil is All. Lives
     /// here so it lasts for the app session, not just while the tab is shown.
     var workspaceProject: String?
@@ -125,7 +126,7 @@ final class AppModel {
         do {
             deviceKey = try DeviceKeyStore.loadOrCreate(in: secrets)
         } catch {
-            startupError = "The device key could not be created or read from the Keychain."
+            keyFailure = "The device key could not be created or read from the Keychain."
         }
         #if DEBUG
         let launch = LaunchOptions.current
@@ -147,7 +148,10 @@ final class AppModel {
     }
 
     func pair(code: String) async {
-        guard let deviceKey else { return }
+        guard let deviceKey else {
+            pairingState = .failed(keyFailure ?? "This iPhone could not create its device key.")
+            return
+        }
         pairingState = .pairing
         do {
             let payload = try PairingPayload.parse(code)

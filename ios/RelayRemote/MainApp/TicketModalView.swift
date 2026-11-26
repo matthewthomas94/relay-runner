@@ -3,7 +3,7 @@ import RelayRemoteProtocol
 import SwiftUI
 
 /// What the ticket modal reads when it is not the Mac's: fixed sample data for
-/// a debug screenshot (`--ticket-sample=<name>`, see `LaunchOptions`).
+/// a screenshot (`--ticket-sample=<name>`, see `LaunchOptions`).
 struct TicketSample {
     var row: WorkspaceTicket
     var workspace: WorkspaceState

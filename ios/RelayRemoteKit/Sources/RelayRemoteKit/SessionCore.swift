@@ -37,7 +37,7 @@ public struct SessionCore: Sendable {
     public struct Reaction: Equatable, Sendable {
         /// Frames to send now, in order.
         public var send: [Frame] = []
-        /// True when the frame is new and belongs on the debug screen.
+        /// True when the frame is new and belongs in the frame record.
         public var isNew = false
         /// Utterances dropped because they outlived `outboxLifetime`.
         public var expired: [PendingUtterance] = []

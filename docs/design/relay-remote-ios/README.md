@@ -153,7 +153,20 @@ No page title.
 
 Local notifications only: no APNs and no cloud service. While the app is alive in the background with its audio session active, it keeps its connection to the Mac. Each agent reply posts a local notification titled with the agent's name; the body is the reply's short spoken text. Tapping it opens that agent's chat. If the connection drops, the app posts "Lost connection to your Mac. Open to reconnect."
 
-Accepted trade-offs: nothing arrives if the app is swiped away or killed, or after a reboot; the orange microphone dot shows while audio is held; battery use is higher.
+Accepted trade-offs: nothing arrives if the app is swiped away or killed, or after a reboot; battery use is higher. The silent hold opens no input, so the orange microphone dot should show only while the phone is recording or playing a reply; a device has to confirm that.
+
+## Where the build differs from this design (RR-546)
+
+The finished app was compared screen by screen on the iOS 26.2 simulator (iPhone 17 Pro). What differs, and why:
+
+- **Screen 08 (speech recognition) is not built.** `SpeechTranscriber` runs on device and needs only the microphone permission, so there is nothing to ask. The Info.plist has no speech-recognition string. To be confirmed once on a device, since the simulator reports `SpeechTranscriber` as unsupported.
+- **Workspace rows (26) show the ticket and its owning agent only.** The reference also shows a "Running" or "Review" chip, a line such as "Worker running · 6 min" or "Waits on RR-532", and an agent on every row. Those contradict the rule above against status pills, and the Mac's feed carries no run state or dependency (`workspace_state` sends id, title, lane, project and owner only, which is also a privacy decision). The lane heading already says In progress, Queued or Backlog.
+- **Project tabs show counts in a larger type size** than the reference and their sample data differs (the reference's All is 6, the sample's 4). The counts are live in the app.
+- **Primary buttons are white**, as the Style section says. The reference images 06–12 show a light grey fill, which looks like a pressed or in-transition frame; the styles board and screens 21 to 25 show white.
+- **Agents screens (21–25) have no textured background.** The reference shows a faint dark wave behind the chat; the build is flat black under the state glows.
+- **Pairing check (14)** uses a slightly larger size for the full host key and the "Waiting for your Mac" lines than the reference.
+- **Agents samples (22, 23) draw no state glow.** The glow is driven by the live voice layer (`AppGlowLayer` reads `AppModel.voice`), and the sample screens build screen state without it. The glows are on the gallery's Listening and Playback pages (`--gallery=listening`, `--gallery=playback`).
+- **Screens 07 and 28** (the iOS permission prompt and the lock-screen notification) are drawn by iOS and were not captured on the simulator.
 
 ## Not in scope
 
