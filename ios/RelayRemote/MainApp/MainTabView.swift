@@ -7,8 +7,12 @@ struct MainTabView: View {
     let model: AppModel
     @State private var selection: MainTab
 
-    init(model: AppModel, initialTab: MainTab = .agents) {
+    /// Debug only: sample Workspace data for a screenshot (`LaunchOptions`).
+    private let workspaceSample: String?
+
+    init(model: AppModel, initialTab: MainTab = .agents, workspaceSample: String? = nil) {
         self.model = model
+        self.workspaceSample = workspaceSample
         _selection = State(initialValue: initialTab)
     }
 
@@ -16,7 +20,7 @@ struct MainTabView: View {
         ZStack {
             switch selection {
             case .agents: AgentsTabView(model: model)
-            case .workspace: WorkspaceTabView(model: model)
+            case .workspace: WorkspaceTabView(model: model, sample: WorkspaceFeed.debugSample(workspaceSample))
             case .settings: SettingsTabView(model: model)
             }
         }

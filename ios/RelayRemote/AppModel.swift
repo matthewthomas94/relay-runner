@@ -24,6 +24,9 @@ final class AppModel {
     private(set) var voice: VoiceController?
     private(set) var pairingState = PairingState.idle
     private(set) var startupError: String?
+    /// The Workspace tab's selected project tab (RR-543); nil is All. Lives
+    /// here so it lasts for the app session, not just while the tab is shown.
+    var workspaceProject: String?
     /// The Remote mode switch (RR-454). On: this phone owns the microphone and
     /// speaker and the Mac stays quiet. Off: the Mac listens and speaks and the
     /// phone shows the text. Persisted, and sent to the Mac on connect and change.
