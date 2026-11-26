@@ -365,9 +365,88 @@ final class RelaySessionControlTests: XCTestCase {
         // A malformed command is answered with the codec's error, as session_command is.
         let bad = control.handle(line: Data(#"{"type":"workspace_command","client_id":"abc","action":"list"}"#.utf8))
         XCTAssertEqual(bad, [.error(ErrorFrame(code: "invalid_field", message: "Frame rejected"))])
-        // Per-agent state is not reported yet, so session_state is unchanged.
-        fake.snapshot = .init(live: [.init(projectID: "p-relay", name: "relay-runner")], activeAgent: .puck)
-        XCTAssertNil(try XCTUnwrap(state(control.handle(line: command(.state)))).agents)
+    }
+
+    /// RR-534: every agent is reported, running or not, and each state the
+    /// desktop shows is pushed as it changes, without the phone asking.
+    func testAgentsReportEveryAgentThroughItsLifecycle() throws {
+        func george(_ pushed: SessionState?, file: StaticString = #filePath, line: UInt = #line) -> AgentStatus? {
+            guard let pushed else {
+                XCTFail("expected a push", file: file, line: line)
+                return nil
+            }
+            XCTAssertEqual(pushed.agents?.map(\.agent), ["puck", "isabella", "george", "sky"], file: file, line: line)
+            return pushed.agents?.first { $0.agent == "george" }
+        }
+        let off = try XCTUnwrap(state(control.handle(line: command(.state))))
+        XCTAssertEqual(off.agents?.map(\.state), [.off, .off, .off, .off])
+        XCTAssertEqual(off.agents?.map(\.running), [false, false, false, false])
+        _ = control.pushIfChanged()
+
+        fake.snapshot.launching = true
+        fake.snapshot.activity.launching = .george
+        XCTAssertEqual(george(control.pushIfChanged())?.state, .starting)
+        XCTAssertEqual(george(control.state())?.running, false)
+
+        fake.snapshot = .init(live: [.init(projectID: "p-relay", name: "relay-runner", agent: .george, ready: false)],
+                              activeAgent: .george)
+        control.bridgeAccepting = true
+        let live = george(control.pushIfChanged())
+        XCTAssertEqual(live?.state, .starting, "its provider is still starting")
+        XCTAssertEqual(live?.running, true)
+
+        fake.snapshot.live[0].ready = true
+        XCTAssertEqual(george(control.pushIfChanged())?.state, .ready)
+        XCTAssertNil(control.pushIfChanged(), "an unchanged state is not pushed again")
+
+        fake.snapshot.activity.working = [.george]
+        fake.snapshot.activity.workingOn = [.george: "Relay Remote routing"]
+        let working = george(control.pushIfChanged())
+        XCTAssertEqual(working?.state, .working)
+        XCTAssertEqual(working?.workingOn, "Relay Remote routing")
+
+        fake.snapshot.activity.playing = .george
+        XCTAssertEqual(george(control.pushIfChanged())?.state, .playing)
+        fake.snapshot.activity = .init()
+        let rested = george(control.pushIfChanged())
+        XCTAssertEqual(rested?.state, .ready)
+        XCTAssertNil(rested?.workingOn)
+        XCTAssertEqual(control.state().agents?.filter { $0.agent != "george" }.map(\.state), [.off, .off, .off])
+    }
+
+    /// RR-534: a background agent's own turn is reported, while the active
+    /// one listens; a stopped agent's description is not shown.
+    func testEachAgentReportsItsOwnActivity() throws {
+        fake.snapshot = .init(live: [.init(projectID: "p-relay", name: "relay-runner", agent: .puck),
+                                     .init(projectID: "p-relay", name: "relay-runner", agent: .sky)],
+                              activeAgent: .puck,
+                              activity: .init(listening: .puck, working: [.sky],
+                                              workingOn: [.sky: "Settings review", .george: "Old work"]))
+        control.bridgeAccepting = true
+        let agents = try XCTUnwrap(control.state().agents)
+        XCTAssertEqual(agents.map(\.state), [.listening, .off, .off, .working])
+        XCTAssertEqual(agents.map(\.workingOn), [nil, nil, nil, "Settings review"])
+    }
+
+    /// RR-534: with a session running, a named agent and no project starts
+    /// beside it in the running project, as the Mac's "+" does.
+    func testANamedAgentWithoutAProjectStartsBesideTheRunningSession() throws {
+        var host = fake.host
+        host.generalTasksProjectID = { "p-general" }
+        control = RelaySessionControl(host: host)
+        fake.snapshot = .init(live: [.init(projectID: "p-notes", name: "notes", agent: .puck)], activeAgent: .puck)
+        control.bridgeAccepting = true
+        let reply = try XCTUnwrap(state(control.handle(line: command(.start, agent: "isabella"))))
+        XCTAssertNil(reply.error)
+        XCTAssertEqual(fake.started, ["/repos/notes"])
+        XCTAssertEqual(fake.startedAgents, [.isabella])
+    }
+
+    /// RR-534: the bridge's request to start an agent for a phone message.
+    func testTheBridgesStartRequestNamesAKnownAgent() {
+        XCTAssertEqual(RelayRemoteAgents.startRequest(["source": "remote_agent", "state": "start", "agent": "george"]), .george)
+        XCTAssertNil(RelayRemoteAgents.startRequest(["source": "remote_agent", "state": "start", "agent": "oberon"]))
+        XCTAssertNil(RelayRemoteAgents.startRequest(["source": "remote_device", "state": "start", "agent": "george"]))
     }
 
     func testStopEndsTheSessionAndReportsNoneAtOnce() throws {

@@ -26,6 +26,8 @@ pub struct RemoteItem {
     pub client_id: String,
     /// A control has no `on_accepted`.
     pub control: bool,
+    /// RR-534: the agent slug the item is for; `None` is the focused agent.
+    pub agent: Option<String>,
 }
 
 /// `RemoteIngress` and the server it drains.
@@ -105,11 +107,13 @@ impl RemoteLink {
                 device_id,
                 client_id,
                 control,
+                agent,
             } => self.put(RemoteItem {
                 text,
                 device_id,
                 client_id,
                 control,
+                agent,
             }),
             Event::Device {
                 state,
@@ -181,6 +185,18 @@ impl RemoteLink {
             .collect()
     }
 
+    /// RR-534: an `error` frame for a device, such as an addressed agent
+    /// that never became ready.
+    pub fn refuse(&self, device_id: &str, code: &str, message: &str) {
+        if let Some(session) = self
+            .server
+            .get()
+            .and_then(|server| server.session(device_id))
+        {
+            session.send_error(code, message);
+        }
+    }
+
     /// `ingress.attached = value`: no loop means no session.
     pub fn set_attached(&self, attached: bool) {
         if let Some(server) = self.server.get() {
@@ -189,8 +205,8 @@ impl RemoteLink {
     }
 
     /// `remote_item.on_accepted(relay_command)`: the device learns which
-    /// command its utterance became.
-    pub fn accept(&self, item: &RemoteItem, relay_command: &Dict) {
+    /// command its utterance became, and (RR-534) which agent received it.
+    pub fn accept(&self, item: &RemoteItem, relay_command: &Dict, agent: Option<&str>) {
         if item.control {
             return;
         }
@@ -202,7 +218,7 @@ impl RemoteLink {
             .get()
             .and_then(|server| server.session(&item.device_id))
         {
-            session.accept(&item.client_id, seq, &id);
+            session.accept(&item.client_id, seq, &id, agent);
         }
     }
 

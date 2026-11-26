@@ -416,10 +416,18 @@ impl RemoteDevice for ClientDevice {
         Self::seq(&self.call("remote_speech", frame)?)
     }
 
-    fn speech_control(&self, action: &str, reason: &str) -> Result<i64, CallFailed> {
+    fn speech_control(
+        &self,
+        action: &str,
+        reason: &str,
+        session_key: Option<&str>,
+    ) -> Result<i64, CallFailed> {
         let mut params = Json::new();
         params.insert("action".into(), action.into());
         params.insert("reason".into(), reason.into());
+        if let Some(session_key) = session_key {
+            params.insert("session_key".into(), session_key.into());
+        }
         Self::seq(&self.call("remote_speech_control", params)?)
     }
 
@@ -564,12 +572,26 @@ impl SpeechService {
             ),
             "play" => coordinator.play(None, ""),
             "play_or_replay" => return result(json!({"handled": coordinator.play_or_replay()})),
-            "replay" => return result(json!({"accepted": coordinator.replay(None)})),
+            "replay" => {
+                // RR-534: a session's newest reply, for a Relay Remote control naming its agent.
+                let session_key = py_str_or_empty(request.get("session_key"));
+                let session_key = Some(session_key.as_str()).filter(|key| !key.is_empty());
+                return result(json!({"accepted": coordinator.replay(session_key)}));
+            }
             "pause" => coordinator.stop(),
             "stop_playback" => {
-                coordinator.stop_playback(&str_or(request, "reason", "user_stop"), None)
+                let session_key = py_str_or_empty(request.get("session_key"));
+                coordinator.stop_playback(
+                    &str_or(request, "reason", "user_stop"),
+                    Some(session_key.as_str()).filter(|key| !key.is_empty()),
+                )
             }
-            "skip" => coordinator.skip(&str_or(request, "reason", "user_stop")),
+            "skip" => match py_str_or_empty(request.get("session_key")).as_str() {
+                "" => coordinator.skip(&str_or(request, "reason", "user_stop")),
+                session_key => {
+                    coordinator.skip_session(&str_or(request, "reason", "user_stop"), session_key)
+                }
+            },
             "new_turn" => coordinator.new_turn(
                 int_field(request, "command_seq")?,
                 &str_field(request, "command_id")?,

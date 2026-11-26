@@ -65,6 +65,8 @@ impl std::error::Error for SpeechServiceError {}
 pub trait RemoteDevice: Send + Sync {
     fn device_id(&self) -> &str;
     fn routable(&self) -> bool;
+    /// RR-534: `agent` names the agent the speech belongs to.
+    #[allow(clippy::too_many_arguments)]
     fn speech(
         &self,
         kind: &str,
@@ -73,8 +75,15 @@ pub trait RemoteDevice: Send + Sync {
         relay_command_seq: Option<i64>,
         spoken_by: Option<&str>,
         audio: Option<bool>,
+        agent: Option<&str>,
     ) -> Result<i64, FrameError>;
-    fn speech_control(&self, action: &str, reason: &str) -> Result<i64, FrameError>;
+    /// RR-534: with `agent` the control covers only that agent's frames.
+    fn speech_control(
+        &self,
+        action: &str,
+        reason: &str,
+        agent: Option<&str>,
+    ) -> Result<i64, FrameError>;
     fn speech_audio(&self, seq: i64, part: &AudioPart) -> Result<(), FrameError>;
 }
 
@@ -95,6 +104,7 @@ impl RemoteDevice for DeviceSession {
         relay_command_seq: Option<i64>,
         spoken_by: Option<&str>,
         audio: Option<bool>,
+        agent: Option<&str>,
     ) -> Result<i64, FrameError> {
         DeviceSession::speech(
             self,
@@ -104,11 +114,17 @@ impl RemoteDevice for DeviceSession {
             relay_command_seq,
             spoken_by,
             audio,
+            agent,
         )
     }
 
-    fn speech_control(&self, action: &str, reason: &str) -> Result<i64, FrameError> {
-        DeviceSession::speech_control(self, action, reason)
+    fn speech_control(
+        &self,
+        action: &str,
+        reason: &str,
+        agent: Option<&str>,
+    ) -> Result<i64, FrameError> {
+        DeviceSession::speech_control(self, action, reason, agent)
     }
 
     fn speech_audio(&self, seq: i64, part: &AudioPart) -> Result<(), FrameError> {
@@ -307,6 +323,35 @@ impl Speech for SpeechServiceClient {
     fn skip(&self, reason: &str) {
         self.inner
             .request("skip", params([("reason", reason.into())]));
+    }
+
+    fn stop_session_playback(&self, session_key: &str, reason: &str) {
+        self.inner.request(
+            "stop_playback",
+            params([
+                ("reason", reason.into()),
+                ("session_key", session_key.into()),
+            ]),
+        );
+    }
+
+    fn skip_session(&self, session_key: &str, reason: &str) {
+        self.inner.request(
+            "skip",
+            params([
+                ("reason", reason.into()),
+                ("session_key", session_key.into()),
+            ]),
+        );
+    }
+
+    fn replay_session(&self, session_key: &str) -> bool {
+        truthy(
+            &self
+                .inner
+                .request("replay", params([("session_key", session_key.into())])),
+            "accepted",
+        )
     }
 
     fn playing(&self) -> bool {
@@ -1107,16 +1152,26 @@ impl Inner {
                     Some(Value::Bool(audio)) => Some(*audio),
                     Some(_) => return Err("FrameError"),
                 };
+                let agent = call_agent(call);
                 let seq = device
-                    .speech(&kind, &source, &text, relay_command_seq, spoken_by, audio)
+                    .speech(
+                        &kind,
+                        &source,
+                        &text,
+                        relay_command_seq,
+                        spoken_by,
+                        audio,
+                        agent.as_deref(),
+                    )
                     .map_err(|_| "FrameError")?;
                 result.insert("seq", seq);
             }
             "remote_speech_control" => {
                 let action = call.get("action").map_or("None".to_string(), Value::py_str);
                 let reason = call.get("reason").map_or("None".to_string(), Value::py_str);
+                let agent = call_agent(call);
                 let seq = device
-                    .speech_control(&action, &reason)
+                    .speech_control(&action, &reason, agent.as_deref())
                     .map_err(|_| "FrameError")?;
                 result.insert("seq", seq);
             }
@@ -1141,6 +1196,14 @@ impl Inner {
         }
         Ok(result)
     }
+}
+
+/// RR-534: the agent of the session a remote call names, for its frame's tag.
+fn call_agent(call: &Dict) -> Option<String> {
+    call.get("session_key")
+        .and_then(Value::as_str)
+        .and_then(super::remote_agents::agent_for_session)
+        .map(str::to_string)
 }
 
 /// The `speak` request of `_InputQueue.submit_text`.
@@ -1798,6 +1861,7 @@ mod tests {
             _relay_command_seq: Option<i64>,
             spoken_by: Option<&str>,
             audio: Option<bool>,
+            _agent: Option<&str>,
         ) -> Result<i64, FrameError> {
             if self.refuse {
                 return Err(FrameError {
@@ -1812,7 +1876,12 @@ mod tests {
             Ok(self.next_seq())
         }
 
-        fn speech_control(&self, action: &str, reason: &str) -> Result<i64, FrameError> {
+        fn speech_control(
+            &self,
+            action: &str,
+            reason: &str,
+            _agent: Option<&str>,
+        ) -> Result<i64, FrameError> {
             self.controls
                 .lock()
                 .unwrap()

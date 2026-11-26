@@ -11,6 +11,7 @@ The Rust bridge serves the socket in-process (RR-492).
 from __future__ import annotations
 
 import json
+import os
 import socket
 import threading
 import unittest
@@ -281,6 +282,94 @@ class RemoteContract:
         prompt, metadata = self.session.wait_pending()
         self.assertEqual(prompt, "__INTERRUPT__")
         self.assertEqual(metadata["action"], "control")
+
+    # -- Agents (RR-534) ------------------------------------------------------
+
+    def agent_session(self, key: str, agent: str, **fields):
+        """Register a background session running ``agent``, as the app does."""
+        (self.session.spool / "session_agent").write_text("puck\n")
+        session = self.box.add_session(key)
+        session.spool.mkdir(parents=True, exist_ok=True)
+        (session.spool / "session_agent").write_text(agent + "\n")
+        payload = session.focus_payload(focus=False, **fields)
+        self.box.control("__FOCUS__:" + json.dumps(payload))
+        # A registered session registers its own orchestrator session.
+        wait_until(
+            lambda: [
+                call for call in self.box.orchestrator.requests("/v1/orchestrator-session/ensure")
+                if call["body"]["repo_path"] == os.path.realpath(session.cwd)
+            ],
+            message=f"the bridge to register {key}",
+        )
+        return session
+
+    def test_utterance_naming_an_agent_reaches_that_agents_session(self):
+        """Relay Remote: an utterance naming an agent is delivered to that
+        agent's session, not the focused one, keeps its remote origin, is
+        authorised against that session, and its `accepted` names the agent;
+        the focused session stays focused."""
+        george = self.agent_session("session-2", "george")
+        device = self.hello()
+        line = vector_line("utterance", agent="george")
+        utterance = json.loads(line)
+        device.send(line)
+        accepted = device.wait("accepted")
+        self.assertEqual(accepted["agent"], "george")
+        self.assertEqual(accepted["client_id"], utterance["client_id"])
+        prompt, metadata = george.wait_pending()
+        self.assertEqual(metadata["relay_command_id"], accepted["relay_command_id"])
+        self.assertEqual(metadata["voice_target_session_key"], "session-2")
+        self.assertEqual(metadata["input_source"], "remote")
+        self.assertEqual(metadata["device_id"], DEVICE_ID)
+        self.assertIsNone(self.session.pending())
+        # Focus did not move: the Mac microphone's next turn is the focused session's.
+        self.box.say("check the build")
+        prompt, local = self.session.wait_pending("the Mac turn")
+        self.assertEqual(local["source_text"], "check the build")
+        self.assertEqual(george.pending()[1]["relay_command_id"], accepted["relay_command_id"])
+
+    def test_utterance_without_an_agent_is_tagged_with_the_focused_agent(self):
+        """Relay Remote: an unaddressed utterance still goes to the focused
+        session; its `accepted` names that session's agent."""
+        self.agent_session("session-2", "george")
+        device = self.hello()
+        device.send(FRAMES["utterance"]["line"])
+        accepted = device.wait("accepted")
+        self.assertEqual(accepted["agent"], "puck")
+        _, metadata = self.session.wait_pending()
+        self.assertEqual(metadata["relay_command_id"], accepted["relay_command_id"])
+
+    def test_control_naming_an_agent_acts_on_that_agents_speech(self):
+        """Relay Remote: `stop` naming an agent stops only that session's
+        speech; `cancel` dismisses only its reply."""
+        self.agent_session("session-2", "george")
+        device = self.hello()
+        device.send(vector_line("control_stop", agent="george", client_id=str(uuid.uuid4())))
+        request = self.box.wait_speech_request("stop_playback", session_key="session-2")
+        self.assertEqual(request["reason"], "recording_barge_in")
+        device.send(vector_line("control_cancel", agent="george", client_id=str(uuid.uuid4())))
+        self.box.wait_speech_request("skip", session_key="session-2", reason="user_stop")
+        self.assertFalse([request for request in self.box.speech_requests("stop_playback") if "session_key" not in request])
+
+    def test_utterance_to_a_stopped_agent_starts_it_and_waits_until_ready(self):
+        """Relay Remote: an utterance for an agent with no session asks the app
+        to start it, waits while it starts, and is delivered once when it is
+        ready."""
+        device = self.hello()
+        line = vector_line("utterance", agent="sky")
+        device.send(line)
+        wait_until(lambda: self.box.states("start", source="remote_agent"), message="the start request")
+        self.assertEqual(self.box.states("start", source="remote_agent")[0]["agent"], "sky")
+        sky = self.agent_session("session-3", "sky", ready=False)
+        # A retry while it starts is not queued twice.
+        device.send(line)
+        self.assertStays(lambda: not device.of("accepted") and sky.pending() is None)
+        self.box.control("__FOCUS__:" + json.dumps(sky.focus_payload(focus=False)))
+        accepted = device.wait("accepted")
+        self.assertEqual(accepted["agent"], "sky")
+        _, metadata = sky.wait_pending()
+        self.assertEqual(metadata["relay_command_id"], accepted["relay_command_id"])
+        self.assertStays(lambda: len(device.of("accepted")) == 1)
 
     # -- Speech sink and mirror ---------------------------------------------
 
