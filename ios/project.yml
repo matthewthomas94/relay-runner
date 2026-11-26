@@ -1,6 +1,8 @@
-# Source of truth for RelayRemote.xcodeproj. Regenerate after editing:
-#   cd ios && xcodegen generate
-# The generated project is committed so the app opens without XcodeGen.
+# Record of RelayRemote.xcodeproj's targets and settings. Since RR-533 the
+# committed project is the source of truth: its RelayRemote/ and
+# RelayRemoteTests/ folders are file-system-synchronised groups, which this
+# file does not describe, so do not regenerate the project from it. Keep it in
+# step by hand when target settings change. See ios/README.md.
 name: RelayRemote
 options:
   bundleIdPrefix: com.relayrunner
