@@ -21,6 +21,8 @@ struct AgentDock: View {
     var canStop = true
     /// Controls drawn at 30%, as the tutorial dims controls it is not teaching.
     var dimmed: Set<DockControl> = []
+    /// Controls that take no touches, so a dimmed control does nothing.
+    var inert: Set<DockControl> = []
     var onSend: () -> Void = {}
     var onTalk: (TalkGesture.Command) -> Void = { _ in }
     var onCancel: () -> Void = {}
@@ -33,6 +35,7 @@ struct AgentDock: View {
         VStack(spacing: 8) {
             textBox
                 .opacity(dimmed.contains(.textBox) ? 0.3 : 1)
+                .allowsHitTesting(!inert.contains(.textBox))
             HStack(spacing: 8) {
                 Group {
                     if isTalking {
@@ -47,12 +50,15 @@ struct AgentDock: View {
                     }
                 }
                 .opacity(dimmed.contains(.replay) ? 0.3 : 1)
+                .allowsHitTesting(!inert.contains(.replay))
                 TalkButton(mode: talkMode, isTalking: isTalking, onCommand: onTalk)
                     .opacity(dimmed.contains(.talk) ? 0.3 : 1)
+                    .allowsHitTesting(!inert.contains(.talk))
                 Button(action: onStop) { LucideImage(.square, size: 20) }
                     .buttonStyle(DockSquareButtonStyle())
                     .disabled(!canStop)
                     .opacity(dimmed.contains(.stop) ? 0.3 : 1)
+                    .allowsHitTesting(!inert.contains(.stop))
                     .accessibilityLabel("Stop")
             }
         }

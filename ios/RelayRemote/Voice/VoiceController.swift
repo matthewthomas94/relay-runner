@@ -78,6 +78,20 @@ final class VoiceController {
         Task { await recognizer.prepare(prompting: false) }
     }
 
+    /// RR-542: the tutorial waits for speech recognition to be ready, asking
+    /// for the microphone if it is undecided. False when it cannot be used.
+    func prepareSpeech() async -> Bool {
+        await recognizer.prepare(prompting: true)
+        while !Task.isCancelled {
+            switch readiness {
+            case .ready: return true
+            case .unsupported, .microphoneDenied, .failed: return false
+            case .unknown, .downloading: try? await Task.sleep(for: .milliseconds(300))
+            }
+        }
+        return false
+    }
+
     // MARK: - Talk
 
     /// Opens an utterance for `agent` (nil: the focused agent).

@@ -11,6 +11,8 @@ import Foundation
 ///   with sample data instead of the Mac's,
 /// - `--agents-sample=<ready|holding|playing|not-running|unreachable|long-draft>`
 ///   shows the Agents tab with sample data in one of its states (RR-540),
+/// - `--tutorial-step=<basics|hold|release|play|stop|done>` shows a tutorial step with
+///   sample data (RR-542),
 /// - `--sample-settings` fills the Settings tab with sample data, unpaired,
 /// - `--scroll-bottom` opens scrolling screens at their end,
 /// - `--reset-onboarding` forgets that onboarding finished, as a fresh install.
@@ -23,6 +25,7 @@ struct LaunchOptions: Equatable {
     var pairingStep: String?
     var workspaceSample: String?
     var agentsSample: String?
+    var tutorialSample: String?
     var resetsOnboarding = false
     var sampleSettings = false
     var scrollsToBottom = false
@@ -42,6 +45,7 @@ struct LaunchOptions: Equatable {
             if let value = Self.value(of: "--workspace-sample", in: argument) { workspaceSample = value }
             if let value = Self.value(of: "--tab", in: argument) { tab = MainTab(rawValue: value) }
             if let value = Self.value(of: "--agents-sample", in: argument) { agentsSample = value }
+            if let value = Self.value(of: "--tutorial-step", in: argument) { tutorialSample = value }
         }
     }
 
