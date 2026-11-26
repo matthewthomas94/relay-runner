@@ -224,6 +224,8 @@ impl DeviceSession {
                 relay_command_seq,
                 spoken_by: spoken_by.map(str::to_string),
                 audio,
+                // RR-532: frames are not tagged with their agent yet (RR-534).
+                agent: None,
             })
         })
     }
@@ -239,6 +241,7 @@ impl DeviceSession {
             sample_rate: part.sample_rate,
             data: part.data.clone(),
             last: part.last.then_some(true),
+            agent: None,
         };
         let frame = Frame::SpeechAudio(audio.clone());
         proto::encode(&frame)?;
@@ -254,6 +257,7 @@ impl DeviceSession {
                 seq,
                 action: action.to_string(),
                 reason: Some(reason.to_string()),
+                agent: None,
             })
         })
     }
@@ -264,6 +268,7 @@ impl DeviceSession {
             client_id: client_id.to_string(),
             relay_command_seq,
             relay_command_id: relay_command_id.to_string(),
+            agent: None,
         };
         let key = client_id.to_lowercase();
         let mut state = lock(&self.state);
@@ -453,6 +458,7 @@ impl Server {
                         let probe = Frame::Status(proto::Status {
                             seq: 0,
                             text: self.session_state().to_string(),
+                            agent: None,
                         });
                         if let Ok(line) = proto::encode(&probe) {
                             (&conn.stream).write_all(&line)?;
@@ -933,6 +939,43 @@ mod tests {
                 .events
                 .recv_timeout(Duration::from_millis(200))
                 .is_err()
+        );
+    }
+
+    /// RR-532: an utterance or control naming an agent is delivered exactly
+    /// as one without it until RR-534 routes by agent.
+    #[test]
+    fn agent_tagged_items_are_delivered_as_before() {
+        let harness = Harness::new(true);
+        let mut device = harness.connect();
+        device.send(HELLO);
+        device.line();
+        harness.event();
+        harness.event();
+        device.send(&format!(
+            r#"{{"agent":"george","captured_at":"t","client_id":"{CLIENT}","text":"hello","type":"utterance"}}"#
+        ));
+        assert_eq!(
+            harness.event(),
+            Event::Item {
+                text: "hello".into(),
+                device_id: "D1".into(),
+                client_id: CLIENT.into(),
+                control: false
+            }
+        );
+        let control = "9a1d6e47-2b83-4c55-8e0f-5d3c7b9a1e22";
+        device.send(&format!(
+            r#"{{"action":"stop","agent":"isabella","client_id":"{control}","type":"control"}}"#
+        ));
+        assert_eq!(
+            harness.event(),
+            Event::Item {
+                text: "__TTS_STOP__".into(),
+                device_id: "D1".into(),
+                client_id: control.into(),
+                control: true
+            }
         );
     }
 

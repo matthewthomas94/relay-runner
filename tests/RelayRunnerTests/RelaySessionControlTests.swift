@@ -231,6 +231,51 @@ final class RelaySessionControlTests: XCTestCase {
         XCTAssertEqual(fake.started, [])
     }
 
+    /// RR-532: a start without a project uses the built-in general-tasks
+    /// project, as the Mac's own Start Session does.
+    func testStartWithoutAProjectStartsGeneralTasks() throws {
+        fake.projects.append(.init(id: "p-general", name: "general-tasks", path: "/support/general-tasks",
+                                   availability: "available"))
+        var host = fake.host
+        host.generalTasksProjectID = { "p-general" }
+        control = RelaySessionControl(host: host)
+        let reply = try XCTUnwrap(state(control.handle(line: command(.start, agent: "sky"))))
+        XCTAssertNil(reply.error)
+        XCTAssertEqual(reply.session, .starting)
+        XCTAssertEqual(reply.projectName, "general-tasks")
+        XCTAssertEqual(fake.started, ["/support/general-tasks"])
+        XCTAssertEqual(fake.startedAgents, [.sky])
+    }
+
+    /// RR-532: each new command reaches its own handler and gets one
+    /// well-formed reply; until RR-534 to RR-536 land the replies say the
+    /// feature is not available and change nothing.
+    func testWorkspaceAndSettingsCommandsGetWellFormedReplies() throws {
+        let id = UUID().uuidString
+        func reply(_ frame: Frame) throws -> Frame {
+            let replies = control.handle(line: Data(try FrameCodec.encode(frame).dropLast()))
+            XCTAssertEqual(replies.count, 1)
+            let only = try XCTUnwrap(replies.first)
+            XCTAssertNoThrow(try FrameCodec.encode(only), "the reply is well formed")
+            return only
+        }
+        XCTAssertEqual(try reply(.workspaceCommand(WorkspaceCommand(clientId: id))),
+                       .workspaceState(WorkspaceState(projects: [], tickets: [], error: RelayRemoteWorkspaceFeed.unsupported)))
+        XCTAssertEqual(try reply(.settingsCommand(SettingsCommand(clientId: id, action: .get))),
+                       .settingsState(SettingsState(error: RelayRemoteSettings.unsupported)))
+        XCTAssertEqual(try reply(.settingsCommand(SettingsCommand(clientId: UUID().uuidString, action: .set,
+                                                                  speechSpeedPercent: 150, model: "sonnet"))),
+                       .settingsState(SettingsState(error: RelayRemoteSettings.unsupported)))
+        XCTAssertEqual(fake.started, [])
+        XCTAssertEqual(fake.stops, 0)
+        // A malformed command is answered with the codec's error, as session_command is.
+        let bad = control.handle(line: Data(#"{"type":"workspace_command","client_id":"abc","action":"list"}"#.utf8))
+        XCTAssertEqual(bad, [.error(ErrorFrame(code: "invalid_field", message: "Frame rejected"))])
+        // Per-agent state is not reported yet, so session_state is unchanged.
+        fake.snapshot = .init(live: [.init(projectID: "p-relay", name: "relay-runner")], activeAgent: .puck)
+        XCTAssertNil(try XCTUnwrap(state(control.handle(line: command(.state)))).agents)
+    }
+
     func testStopEndsTheSessionAndReportsNoneAtOnce() throws {
         // endSession() returns before the provider releases its PTY.
         fake.snapshot = .init(live: [.init(projectID: "p-relay", name: "relay-runner")])

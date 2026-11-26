@@ -5542,7 +5542,10 @@ final class AppState {
                                        agent: agent ?? self.mostRecentlyActiveAgent)
             },
             stop: { [weak self] in self?.endSession() },
-            message: { [weak self] in self?.contextSwitchMessage }
+            message: { [weak self] in self?.contextSwitchMessage },
+            generalTasksProjectID: { [weak self] in
+                (try? self?.projectRegistryV2?.ensureGeneralTasksProject())?.projectID
+            }
         )
     }
 

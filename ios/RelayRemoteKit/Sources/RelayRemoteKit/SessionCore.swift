@@ -22,6 +22,8 @@ public struct PendingUtterance: Equatable, Sendable, Identifiable {
 ///   session-control socket instead (RR-456): `session_state` arrives where
 ///   `welcome` would. Once that session is `ready` the channel is closed and
 ///   reopened so the helper attaches to the new voice bridge.
+/// - RR-532: `workspace_state` and `settings_state` answer the phone's
+///   `workspace_command` and `settings_command` on either kind of channel.
 public struct SessionCore: Sendable {
     /// When to reopen a session-control channel whose session became ready.
     public enum Reattach: Equatable, Sendable {
@@ -63,6 +65,14 @@ public struct SessionCore: Sendable {
     /// The Mac's reason for a refused or failed session command, kept until
     /// the next command or until the session changes on its own.
     public private(set) var sessionError: String?
+    /// RR-532: the Mac's latest `workspace_state`, across connections.
+    public private(set) var workspace: WorkspaceState?
+    /// RR-532: the Mac's latest `settings_state`, across connections. After a
+    /// refused `set` its values are the unchanged ones; a Mac that cannot serve
+    /// settings sends only `error`.
+    public private(set) var settings: SettingsState?
+    /// RR-532: why the last settings command was refused, kept until the next one.
+    public private(set) var settingsError: String?
     /// The helper last reported that Relay Runner is not running on the Mac.
     /// Cleared by the next channel that gets further, or by a transport failure.
     public private(set) var appUnavailable = false
@@ -121,6 +131,11 @@ public struct SessionCore: Sendable {
     /// A session command is about to go out; its answer replaces the old reason.
     public mutating func sessionCommandSent() {
         sessionError = nil
+    }
+
+    /// RR-532: a settings command is about to go out; its answer replaces the old reason.
+    public mutating func settingsCommandSent() {
+        settingsError = nil
     }
 
     /// Queues an utterance; returns it when it can be sent right away.
@@ -193,11 +208,19 @@ public struct SessionCore: Sendable {
             }
             channelPhase = state.session
             reaction.isNew = true
+        case .workspaceState(let state):
+            workspace = state
+            reaction.isNew = true
+        case .settingsState(let state):
+            settings = state
+            settingsError = state.error
+            reaction.isNew = true
         case .speechAudio:
             // The Mac's voice for an earlier `speech` frame (RR-457). It takes no
             // seq of its own, so it never moves the resume point.
             break
-        case .hello, .utterance, .control, .remoteMode, .sessionCommand, .ack, .ping:
+        case .hello, .utterance, .control, .remoteMode, .sessionCommand, .ack, .ping, .workspaceCommand,
+             .settingsCommand:
             break
         }
         return reaction
