@@ -11,6 +11,8 @@ import Foundation
 ///   with sample data instead of the Mac's,
 /// - `--agents-sample=<ready|holding|playing|not-running|unreachable|long-draft>`
 ///   shows the Agents tab with sample data in one of its states (RR-540),
+/// - `--sample-settings` fills the Settings tab with sample data, unpaired,
+/// - `--scroll-bottom` opens scrolling screens at their end,
 /// - `--reset-onboarding` forgets that onboarding finished, as a fresh install.
 /// Release builds ignore them.
 struct LaunchOptions: Equatable {
@@ -22,6 +24,8 @@ struct LaunchOptions: Equatable {
     var workspaceSample: String?
     var agentsSample: String?
     var resetsOnboarding = false
+    var sampleSettings = false
+    var scrollsToBottom = false
 
     init(arguments: [String]) {
         for argument in arguments {
@@ -31,6 +35,8 @@ struct LaunchOptions: Equatable {
                 galleryPage = value
             }
             if argument == "--reset-onboarding" { resetsOnboarding = true }
+            if argument == "--scroll-bottom" { scrollsToBottom = true }
+            if argument == "--sample-settings" { sampleSettings = true }
             if let value = Self.value(of: "--stage", in: argument) { stage = AppStage(rawValue: value) }
             if let value = Self.value(of: "--pairing-step", in: argument) { pairingStep = value }
             if let value = Self.value(of: "--workspace-sample", in: argument) { workspaceSample = value }

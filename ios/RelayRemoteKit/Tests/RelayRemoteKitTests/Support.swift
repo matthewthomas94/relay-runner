@@ -89,6 +89,12 @@ final class FakeMac: @unchecked Sendable {
         lock.withLock { connection?.deliver(.sessionState(controlState())) }
     }
 
+    /// RR-544: the app pushes a `settings_state` nobody asked for, as when the
+    /// user changes a setting on the Mac.
+    func pushSettingsState(_ state: SettingsState) {
+        lock.withLock { connection?.deliver(.settingsState(state)) }
+    }
+
     func receive(_ frame: Frame, on connection: FakeConnection) {
         lock.lock()
         defer { lock.unlock() }
