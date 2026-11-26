@@ -3,7 +3,7 @@ import RelayRemoteProtocol
 import SwiftUI
 
 /// What the Workspace tab shows and how it asks for more: the live session's
-/// feed, or fixed sample data for a debug screenshot.
+/// feed, or fixed sample data for a screenshot.
 struct WorkspaceFeed {
     var workspace: WorkspaceState?
     var isUnreachable = false

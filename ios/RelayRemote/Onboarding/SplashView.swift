@@ -34,7 +34,8 @@ enum SplashTimeline {
     static func frame(at elapsed: TimeInterval) -> Frame {
         let t = max(0, elapsed)
         let brand = phrases[0]
-        let typed = t < brandHold ? 1 : min(brand.count, 1 + Int((t - brandHold) / typingInterval))
+        // The epsilon keeps the last character from missing its beat to float rounding.
+        let typed = t < brandHold ? 1 : min(brand.count, 1 + Int((t - brandHold) / typingInterval + 1e-9))
         let glow = RelayMotion.smoothstep((t - glowStart) / dotFieldTravel)
         func swapPhase(_ start: TimeInterval) -> Double { RelayMotion.smoothstep((t - start) / swap) }
 

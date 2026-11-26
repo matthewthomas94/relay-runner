@@ -69,7 +69,7 @@ public struct SessionConfiguration: Sendable {
     }
 }
 
-/// A frame as the debug screen lists it.
+/// A frame in the session's record.
 public struct FrameRecord: Equatable, Sendable, Identifiable {
     public enum Direction: Sendable { case sent, received }
 
@@ -112,7 +112,7 @@ public final class RemoteSession {
     public private(set) var expiredCount = 0
     public private(set) var missedUpdates = false
     public private(set) var lastError: ErrorFrame?
-    /// The code of the last non-terminal connection failure, for the debug screen.
+    /// The code of the last non-terminal connection failure.
     public private(set) var lastDisconnect: String?
     /// The Mac's latest `session_state` (RR-456).
     public private(set) var macSession: SessionState?
