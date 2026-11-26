@@ -428,16 +428,20 @@ public struct WorkspaceTicket: Codable, Equatable, Sendable {
 }
 
 /// The Mac's answer to `workspace_command`. `error` says why the list is
-/// empty when the Mac could not read it.
+/// empty when the Mac could not read it. RR-543: `truncated` is true when the
+/// Mac left tickets out to keep the list short; absent means complete.
 public struct WorkspaceState: Codable, Equatable, Sendable {
     public var projects: [WorkspaceProject]
     public var tickets: [WorkspaceTicket]
     public var error: String?
+    public var truncated: Bool?
 
-    public init(projects: [WorkspaceProject], tickets: [WorkspaceTicket], error: String? = nil) {
+    public init(projects: [WorkspaceProject], tickets: [WorkspaceTicket], error: String? = nil,
+                truncated: Bool? = nil) {
         self.projects = projects
         self.tickets = tickets
         self.error = error
+        self.truncated = truncated
     }
 }
 

@@ -7,6 +7,8 @@ import Foundation
 /// - `--stage=<splash|permissions|pairing|tutorial|app>` starts at a stage,
 /// - `--pairing-step=<scan|check>` opens the pairing flow on a step,
 /// - `--tab=<agents|workspace|settings>` opens the app on a tab,
+/// - `--workspace-sample=<list|empty|error|unreachable|truncated>` fills the Workspace tab
+///   with sample data instead of the Mac's,
 /// - `--reset-onboarding` forgets that onboarding finished, as a fresh install.
 /// Release builds ignore them.
 struct LaunchOptions: Equatable {
@@ -15,6 +17,7 @@ struct LaunchOptions: Equatable {
     var stage: AppStage?
     var tab: MainTab?
     var pairingStep: String?
+    var workspaceSample: String?
     var resetsOnboarding = false
 
     init(arguments: [String]) {
@@ -27,6 +30,7 @@ struct LaunchOptions: Equatable {
             if argument == "--reset-onboarding" { resetsOnboarding = true }
             if let value = Self.value(of: "--stage", in: argument) { stage = AppStage(rawValue: value) }
             if let value = Self.value(of: "--pairing-step", in: argument) { pairingStep = value }
+            if let value = Self.value(of: "--workspace-sample", in: argument) { workspaceSample = value }
             if let value = Self.value(of: "--tab", in: argument) { tab = MainTab(rawValue: value) }
         }
     }

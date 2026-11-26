@@ -44,7 +44,7 @@ struct AppFlowRouter: View {
         case .permissions: PermissionsFlowView(onFinished: advance)
         case .pairing: PairingFlowView(model: model, onFinished: advance, initialStep: launch.pairingStep)
         case .tutorial: TutorialView(model: model, onFinished: advance)
-        case .app: MainTabView(model: model, initialTab: launch.tab ?? .agents)
+        case .app: MainTabView(model: model, initialTab: launch.tab ?? .agents, workspaceSample: launch.workspaceSample)
         }
     }
 
