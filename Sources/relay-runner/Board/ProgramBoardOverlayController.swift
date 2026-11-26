@@ -273,6 +273,22 @@ final class ProgramBoardOverlayController {
         model.setNoteFetcher { _ in
             await Self.fetchProjectNotes(repoPaths: [GlobalNoteStore.repositoryPath], scopeTokenProvider: { _ in nil })
         }
+        model.noteChat.setAnswer { scope, messages in
+            let note: String?
+            let repoPath: String
+            switch scope {
+            case .library:
+                note = nil
+                repoPath = GlobalNoteStore.repositoryPath
+            case .note(let noteID, let projectPath):
+                note = noteID
+                repoPath = projectPath
+            }
+            let token = GlobalNoteStore.requestPath(repoPath).isEmpty ? nil : provider(repoPath)
+            return try await OrchestratorClient.chatAboutNotes(
+                note: note, messages: messages, repoPath: repoPath, projectScopeToken: token
+            ).reply
+        }
     }
 
     func setWorkerSizingDefaultsProvider(_ provider: @escaping () -> TicketWriter.WorkerSizingDefaults?) {
