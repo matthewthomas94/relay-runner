@@ -214,6 +214,8 @@ actor StateEventBus {
         _ request: ContinuityRecoveryRequest
     ) -> ContinuityRecoveryResponse
     private let onRemoteDeviceEvent: @MainActor (_ event: RemoteDeviceEvent) -> Void
+    /// RR-534: the bridge asks for an agent a phone message is addressed to.
+    private let onRemoteAgentStart: @MainActor (_ agent: SessionAgent) -> Void
 
     init(
         stateMachine: StateMachine,
@@ -232,13 +234,15 @@ actor StateEventBus {
         ) -> ContinuityRecoveryResponse = { _ in
             .failed("component_action_unavailable")
         },
-        onRemoteDeviceEvent: @escaping @MainActor (_ event: RemoteDeviceEvent) -> Void = { _ in }
+        onRemoteDeviceEvent: @escaping @MainActor (_ event: RemoteDeviceEvent) -> Void = { _ in },
+        onRemoteAgentStart: @escaping @MainActor (_ agent: SessionAgent) -> Void = { _ in }
     ) {
         self.stateMachine = stateMachine
         self.shouldHandleServiceEvent = shouldHandleServiceEvent
         self.onServiceEvent = onServiceEvent
         self.onRecoveryAction = onRecoveryAction
         self.onRemoteDeviceEvent = onRemoteDeviceEvent
+        self.onRemoteAgentStart = onRemoteAgentStart
     }
 
     func start() {
@@ -306,6 +310,11 @@ actor StateEventBus {
                 if let remoteEvent = RemoteDeviceEvent(json) {
                     let onRemoteDeviceEvent = await self.onRemoteDeviceEvent
                     await MainActor.run { onRemoteDeviceEvent(remoteEvent) }
+                    continue
+                }
+                if let agent = RelayRemoteAgents.startRequest(json) {
+                    let onRemoteAgentStart = await self.onRemoteAgentStart
+                    await MainActor.run { onRemoteAgentStart(agent) }
                     continue
                 }
 

@@ -36,6 +36,22 @@ final class VoiceBridgeFocusTests: XCTestCase {
         XCTAssertEqual(payload["live_session_keys"] as? [String], live)
     }
 
+    /// RR-534: a session still starting tells the bridge, which holds a phone
+    /// message for its agent until it is ready; a ready one omits the key.
+    func testFocusMessageSaysWhenTheSessionIsStillStarting() throws {
+        func payload(ready: Bool) throws -> [String: Any] {
+            let message = try XCTUnwrap(AppState.voiceFocusMessage(
+                sessionKey: "s-1", provider: "claude", providerSessionID: "", workingDirectory: "/Users/me/s-1",
+                spoolDirectory: "/tmp/relay-sessions/s-1", appSessionID: "app", recoveryGeneration: "1",
+                projectName: "Project", focus: false, liveSessionKeys: ["s-1"], ready: ready
+            ))
+            return try XCTUnwrap(JSONSerialization.jsonObject(
+                with: Data(message.dropFirst("__FOCUS__:".count).utf8)) as? [String: Any])
+        }
+        XCTAssertEqual(try payload(ready: false)["ready"] as? Bool, false)
+        XCTAssertNil(try payload(ready: true)["ready"])
+    }
+
     func testJoiningSessionLaunchDoesNotRestartTheSharedBridge() {
         for target in [ProcessManager.AgentTarget.codex, .claude] {
             var config = AppConfig()

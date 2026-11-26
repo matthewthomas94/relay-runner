@@ -259,6 +259,8 @@ struct FakeDevice {
     routable_calls: AtomicUsize,
     frames: Mutex<Vec<(i64, Json)>>,
     controls: Mutex<Vec<(String, String)>>,
+    /// RR-534: the session each control was scoped to, in order.
+    control_sessions: Mutex<Vec<Option<String>>>,
     audio: Mutex<Vec<(i64, AudioPart)>>,
 }
 
@@ -272,6 +274,7 @@ impl FakeDevice {
             routable_calls: AtomicUsize::new(0),
             frames: Mutex::default(),
             controls: Mutex::default(),
+            control_sessions: Mutex::default(),
             audio: Mutex::default(),
         })
     }
@@ -329,12 +332,21 @@ impl RemoteDevice for FakeDevice {
         Ok(seq)
     }
 
-    fn speech_control(&self, action: &str, reason: &str) -> Result<i64, CallFailed> {
+    fn speech_control(
+        &self,
+        action: &str,
+        reason: &str,
+        session_key: Option<&str>,
+    ) -> Result<i64, CallFailed> {
         let seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
         self.controls
             .lock()
             .unwrap()
             .push((action.into(), reason.into()));
+        self.control_sessions
+            .lock()
+            .unwrap()
+            .push(session_key.map(str::to_string));
         Ok(seq)
     }
 
@@ -2643,4 +2655,83 @@ fn remote_attaching_as_sink_ends_the_mirror_role() {
     assert_eq!(device.frames().len(), 1);
     assert!(device.frames()[0].get("spoken_by").is_none());
     assert!(mirror.frames().is_empty());
+}
+
+/// RR-534: a frame names the session its speech belongs to, so the bridge can
+/// tag the agent; speech without a session carries no key.
+#[test]
+fn remote_frames_name_their_session() {
+    let h = Harness::new();
+    let device = sink(&h, "device-1");
+    h.speak_in("Isabella's reply.", "session-b");
+    h.speak("Untagged reply.");
+
+    assert_eq!(device.frames()[0]["session_key"], json!("session-b"));
+    assert!(device.frames()[1].get("session_key").is_none());
+}
+
+/// RR-534: a session's stop or skip covers only that session's frames: the
+/// control names the session, voicing of the other session's reply goes on,
+/// and a second stop for the same session has nothing left to stop.
+#[test]
+fn remote_session_stop_and_skip_leave_other_sessions_alone() {
+    let h = Harness::new();
+    h.worker.remote_audio.store(true, Ordering::SeqCst);
+    let device = sink(&h, "device-1");
+    h.speak_in("Puck's reply.", "session-a");
+    let puck = h.worker.lock().jobs.pop().expect("Puck's reply is voiced");
+    h.speak_in("George's reply.", "session-b");
+    let george = h
+        .worker
+        .lock()
+        .jobs
+        .pop()
+        .expect("George's reply is voiced");
+
+    h.coordinator
+        .stop_playback("recording_barge_in", Some("session-b"));
+    h.coordinator
+        .stop_playback("recording_barge_in", Some("session-b"));
+
+    assert_eq!(
+        device.controls(),
+        controls(&[("stop", "recording_barge_in")])
+    );
+    assert_eq!(
+        *device.control_sessions.lock().unwrap(),
+        [Some("session-b".to_string())]
+    );
+    assert!(george.cancelled.load(Ordering::SeqCst));
+    assert!(!puck.cancelled.load(Ordering::SeqCst));
+
+    h.coordinator.skip_session("user_stop", "session-a");
+    assert_eq!(
+        device.controls(),
+        controls(&[("stop", "recording_barge_in"), ("skip", "user_stop")])
+    );
+    assert_eq!(
+        device.control_sessions.lock().unwrap().last().cloned(),
+        Some(Some("session-a".to_string()))
+    );
+    assert!(puck.cancelled.load(Ordering::SeqCst));
+    // Everything is covered now, so an unscoped stop sends nothing.
+    h.coordinator.stop_playback("interrupt", None);
+    assert_eq!(device.controls().len(), 2);
+}
+
+/// RR-534: a reply stopped for its session does not come back to the Mac
+/// when the sink detaches; another session's unacknowledged reply does.
+#[test]
+fn remote_detach_keeps_a_session_stopped_reply_stopped() {
+    let h = Harness::new();
+    let _device = sink(&h, "device-1");
+    let puck = h.speak_in("Puck's reply.", "session-a");
+    h.speak_in("George's reply.", "session-b");
+    h.coordinator
+        .stop_playback("recording_barge_in", Some("session-b"));
+
+    h.coordinator
+        .detach_remote_sink("device-1", "remote_mode_off");
+
+    assert_eq!(h.queue(), [puck.as_str()]);
 }

@@ -833,6 +833,11 @@ mod tests {
         }
         fn stop_playback(&self, _: &str) {}
         fn skip(&self, _: &str) {}
+        fn stop_session_playback(&self, _: &str, _: &str) {}
+        fn skip_session(&self, _: &str, _: &str) {}
+        fn replay_session(&self, _: &str) -> bool {
+            false
+        }
         fn playing(&self) -> bool {
             false
         }

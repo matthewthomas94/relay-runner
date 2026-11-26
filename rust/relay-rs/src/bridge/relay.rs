@@ -535,10 +535,15 @@ pub fn run_relay(
                 remote: None,
             });
         }
-        if let Some(remote) = remote
-            && readable.contains(&remote.fileno())
-        {
-            entries.extend(remote.drain().into_iter().map(|item| Entry {
+        if let Some(remote) = remote {
+            let fresh = if readable.contains(&remote.fileno()) {
+                remote.drain()
+            } else {
+                Vec::new()
+            };
+            // RR-534: an utterance for an agent still starting waits here.
+            let admitted = super::remote_agents::admit(fresh, remote);
+            entries.extend(admitted.into_iter().map(|item| Entry {
                 text: item.text.clone(),
                 remote: Some(item),
             }));
@@ -608,6 +613,15 @@ fn handle_entry(
         *pinned_target_key = (!key.is_empty()).then(|| key.to_string());
         return;
     }
+    // RR-534: a control naming an agent acts on that agent's speech only.
+    if let Some(item) = entry
+        .remote
+        .as_ref()
+        .filter(|item| item.control && item.agent.is_some())
+    {
+        super::remote_agents::control(bridge, item);
+        return;
+    }
     if text == "__CANCEL__" {
         *pinned_target_key = None;
     }
@@ -622,7 +636,14 @@ fn handle_entry(
             let pinned = pinned_target_key.take().unwrap_or_default();
             targets::voice_target_for(&pinned).or_else(targets::current_voice_target)
         }
-        Some(item) => super::remote_agents::voice_target(item),
+        Some(item) => match super::remote_agents::voice_target(item) {
+            None if item.agent.is_some() => {
+                // Its session went away since it was admitted: wait again.
+                super::remote_agents::hold_again(item.clone());
+                return;
+            }
+            target => target,
+        },
     };
     let target_repo = match &voice_target {
         Some(target) => target.cwd.clone(),
@@ -641,7 +662,11 @@ fn handle_entry(
                 Some(&device_id),
             );
             if let Some(remote) = remote {
-                remote.accept(item, &command);
+                remote.accept(
+                    item,
+                    &command,
+                    targets::session_agent(voice_target.as_ref()),
+                );
             }
             command
         }

@@ -40,6 +40,12 @@ pub trait Speech: Send + Sync {
     fn submit_text(&self, request: SpeechText) -> bool;
     fn stop_playback(&self, reason: &str);
     fn skip(&self, reason: &str);
+    /// RR-534: `stop_playback` for one session's speech only.
+    fn stop_session_playback(&self, session_key: &str, reason: &str);
+    /// RR-534: `skip` for one session's speech only.
+    fn skip_session(&self, session_key: &str, reason: &str);
+    /// RR-534: `replay` of one session's newest reply.
+    fn replay_session(&self, session_key: &str) -> bool;
     /// `getattr(tts_worker, "playing", None)`.
     fn playing(&self) -> bool;
     fn play_or_replay(&self) -> bool;

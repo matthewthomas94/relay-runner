@@ -272,33 +272,7 @@ pub fn handle_relay_control_message(
             return true;
         }
         "__INTERRUPT__" => {
-            bridge.speech().stop_playback("interrupt");
-            if let Some(messenger) = bridge.messenger() {
-                messenger.interrupt();
-            }
-            let relay_command = commands::begin_relay_command(text, state_path, None, None);
-            let active = commands::active_work(&settings().provider_turns_file, None);
-            let intent_id = relay_command.string("relay_command_id");
-            let disposition = arbitration::resolve_intent_disposition(&DispositionRequest {
-                intent_id: &intent_id,
-                action_kind: "control",
-                action_reason: Some("interrupt"),
-                source_text: text,
-                active_work: &active,
-                requested_resources: &[],
-                cancellation_scope: None,
-                target_work_ids: &[],
-            });
-            let mut metadata = relay_command.clone();
-            metadata.insert("action", "control");
-            metadata.insert("outcome", "control action interrupt");
-            metadata.insert("reason", "interrupt");
-            metadata.insert("authorization_relationship", "interrupt");
-            metadata.insert("intent_id", disposition.intent_id.as_str());
-            metadata.insert("work_disposition", disposition.to_dict());
-            metadata.insert("preempt_provider", true);
-            let inbox = bridge.inbox();
-            commands::publish_command("__INTERRUPT__", &metadata, paths, inbox.as_deref());
+            interrupt(bridge, paths, None);
             return true;
         }
         "__CANCEL__" => {
@@ -386,6 +360,56 @@ pub fn handle_relay_control_message(
         return true;
     }
     false
+}
+
+/// `__INTERRUPT__`: stop speech and preempt the provider turn. RR-534: with
+/// `target`, a Relay Remote control naming that session's agent, only its
+/// speech stops and the interrupt is that session's.
+pub fn interrupt(
+    bridge: &'static Bridge,
+    paths: &PublishPaths,
+    target: Option<&targets::VoiceTarget>,
+) {
+    let text = "__INTERRUPT__";
+    let state_path = paths.state_path.as_str();
+    match target {
+        Some(target) => bridge
+            .speech()
+            .stop_session_playback(&target.session_key, "interrupt"),
+        None => bridge.speech().stop_playback("interrupt"),
+    }
+    if let Some(messenger) = bridge.messenger() {
+        messenger.interrupt();
+    }
+    let relay_command = commands::begin_relay_command(text, state_path, None, None);
+    let active = commands::active_work(&settings().provider_turns_file, None);
+    let intent_id = relay_command.string("relay_command_id");
+    let disposition = arbitration::resolve_intent_disposition(&DispositionRequest {
+        intent_id: &intent_id,
+        action_kind: "control",
+        action_reason: Some("interrupt"),
+        source_text: text,
+        active_work: &active,
+        requested_resources: &[],
+        cancellation_scope: None,
+        target_work_ids: &[],
+    });
+    let mut metadata = relay_command.clone();
+    metadata.insert("action", "control");
+    metadata.insert("outcome", "control action interrupt");
+    metadata.insert("reason", "interrupt");
+    metadata.insert("authorization_relationship", "interrupt");
+    metadata.insert("intent_id", disposition.intent_id.as_str());
+    metadata.insert("work_disposition", disposition.to_dict());
+    metadata.insert("preempt_provider", true);
+    let mut paths = paths.clone();
+    if let Some(target) = target {
+        metadata.insert("voice_target_session_key", target.session_key.as_str());
+        paths.command_path = target.command_path.clone();
+        paths.meta_path = target.meta_path.clone();
+    }
+    let inbox = bridge.inbox();
+    commands::publish_command("__INTERRUPT__", &metadata, &paths, inbox.as_deref());
 }
 
 #[cfg(test)]

@@ -17,6 +17,24 @@ struct RelaySessionControlHost {
         let name: String
         /// RR-523: the agent this session runs.
         var agent: SessionAgent = .puck
+        /// RR-534: its provider is ready for input.
+        var ready = true
+    }
+
+    /// RR-534: what each agent is doing, from the sources the notch glyph
+    /// resolves (`NotchSessionStatus.resolve`) and the agent cards.
+    struct Activity: Equatable {
+        /// The agent a launch was accepted for, before its session is live.
+        var launching: SessionAgent?
+        /// The agent receiving the Mac recording (the notch's Listening).
+        var listening: SessionAgent?
+        /// The agent whose reply is playing (the notch's Playing).
+        var playing: SessionAgent?
+        /// Agents running a turn: the notch's Working for the active agent,
+        /// and every agent whose provider turn is active.
+        var working: Set<SessionAgent> = []
+        /// The card's "Currently working on" description, per agent.
+        var workingOn: [SessionAgent: String] = [:]
     }
 
     struct Snapshot: Equatable {
@@ -28,6 +46,8 @@ struct RelaySessionControlHost {
         var launching = false
         /// Why Start is unavailable right now, worded as the session wheel words it.
         var startBlockedReason: String?
+        /// RR-534: per-agent activity for `session_state.agents`.
+        var activity = Activity()
     }
 
     /// Registered projects in display order (`ProjectRegistryV2Service.projects()`).
@@ -166,7 +186,8 @@ final class RelaySessionControl {
             result.activeAgent = snapshot.activeAgent?.slug
             result.runningAgents = SessionAgent.allCases.filter(running.contains).map(\.slug)
         }
-        result.agents = RelayRemoteAgents.states(snapshot)
+        result.agents = RelayRemoteAgents.states(snapshot, sessionReady: bridgeAccepting && !stopRequested,
+                                                 stopping: stopRequested)
         if let error { result.error = error }
         if includingProjects {
             result.projects = host.projects().map {
@@ -212,8 +233,11 @@ final class RelaySessionControl {
     }
 
     private func start(projectID: String?, agent: SessionAgent?) -> SessionState {
-        // RR-532: no project is the built-in general-tasks project.
-        guard let projectID = projectID.flatMap({ $0.isEmpty ? nil : $0 }) ?? host.generalTasksProjectID() else {
+        // RR-532: no project is the built-in general-tasks project. RR-534:
+        // while a session runs, a named agent with no project starts beside
+        // it in the running project, as the Mac's "+" does.
+        let running = agent == nil ? nil : host.snapshot().live.first?.projectID
+        guard let projectID = projectID.flatMap({ $0.isEmpty ? nil : $0 }) ?? running ?? host.generalTasksProjectID() else {
             return state(error: "Choose a project to start.")
         }
         guard let project = host.projects().first(where: { $0.id == projectID }) else {
@@ -501,6 +525,16 @@ final class RelaySessionControlServer: @unchecked Sendable {
             queue.async { [self] in
                 for client in Array(clients.values) where client.role != .app { write(lines, to: client) }
             }
+        }
+    }
+
+    /// RR-534: push a changed `session_state` now instead of on the next
+    /// tick, so a phone sees an agent become ready before the bridge delivers
+    /// a message held for it. Main thread, like the control it reads.
+    func pushChangedState() {
+        guard let line = control.pushIfChanged().flatMap({ try? FrameCodec.encode(.sessionState($0)) }) else { return }
+        queue.async { [self] in
+            for client in Array(clients.values) where client.role != .app { write([line], to: client) }
         }
     }
 
