@@ -438,6 +438,15 @@ struct ProgramBoardNoteDetail: Equatable {
         pasteboard.clearContents()
         return pasteboard.setString(markdown, forType: .string)
     }
+
+    var canCopyTranscript: Bool { !isLoading && transcript?.isEmpty == false }
+
+    @discardableResult
+    func copyTranscript(to pasteboard: NSPasteboard = .general) -> Bool {
+        guard canCopyTranscript, let transcript else { return false }
+        pasteboard.clearContents()
+        return pasteboard.setString(transcript, forType: .string)
+    }
 }
 
 struct ProgramBoardCreateDraft: Equatable {
