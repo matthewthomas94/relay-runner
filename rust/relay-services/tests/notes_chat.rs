@@ -269,8 +269,8 @@ fn a_provider_that_never_answers_is_stopped_at_the_timeout() {
     );
     gates.codex_resolver = Box::new(|model, _| Ok(model.to_string()));
     let provider = NoteChatProvider {
-        gates,
         timeout: Duration::from_millis(300),
+        ..NoteChatProvider::new(gates)
     };
     let started = Instant::now();
     let error = provider.chat("{}", &AtomicBool::new(false)).unwrap_err();

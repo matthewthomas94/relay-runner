@@ -1630,6 +1630,9 @@ final class ProgramBoardViewModel {
         errorMessage: nil
     )
     var history: WorkspaceHistoryViewModel?
+    /// RR-550: the History chat, one conversation per repository and per
+    /// historical ticket, kept while History switches repositories.
+    @ObservationIgnored let historyChat = WorkspaceHistoryChatModel()
     /// Projects History can show. Read from the project registry, so History
     /// opens before the Work board has loaded its snapshot.
     var historyProjects: [ProgramBoardProjectTarget] = []

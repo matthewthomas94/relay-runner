@@ -289,6 +289,14 @@ final class ProgramBoardOverlayController {
                 note: note, messages: messages, repoPath: repoPath, projectScopeToken: token
             ).reply
         }
+        model.historyChat.setAnswer { scope, messages in
+            try await OrchestratorClient.chatAboutHistory(
+                artifactID: scope.artifactID,
+                messages: messages,
+                repoPath: scope.repoPath,
+                projectScopeToken: provider(scope.repoPath)
+            ).reply
+        }
     }
 
     func setWorkerSizingDefaultsProvider(_ provider: @escaping () -> TicketWriter.WorkerSizingDefaults?) {

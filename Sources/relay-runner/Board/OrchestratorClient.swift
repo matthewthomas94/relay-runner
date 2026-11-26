@@ -430,6 +430,53 @@ enum OrchestratorClient {
         return try await response(NoteChatResponse.self, for: request)
     }
 
+    struct HistoryChatResponse: Decodable, Equatable {
+        let reply: String
+        let artifactIDs: [String]
+
+        private enum CodingKeys: String, CodingKey {
+            case reply
+            case artifactIDs = "artifact_ids"
+        }
+    }
+
+    /// RR-550: one Workspace History chat question; `artifactID` nil asks
+    /// about the repository's whole history. The route reads tickets offline
+    /// only, so the request carries no online or GitHub exposure flags.
+    static func historyChatRequest(
+        artifactID: String?,
+        messages: [NoteChatMessage],
+        repoPath: String,
+        projectScopeToken: String?,
+        port: Int
+    ) -> URLRequest? {
+        var payload = artifactPayload(repoPath: repoPath, projectScopeToken: projectScopeToken)
+        if let artifactID { payload["artifact_id"] = artifactID }
+        payload["messages"] = messages.map { ["role": $0.role.rawValue, "text": $0.text] }
+        return postRequest(
+            path: "/v1/artifacts/history/chat",
+            payload: payload,
+            port: port,
+            timeout: noteChatTimeout
+        )
+    }
+
+    static func chatAboutHistory(
+        artifactID: String?,
+        messages: [NoteChatMessage],
+        repoPath: String,
+        projectScopeToken: String?
+    ) async throws -> HistoryChatResponse {
+        guard let request = historyChatRequest(
+            artifactID: artifactID,
+            messages: messages,
+            repoPath: repoPath,
+            projectScopeToken: projectScopeToken,
+            port: readPort()
+        ) else { throw OrchestratorClientError.invalidRequest }
+        return try await response(HistoryChatResponse.self, for: request)
+    }
+
     static func artifactRequest(
         path: String,
         repoPath: String,

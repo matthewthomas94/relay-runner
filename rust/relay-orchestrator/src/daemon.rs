@@ -14,6 +14,7 @@ use relay_artifacts::{paths, toml};
 use relay_intents::json::{Dict, Value};
 use relay_services::continuity::lifecycle::ContinuityLifecycleAdapter;
 use relay_services::general_work::GeneralWork;
+use relay_services::history_chat;
 use relay_services::notes::NoteManager;
 use relay_services::notes::chat::{Chat, NoteChatProvider};
 use relay_services::notes::global::GlobalNoteLibrary;
@@ -670,6 +671,9 @@ pub struct Daemon {
     pub note_metadata: Option<NoteMetadataQueue>,
     /// RR-548: the one-shot provider `POST /v1/artifacts/notes/chat` asks.
     pub note_chat: Arc<dyn Chat>,
+    /// RR-550: the same provider with the ticket history chat's prompt, for
+    /// `POST /v1/artifacts/history/chat`.
+    pub history_chat: Arc<dyn Chat>,
 
     /// `[orchestrator] agent`, or `[general] provider`.
     pub agent_kind: String,
@@ -780,6 +784,10 @@ impl Daemon {
             128,
         ));
         let note_chat: Arc<dyn Chat> = Arc::new(NoteChatProvider::new(note_provider()));
+        let history_chat: Arc<dyn Chat> = Arc::new(NoteChatProvider::with_system_prompt(
+            note_provider(),
+            history_chat::SYSTEM_PROMPT,
+        ));
         let daemon = Arc::new(Self {
             port: Mutex::new(port),
             branch_prefix: config_text(&orchestrator, "branch_prefix", "relay/"),
@@ -813,6 +821,7 @@ impl Daemon {
             general_work,
             note_metadata,
             note_chat,
+            history_chat,
             agent_kind: agent,
             agent_bin: Mutex::new(agent_bin),
             board_lock: Mutex::new(()),

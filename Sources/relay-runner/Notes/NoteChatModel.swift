@@ -52,11 +52,12 @@ enum NoteChatReturnKeyAction: Equatable {
 
 /// RR-549: one in-memory conversation per scope for the life of the app.
 /// Nothing here is written to a note. Conversations change on the main actor.
+/// RR-550's Workspace History chat is the same model over its own scope.
 @Observable
-final class NoteChatModel {
-    typealias Answer = (NoteChatScope, [NoteChatMessage]) async throws -> String
+final class ChatThreadModel<Scope: Hashable> {
+    typealias Answer = (Scope, [NoteChatMessage]) async throws -> String
 
-    private(set) var conversations: [NoteChatScope: NoteChatConversation] = [:]
+    private(set) var conversations: [Scope: NoteChatConversation] = [:]
     @ObservationIgnored private var answer: Answer
 
     init(answer: @escaping Answer = { _, _ in throw OrchestratorClientError.invalidRequest }) {
@@ -68,18 +69,18 @@ final class NoteChatModel {
     }
 
     @MainActor
-    func conversation(for scope: NoteChatScope) -> NoteChatConversation {
+    func conversation(for scope: Scope) -> NoteChatConversation {
         conversations[scope] ?? NoteChatConversation()
     }
 
     @MainActor
-    func setDraft(_ draft: String, for scope: NoteChatScope) {
+    func setDraft(_ draft: String, for scope: Scope) {
         conversations[scope, default: NoteChatConversation()].draft = draft
     }
 
     /// Applies Return or Shift-Return in the composer.
     @MainActor @discardableResult
-    func handleReturn(shift: Bool, in scope: NoteChatScope) -> Task<Void, Never>? {
+    func handleReturn(shift: Bool, in scope: Scope) -> Task<Void, Never>? {
         switch NoteChatReturnKeyAction.action(shift: shift) {
         case .insertNewline:
             conversations[scope, default: NoteChatConversation()].draft += "\n"
@@ -92,7 +93,7 @@ final class NoteChatModel {
     /// Sends the scope's draft. The question appears at once; the reply is
     /// appended when it arrives. Ignored while a reply is pending.
     @MainActor @discardableResult
-    func send(in scope: NoteChatScope) -> Task<Void, Never>? {
+    func send(in scope: Scope) -> Task<Void, Never>? {
         var conversation = conversation(for: scope)
         guard conversation.canSend else { return nil }
         let text = conversation.draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -104,13 +105,13 @@ final class NoteChatModel {
 
     /// Asks the failed question again.
     @MainActor @discardableResult
-    func retry(in scope: NoteChatScope) -> Task<Void, Never>? {
+    func retry(in scope: Scope) -> Task<Void, Never>? {
         guard conversation(for: scope).canRetry else { return nil }
         return request(in: scope)
     }
 
     @MainActor
-    private func request(in scope: NoteChatScope) -> Task<Void, Never> {
+    private func request(in scope: Scope) -> Task<Void, Never> {
         conversations[scope, default: NoteChatConversation()].isPending = true
         conversations[scope]?.errorMessage = nil
         let messages = conversation(for: scope).messages
@@ -127,13 +128,13 @@ final class NoteChatModel {
     }
 
     @MainActor
-    private func finish(_ scope: NoteChatScope, reply: String) {
+    private func finish(_ scope: Scope, reply: String) {
         conversations[scope]?.messages.append(NoteChatMessage(role: .assistant, text: reply))
         conversations[scope]?.isPending = false
     }
 
     @MainActor
-    private func fail(_ scope: NoteChatScope, message: String) {
+    private func fail(_ scope: Scope, message: String) {
         conversations[scope]?.isPending = false
         conversations[scope]?.errorMessage = message
     }
@@ -148,3 +149,5 @@ final class NoteChatModel {
         return "Couldn't get an answer. Check that Relay Runner is running, then retry."
     }
 }
+
+typealias NoteChatModel = ChatThreadModel<NoteChatScope>

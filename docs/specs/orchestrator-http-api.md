@@ -153,6 +153,7 @@ marked **none** have no non-test caller today.
 | POST | `/v1/artifacts/retention/retry` | 200 | none |
 | GET | `/v1/artifacts/storage` | 200 | none |
 | GET | `/v1/artifacts/history/search` | 200 | Board |
+| POST | `/v1/artifacts/history/chat` | 200 | Board |
 | GET | `/v1/artifacts/history/{artifact_id}` | 200 | Board |
 | GET | `/v1/artifacts/history/{artifact_id}/attachments/{filename}` | 200 | none |
 | POST | `/v1/artifacts/history/{artifact_id}/restore` | 200 | Board |
@@ -500,6 +501,28 @@ tree; `golden/orchestrator/board/` holds every commit byte for byte.
   `GET /history/{artifact_id}/attachments/{filename}`; `POST
   /history/{artifact_id}/restore|reopen` body `request_id` (required),
   `provider`, `online`, `confirm_github_exposure`.
+- `POST /v1/artifacts/history/chat` body `repo_path`, `project_scope_token`,
+  `request_id` (non-empty string), optional `artifact_id` (absent or `null`
+  means the repository's whole history) and `messages` (as the notes chat) →
+  `{"reply", "artifact_ids"}`. Each question is the notes chat's one
+  tool-free, subscription-only provider call, with a ticket-history system
+  prompt; nothing is saved. Ticket text is only what `GET
+  /history/{artifact_id}` returns without `online`: the chat never deepens the
+  artifact ref or confirms GitHub exposure, and ignores `online` and
+  `confirm_github_exposure` in its body. A ticket whose text needs the network
+  (or failed verification) is listed by id, title, status and date with
+  `markdown_available: false` and its `availability`, and the answer says its
+  text is not available here. With `artifact_id`, the prompt holds that
+  ticket's Markdown (past 100,000 characters the start and end are kept with
+  the middle-cut marker) and `artifact_ids` is that ticket when its text was
+  included. Without it, the prompt holds every archived ticket's id, title,
+  status and date, newest first (within 40,000 characters), plus the Markdown
+  of the offline tickets that best match the user's turns (a turn naming a
+  ticket id first, then shared words), added within 60,000 characters;
+  `artifact_ids` names them, newest first. A repository without an artifact
+  archive chats over an empty history. Errors: 400 for a missing
+  `request_id`, a malformed `artifact_id` or `messages`; 422 for an unknown
+  ticket; provider failures answer the notes chat's 504, 503 and 502 bodies.
 
 ## Notes
 
