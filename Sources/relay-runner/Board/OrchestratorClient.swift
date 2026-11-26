@@ -1267,6 +1267,19 @@ enum OrchestratorClient {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// RR-535: the daemon's `GET /v1/agent-presence` body, which names the
+    /// tickets each running agent wrote or dispatched. Throws on a connection
+    /// failure or a non-200 answer.
+    static func fetchAgentPresence() async throws -> Data {
+        guard let request = getRequest(path: "/v1/agent-presence", query: [], port: readPort(), timeout: 5) else {
+            throw OrchestratorClientError.invalidRequest
+        }
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200 else { throw OrchestratorClientError.badStatus(status, "") }
+        return data
+    }
+
     private static func readPort() -> Int {
         if let raw = try? String(contentsOfFile: portFile, encoding: .utf8),
            let port = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)),

@@ -55,8 +55,8 @@ struct RelaySessionControlHost {
 /// connection on the session-control socket. The forced-command helper opens
 /// each connection with `identify`; the phone then sends `hello`, `ping` and
 /// `session_command` frames. Commands are answered, and changes pushed, as
-/// `session_state`. RR-532: `workspace_command` and `settings_command` are
-/// answered here too, each by its own handler. The phone's provider, model
+/// `session_state`. RR-532: `settings_command` is answered here too, by its
+/// own handler; `workspace_command` is validated here and answered by the server. The phone's provider, model
 /// and effort are not chosen by a start: a session started from the phone
 /// uses the Mac's defaults and is otherwise identical to one started from the
 /// Workspace. Main-thread only, like the `AppState` it calls; the server hops
@@ -102,7 +102,9 @@ final class RelaySessionControl {
             switch frame {
             case .ping(let ping): return [.pong(Pong(t: ping.t))]
             case .sessionCommand(let command): return [.sessionState(perform(command))]
-            case .workspaceCommand(let command): return [.workspaceState(RelayRemoteWorkspaceFeed.reply(to: command))]
+            // RR-535: the Workspace needs the daemon, so the socket server answers it
+            // asynchronously (`RelaySessionControlServer.serveWorkspace`).
+            case .workspaceCommand: return []
             case .settingsCommand(let command):
                 let reply = RelayRemoteSettings.reply(to: command, host: host)
                 lastSettings = RelayRemoteSettings.state(host.config())
@@ -270,6 +272,10 @@ final class RelaySessionControlServer: @unchecked Sendable {
         let source: DispatchSourceRead
         var buffer = Data()
         var role = Role.undecided
+        /// RR-535: set by the phone's `workspace_command`; it then gets a
+        /// `workspace_state` whenever the board changes.
+        var workspaceSubscribed = false
+        var lastWorkspace: WorkspaceState?
 
         init(fd: Int32, source: DispatchSourceRead) {
             self.fd = fd
@@ -282,16 +288,25 @@ final class RelaySessionControlServer: @unchecked Sendable {
     private let tickInterval: TimeInterval
     private let control: RelaySessionControl
     private let commands: RelayAppCommands?
+    private let workspace: RelayRemoteWorkspaceFeed?
+    private let workspaceInterval: TimeInterval
     private let queue = DispatchQueue(label: "com.relayrunner.session-control")
     // Confined to `queue`.
     private var listenSource: DispatchSourceRead?
     private var timer: DispatchSourceTimer?
     private var clients: [ObjectIdentifier: Client] = [:]
+    private var workspacePollInFlight = false
+    private var lastWorkspacePoll = Date.distantPast
 
-    init(control: RelaySessionControl, commands: RelayAppCommands? = nil, path: String = defaultSocketPath,
-         bridgePath: String = defaultBridgeSocketPath, tickInterval: TimeInterval = 1) {
+    /// `workspaceInterval` is the least time between two Workspace board reads
+    /// (RR-535), so a burst of changes becomes one push.
+    init(control: RelaySessionControl, commands: RelayAppCommands? = nil, workspace: RelayRemoteWorkspaceFeed? = nil,
+         path: String = defaultSocketPath, bridgePath: String = defaultBridgeSocketPath, tickInterval: TimeInterval = 1,
+         workspaceInterval: TimeInterval = 2) {
         self.control = control
         self.commands = commands
+        self.workspace = workspace
+        self.workspaceInterval = workspaceInterval
         self.path = path
         self.bridgePath = bridgePath
         self.tickInterval = tickInterval
@@ -372,7 +387,14 @@ final class RelaySessionControlServer: @unchecked Sendable {
             let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any]
             let isAppCommand = object?["type"] as? String == "app_command"
             if client.role == .undecided { client.role = isAppCommand ? .app : .remote }
-            if isAppCommand { perform(object ?? [:], for: client) } else { sessionLines.append(line) }
+            if isAppCommand {
+                perform(object ?? [:], for: client)
+            } else if client.role == .remote, object?["type"] as? String == "workspace_command",
+                      case .workspaceCommand? = try? FrameCodec.decode(line) {
+                serveWorkspace(to: client)
+            } else {
+                sessionLines.append(line)
+            }
         }
         lines = sessionLines
         guard !lines.isEmpty else { return }
@@ -403,7 +425,47 @@ final class RelaySessionControlServer: @unchecked Sendable {
         }
     }
 
+    /// RR-535: answers a `workspace_command` with the board as it is now, and
+    /// subscribes the connection to its changes. A malformed command never
+    /// reaches here; it is answered by `RelaySessionControl.handle` instead.
+    private func serveWorkspace(to client: Client) {
+        client.workspaceSubscribed = true
+        Task { [self] in
+            let state = await workspace?.load() ?? RelayRemoteWorkspaceFeed.unavailable
+            let line = try? FrameCodec.encode(.workspaceState(state))
+            queue.async { [self] in
+                guard clients[ObjectIdentifier(client)] === client, let line else { return }
+                client.lastWorkspace = state
+                write([line], to: client)
+            }
+        }
+    }
+
+    /// While a phone is subscribed, reads the board at most every
+    /// `workspaceInterval` and pushes a `workspace_state` to each subscriber
+    /// whose last one differs.
+    private func pollWorkspace() {
+        guard let workspace, !workspacePollInFlight,
+              clients.values.contains(where: { $0.workspaceSubscribed }),
+              Date().timeIntervalSince(lastWorkspacePoll) >= workspaceInterval else { return }
+        workspacePollInFlight = true
+        lastWorkspacePoll = Date()
+        Task { [self] in
+            let state = await workspace.load()
+            let line = try? FrameCodec.encode(.workspaceState(state))
+            queue.async { [self] in
+                workspacePollInFlight = false
+                guard let line else { return }
+                for client in Array(clients.values) where client.workspaceSubscribed && client.lastWorkspace != state {
+                    client.lastWorkspace = state
+                    write([line], to: client)
+                }
+            }
+        }
+    }
+
     private func tick() {
+        pollWorkspace()
         guard clients.values.contains(where: { $0.role != .app }) else { return }
         let accepting = Self.bridgeAccepting(at: bridgePath)
         DispatchQueue.main.async { [self] in
