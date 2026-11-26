@@ -39,7 +39,7 @@ enum SessionWheelAgentAction: Equatable {
 }
 
 /// RR-521: one of the four agents' segments in the session slot's submenu,
-/// there whether or not it runs. It shows the agent's two-letter label and a
+/// there whether or not it runs. It shows the agent's full name and a
 /// glyph: a plus while the agent is stopped, an X while it runs.
 struct SessionWheelAgent: Identifiable, Equatable {
     let agent: SessionAgent
@@ -51,7 +51,7 @@ struct SessionWheelAgent: Identifiable, Equatable {
 
     var id: String { agent.slug }
     var name: String { agent.name }
-    var label: String { agent.shortLabel }
+    var label: String { agent.name }
 
     /// The label starts a stopped agent and switches to a running one.
     var labelAction: SessionWheelAgentAction { isRunning ? .switchTo(agent) : .start(agent) }
@@ -234,12 +234,35 @@ enum SessionWheelGeometry {
         let radius = hypot(point.x - center.x, point.y - center.y)
         if radius <= wheelRadius { return true }
         guard radius <= actionOuterRadius + segmentGap, let submenuSlot else { return false }
+        if submenuSlot == sessionSlots.first { return isInSessionSubmenuArc(point) }
         return submenuSlot == slot(at: point)
     }
 
+    /// The open submenu a point outside the wheel belongs to: the session
+    /// submenu over its whole arc, which reaches past its own cell, else the
+    /// cell's own submenu.
+    static func submenuSlot(at point: CGPoint, isOpen: (Int) -> Bool) -> Int? {
+        if let session = sessionSlots.first, isOpen(session), isInSessionSubmenuArc(point) { return session }
+        let slot = slot(at: point)
+        return isOpen(slot) ? slot : nil
+    }
+
+    static func isInSessionSubmenuArc(_ point: CGPoint) -> Bool {
+        abs(sessionArcOffset(at: point)) <= sessionSubmenuArc / 2
+    }
+
     /// RR-521: the session submenu holds one segment per agent, all four
-    /// always, in the submenu's standard size over the session's own cell.
+    /// always, each labelled with the agent's full name.
     static let sessionItemCount = SessionAgent.allCases.count
+
+    /// The session submenu's whole arc. Every segment is as wide as the
+    /// longest name needs, so the arc reaches past the session's own cell
+    /// over History and Workspace; it is never narrower than the cell.
+    static let sessionSubmenuArc: CGFloat = {
+        let longest = SessionAgent.allCases.map { trackedLetters($0.name).width }.max() ?? 0
+        let segment = longest + agentGlyphDiameter + 3 * agentContentPadding + segmentGap
+        return max(sliceAngle, CGFloat(sessionItemCount) * segment / actionRadius)
+    }()
 
     /// An agent segment spaces its label and glyph like `space-between`: the
     /// label starts `agentContentPadding` inside the segment's leading edge
@@ -342,8 +365,8 @@ enum SessionWheelGeometry {
 
     /// One segment's start and width, relative to the session cell's centre.
     static func sessionItemArc(_ index: Int) -> (start: CGFloat, width: CGFloat) {
-        let width = sliceAngle / CGFloat(sessionItemCount)
-        return (-sliceAngle / 2 + CGFloat(index) * width, width)
+        let width = sessionSubmenuArc / CGFloat(sessionItemCount)
+        return (-sessionSubmenuArc / 2 + CGFloat(index) * width, width)
     }
 
     /// The signed angle from the session cell's centre, so the arc never wraps.
@@ -355,9 +378,9 @@ enum SessionWheelGeometry {
 
     /// The session submenu segment under `point`, if any.
     static func sessionItem(at point: CGPoint) -> Int? {
-        let offset = sessionArcOffset(at: point) + sliceAngle / 2
-        guard offset >= 0, offset <= sliceAngle else { return nil }
-        return min(sessionItemCount - 1, Int(offset / (sliceAngle / CGFloat(sessionItemCount))))
+        let offset = sessionArcOffset(at: point) + sessionSubmenuArc / 2
+        guard offset >= 0, offset <= sessionSubmenuArc else { return nil }
+        return min(sessionItemCount - 1, Int(offset / (sessionSubmenuArc / CGFloat(sessionItemCount))))
     }
 
     static func position(slot: Int, radius: CGFloat, offset: CGFloat = 0) -> CGPoint {

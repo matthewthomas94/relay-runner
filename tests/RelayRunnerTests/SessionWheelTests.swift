@@ -15,10 +15,10 @@ final class SessionWheelTests: XCTestCase {
         return geometry.position(slot: 0, radius: geometry.actionRadius, offset: arc.start + arc.width / 2)
     }
     private func labelPoint(_ index: Int) -> CGPoint {
-        geometry.sessionAgentLayout(index, label: agents[index].shortLabel).label.point
+        geometry.sessionAgentLayout(index, label: agents[index].name).label.point
     }
     private func glyphPoint(_ index: Int) -> CGPoint {
-        geometry.sessionGlyphPoint(index, label: agents[index].shortLabel)
+        geometry.sessionGlyphPoint(index, label: agents[index].name)
     }
     /// RR-521: Puck active, Isabella and George running, Sky stopped, as in the mockup.
     private func mockupAgents(_ model: SessionWheelModel) {
@@ -92,29 +92,36 @@ final class SessionWheelTests: XCTestCase {
         }
     }
 
-    /// RR-521: the four segments fit the submenu's standard size over the
-    /// session's own cell and never reach History or Workspace.
-    func testSessionSubmenuIsOneCellForTheFourAgents() {
+    /// The four segments share one arc, centred on the session's cell. It
+    /// is wide enough for the longest full name, so it reaches past the cell
+    /// over History and Workspace, but stops well short of the cells beyond.
+    func testSessionSubmenuArcFitsTheFullNames() {
         XCTAssertEqual(geometry.sessionItemCount, 4)
+        let span = geometry.sessionSubmenuArc
+        XCTAssertGreaterThan(span, geometry.sliceAngle, "Full names need more than the session's own cell")
+        XCTAssertLessThan(span, 3 * geometry.sliceAngle)
         let first = geometry.sessionItemArc(0)
         let last = geometry.sessionItemArc(3)
-        XCTAssertEqual(first.start, -geometry.sliceAngle / 2, accuracy: 0.0001)
-        XCTAssertEqual(last.start + last.width, geometry.sliceAngle / 2, accuracy: 0.0001)
+        XCTAssertEqual(first.start, -span / 2, accuracy: 0.0001)
+        XCTAssertEqual(last.start + last.width, span / 2, accuracy: 0.0001)
         for index in 0..<4 {
-            XCTAssertEqual(geometry.sessionItemArc(index).width, geometry.sliceAngle / 4, accuracy: 0.0001)
+            XCTAssertEqual(geometry.sessionItemArc(index).width, span / 4, accuracy: 0.0001)
             XCTAssertEqual(geometry.sessionItem(at: itemPoint(index)), index)
+            // Each name and its glyph fit inside the segment with padding to spare.
+            let arcLength = geometry.sessionItemArc(index).width * geometry.actionRadius
+            let needed = geometry.trackedLetters(agents[index].name).width + geometry.agentGlyphDiameter
+                + 2 * geometry.agentContentPadding + geometry.segmentGap
+            XCTAssertGreaterThanOrEqual(arcLength, needed, agents[index].name)
         }
-        for slot in 1..<geometry.slotCount {
+        for slot in 2..<geometry.slotCount - 1 {
             let point = geometry.position(slot: slot, radius: geometry.actionRadius)
             XCTAssertNil(geometry.sessionItem(at: point), "Slot \(slot)")
             XCTAssertFalse(geometry.contains(point, submenuSlot: 0))
         }
-        let source = try? String(contentsOfFile: #filePath
-            .replacingOccurrences(of: "tests/RelayRunnerTests/SessionWheelTests.swift",
-                                  with: "Sources/relay-runner/Board/SessionWheelModel.swift"), encoding: .utf8)
-        for removed in ["sessionSubmenuSpan", "sessionStandardItems", "sessionMaxItems", "SessionTabEntry", "sessionWeight"] {
-            XCTAssertEqual(source?.contains(removed), false, removed)
-        }
+        // The arc past the session's cell still belongs to the session submenu.
+        let pastCell = geometry.position(slot: 0, radius: geometry.actionRadius, offset: span / 2 - 0.02)
+        XCTAssertEqual(geometry.submenuSlot(at: pastCell) { $0 == 0 }, 0)
+        XCTAssertTrue(geometry.contains(pastCell, submenuSlot: 0))
     }
 
     func testWheelAndSubmenuGapsAreInsideTheClickArea() {
@@ -184,10 +191,9 @@ final class SessionWheelTests: XCTestCase {
         XCTAssertEqual(model.sessionItems.filter(\.needsAttention).map(\.agent), [.isabella])
     }
 
-    /// The segments are labelled PK, IS, GE and SK from the agent definition.
-    func testAgentSegmentsUseTheTwoLetterLabels() {
-        XCTAssertEqual(SessionAgent.allCases.map(\.shortLabel), ["PK", "IS", "GE", "SK"])
-        XCTAssertEqual(SessionWheelModel().sessionItems.map(\.label), ["PK", "IS", "GE", "SK"])
+    /// The segments are labelled with each agent's full name, in sentence case.
+    func testAgentSegmentsUseTheFullNames() {
+        XCTAssertEqual(SessionWheelModel().sessionItems.map(\.label), ["Puck", "Isabella", "George", "Sky"])
         XCTAssertEqual(SessionWheelModel().sessionItems.map(\.name), ["Puck", "Isabella", "George", "Sky"])
     }
 
@@ -559,7 +565,7 @@ final class SessionWheelTests: XCTestCase {
         }
     }
 
-    /// A segment is labelled with its agent's two letters. Its label and
+    /// A segment is labelled with its agent's name. Its label and
     /// glyph sit apart like `space-between`: the same padding inside each end
     /// of the segment, the glyph after the label in reading order, never overlapping.
     func testAgentSegmentSpacesItsLabelAndGlyphApart() {
@@ -567,7 +573,7 @@ final class SessionWheelTests: XCTestCase {
         let diameter = geometry.agentGlyphDiameter
         for index in 0..<geometry.sessionItemCount {
             let arc = geometry.sessionItemArc(index)
-            let text = agents[index].shortLabel
+            let text = agents[index].name
             let layout = geometry.sessionAgentLayout(index, label: text)
             let width = geometry.trackedLetters(text).width
             let axis = CGPoint(x: cos(layout.label.rotation), y: sin(layout.label.rotation))
