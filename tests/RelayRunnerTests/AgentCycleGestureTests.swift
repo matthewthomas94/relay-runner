@@ -76,4 +76,19 @@ final class AgentCycleGestureTests: XCTestCase {
         XCTAssertEqual(AppState.agent(after: nil, in: [.isabella], direction: .forward), .isabella)
         XCTAssertEqual(AppState.agent(after: .puck, in: [.george, .sky], direction: .forward), .george)
     }
+
+    func testFollowingTheSpeakingAgentWaitsUntilYouAreQuiet() {
+        let now = Date()
+        XCTAssertTrue(AppState.followsSpeakingAgent(recording: false, lastTranscriptDeliveredAt: nil, now: now))
+        XCTAssertFalse(AppState.followsSpeakingAgent(recording: true, lastTranscriptDeliveredAt: nil, now: now))
+        XCTAssertFalse(AppState.followsSpeakingAgent(
+            recording: false, lastTranscriptDeliveredAt: now.addingTimeInterval(-2), now: now))
+        XCTAssertTrue(AppState.followsSpeakingAgent(
+            recording: false, lastTranscriptDeliveredAt: now.addingTimeInterval(-6), now: now))
+    }
+
+    func testFollowingTheSpeakingAgentIsOnByDefaultAndSaved() {
+        XCTAssertTrue(AwarenessConfig().follow_speaking_agent)
+        XCTAssertTrue(RelayAppSettings.fields["awareness"]?.contains("follow_speaking_agent") == true)
+    }
 }

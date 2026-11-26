@@ -38,6 +38,13 @@ struct AwarenessSettingsTab: View {
                         (label: "Queue", value: false),
                     ])
                 }
+                SettingsDivider()
+                SettingsControlRow(
+                    "Follow the agent that's speaking",
+                    description: "When another agent's reply plays, you talk to that agent next."
+                ) {
+                    Toggle("Follow the agent that's speaking", isOn: $config.follow_speaking_agent)
+                }
             }
 
             SettingsSection("Overlay") {

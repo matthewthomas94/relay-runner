@@ -474,6 +474,9 @@ final class AppState {
     private var observedRecordingStartedSerial = 0
     private var observedSpeechDetectedSerial = 0
     private var observedDeliveredTranscriptSerial = 0
+    /// When you last sent speech, for `followSpeakingAgent`.
+    private var followObservedTranscriptSerial = 0
+    private var lastTranscriptDeliveredAt: Date?
     private var observedTutorialTranscriptSerial = 0
     private var observedCaptureOwnerRequestedSerial = 0
     /// Caps Lock state when the session prompt was shown — any toggle dismisses it.
@@ -3554,22 +3557,53 @@ final class AppState {
                 : newSession(showsWorkspaceOnLaunch: false, agent: agent)
         case .switchTo(let agent):
             guard let contextID = liveContextID(of: agent) else { return false }
-            guard contextID != activeContext.id else { return true }
-            let name = sessionLabel(contextID: contextID)
-            let recording = sttEngine?.isRecording == true
-            guard selectPMTab(contextID, showsTerminal: false) else { return false }
-            showSessionSwitchNotice(SessionSwitchNotice(
-                switchingTo: name, focused: activeContext.id == contextID,
-                pending: pendingContextSelection?.id == contextID || pendingSessionLaunchID != nil,
-                recording: recording
-            ))
-            return true
+            return switchToSession(contextID)
         case .stop(let agent):
             guard let contextID = liveContextID(of: agent) else { return false }
             stopPMTab(contextID)
             return true
         }
     }
+
+    /// Makes a live session the one you talk to, with the switch notice.
+    private func switchToSession(_ contextID: String) -> Bool {
+        guard contextID != activeContext.id else { return true }
+        let name = sessionLabel(contextID: contextID)
+        let recording = sttEngine?.isRecording == true
+        guard selectPMTab(contextID, showsTerminal: false) else { return false }
+        showSessionSwitchNotice(SessionSwitchNotice(
+            switchingTo: name, focused: activeContext.id == contextID,
+            pending: pendingContextSelection?.id == contextID || pendingSessionLaunchID != nil,
+            recording: recording
+        ))
+        return true
+    }
+
+    /// When another running agent's reply starts playing, that agent becomes
+    /// the one you talk to next, so a reply never goes to the wrong agent.
+    private func followSpeakingAgent() {
+        guard allowsAppShellAccess, config.awareness.follow_speaking_agent,
+              let key = stateMachine.speechPresentation?.sessionKey,
+              let contextID = sessionRegistry.liveContextIDs.first(where: { sessionRegistry.spool(for: $0)?.key == key }),
+              contextID != activeContext.id,
+              Self.followsSpeakingAgent(
+                  recording: sttEngine?.isRecording == true,
+                  lastTranscriptDeliveredAt: lastTranscriptDeliveredAt,
+                  now: Date()
+              )
+        else { return }
+        _ = switchToSession(contextID)
+    }
+
+    /// Not while you are recording, nor just after you spoke to the current
+    /// agent: what you were saying stays with the agent you addressed.
+    static func followsSpeakingAgent(recording: Bool, lastTranscriptDeliveredAt: Date?, now: Date) -> Bool {
+        guard !recording else { return false }
+        guard let sent = lastTranscriptDeliveredAt else { return true }
+        return now.timeIntervalSince(sent) >= followSpeakingAgentQuietSeconds
+    }
+
+    static let followSpeakingAgentQuietSeconds: TimeInterval = 5
 
     /// Shift-Option and Shift-Control: switch to the next or previous running
     /// agent in table order, wrapping around, the way the wheel switches.
@@ -4722,6 +4756,7 @@ final class AppState {
                     text: text,
                     tutorial: tutorial
                 )
+                if source == "tts", state == "speaking", !tutorial { self?.followSpeakingAgent() }
             },
             onRecoveryAction: { [weak self] request in
                 self?.performContinuityRecoveryAction(request)
@@ -4890,6 +4925,11 @@ final class AppState {
             if let direction = engine.agentCycleRequested {
                 engine.agentCycleRequested = nil
                 self.cycleAgent(direction)
+            }
+
+            if engine.deliveredTranscriptSerial != self.followObservedTranscriptSerial {
+                self.followObservedTranscriptSerial = engine.deliveredTranscriptSerial
+                self.lastTranscriptDeliveredAt = Date()
             }
 
             // Session prompt: handle responses

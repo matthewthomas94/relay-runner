@@ -118,6 +118,7 @@ final class ConfigManager {
             if let v = tomlBool(awareness, "live_transcription") { config.awareness.live_transcription = v }
             if let v = tomlBool(awareness, "live_captions") { config.awareness.live_captions = v }
             if let v = tomlDouble(awareness, "glow_intensity") { config.awareness.glow_intensity = v }
+            if let v = tomlBool(awareness, "follow_speaking_agent") { config.awareness.follow_speaking_agent = v }
         }
 
         config.agents = Self.agents(from: table)
@@ -211,6 +212,7 @@ final class ConfigManager {
         lines.append("live_transcription = \(c.awareness.live_transcription)")
         lines.append("live_captions = \(c.awareness.live_captions)")
         lines.append("glow_intensity = \(String(format: "%.2f", c.awareness.glow_intensity))")
+        lines.append("follow_speaking_agent = \(c.awareness.follow_speaking_agent)")
         lines.append("")
 
         // An agent without a chosen work style gets no table, so a project's
