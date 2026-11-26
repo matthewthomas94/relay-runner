@@ -67,6 +67,14 @@ public struct SessionCore: Sendable {
     public private(set) var sessionError: String?
     /// RR-532: the Mac's latest `workspace_state`, across connections.
     public private(set) var workspace: WorkspaceState?
+    /// RR-551: the Mac's `workspace_ticket` replies, keyed by `ticketKey`. A
+    /// reply stays until `forgetTicket` so a ticket open on the phone keeps its
+    /// text while a refresh is in flight.
+    public private(set) var workspaceTickets: [String: WorkspaceTicketDetail] = [:]
+    /// RR-551: the last `get` was refused as a frame this Mac does not know, so
+    /// it predates ticket text. Cleared by the next `get` or any reply.
+    public private(set) var ticketUnsupported = false
+    private var awaitingTicket = false
     /// RR-532: the Mac's latest `settings_state`, across connections. After a
     /// refused `set` its values are the unchanged ones; a Mac that cannot serve
     /// settings sends only `error`.
@@ -138,6 +146,19 @@ public struct SessionCore: Sendable {
         settingsError = nil
     }
 
+    /// RR-551: a `get` is about to go out. A reply, or a refusal from an older
+    /// Mac, answers it.
+    public mutating func ticketRequested() {
+        awaitingTicket = true
+        ticketUnsupported = false
+    }
+
+    public mutating func forgetTicket(projectID: String, ticketID: String) {
+        workspaceTickets[Self.ticketKey(projectID: projectID, ticketID: ticketID)] = nil
+    }
+
+    public static func ticketKey(projectID: String, ticketID: String) -> String { projectID + "\u{1F}" + ticketID }
+
     /// Queues an utterance; returns it when it can be sent right away.
     public mutating func enqueue(_ utterance: Utterance, now: Double) -> Utterance? {
         pending.append(PendingUtterance(utterance: utterance, queuedAt: now))
@@ -189,6 +210,11 @@ public struct SessionCore: Sendable {
             }
         case .error(let error):
             // Not fatal: the Mac closes the channel itself when it gives up.
+            // RR-551: a Mac that predates `get` rejects the action as an invalid field.
+            if awaitingTicket, error.code == "invalid_field" {
+                awaitingTicket = false
+                ticketUnsupported = true
+            }
             lastError = error
             reaction.isNew = true
         case .sessionState(var state):
@@ -210,6 +236,11 @@ public struct SessionCore: Sendable {
             reaction.isNew = true
         case .workspaceState(let state):
             workspace = state
+            reaction.isNew = true
+        case .workspaceTicket(let ticket):
+            workspaceTickets[Self.ticketKey(projectID: ticket.projectId, ticketID: ticket.ticketId)] = ticket
+            awaitingTicket = false
+            ticketUnsupported = false
             reaction.isNew = true
         case .settingsState(let state):
             settings = state

@@ -1,5 +1,6 @@
 import Network
 import RelayRemoteKit
+import RelayRemoteProtocol
 import SwiftUI
 import UIKit
 
@@ -29,6 +30,12 @@ final class AppModel {
     /// The Workspace tab's selected project tab (RR-543); nil is All. Lives
     /// here so it lasts for the app session, not just while the tab is shown.
     var workspaceProject: String?
+    /// RR-551: the ticket in the Workspace tab's modal. It stays set while the
+    /// modal fades out, so the panel keeps its text as it leaves.
+    private(set) var shownTicket: WorkspaceTicket?
+    private(set) var isTicketOpen = false
+    /// Counts the asks for the open ticket's text; each one sends a `get`.
+    private(set) var ticketRequests = 0
     /// The Remote mode switch (RR-454). On: this phone owns the microphone and
     /// speaker and the Mac stays quiet. Off: the Mac listens and speaks and the
     /// phone shows the text. Persisted, and sent to the Mac on connect and change.
@@ -66,6 +73,29 @@ final class AppModel {
         self.agents = agents ?? AgentsModel()
         remoteMode = remoteModePreference.isOn
         playbackMode = playbackModePreference.mode
+    }
+
+    /// RR-551: opens a Workspace row in the ticket modal. Text held from an
+    /// earlier open is dropped, so the body loads fresh.
+    func openTicket(_ row: WorkspaceTicket) {
+        session?.forgetWorkspaceTicket(projectID: row.projectId, ticketID: row.id)
+        shownTicket = row
+        isTicketOpen = true
+        ticketRequests += 1
+    }
+
+    func closeTicket() { isTicketOpen = false }
+
+    /// Debug only: shows a sample row in the modal without asking the Mac.
+    func showSampleTicket(_ row: WorkspaceTicket) {
+        shownTicket = row
+        isTicketOpen = true
+    }
+
+    /// Asks the Mac for the open ticket's text again, keeping what is shown.
+    func refreshTicket() {
+        guard isTicketOpen else { return }
+        ticketRequests += 1
     }
 
     func bootstrap() {

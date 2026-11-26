@@ -126,8 +126,8 @@ final class RelayRemoteProtocolTests: XCTestCase {
             XCTAssertEqual(try FrameCodec.encode(frame), line + Data([0x0A]), name)
             XCTAssertEqual(try FrameCodec.decode(line + Data([0x0A])), frame, name)
         }
-        XCTAssertTrue(types.isSuperset(of: ["workspace_command", "workspace_state", "settings_command",
-                                            "settings_state"]))
+        XCTAssertTrue(types.isSuperset(of: ["workspace_command", "workspace_state", "workspace_ticket",
+                                            "settings_command", "settings_state"]))
     }
 
     /// RR-532: the new fields decode as the Mac and phone read them, and the
@@ -198,6 +198,47 @@ final class RelayRemoteProtocolTests: XCTestCase {
         XCTAssertEqual(unsupported, SettingsState(error: "Settings cannot be changed from the phone on this Mac yet."))
         XCTAssertEqual(Frame.settingsCommand(set).direction, .phoneToMac)
         XCTAssertEqual(Frame.workspaceCommand(WorkspaceCommand(clientId: set.clientId)).direction, .phoneToMac)
+    }
+
+    /// RR-551: `get` names a ticket and `workspace_ticket` carries its text,
+    /// or an error in place of it, and a `done` status that the list never has.
+    func testWorkspaceTicketVectorsDecode() throws {
+        let extended = try objects("frames_extended")
+        func frame(_ name: String, in entries: [[String: Any]]) throws -> Frame {
+            try FrameCodec.decode(Data(try XCTUnwrap(entries.first { $0["name"] as? String == name }?["line"] as? String).utf8))
+        }
+        guard case .workspaceCommand(let get) = try frame("workspace_command_get", in: extended) else {
+            return XCTFail("expected workspace_command")
+        }
+        XCTAssertEqual(get.action, .get)
+        XCTAssertEqual(get.projectId, "6d23b5b1-6da7-4056-b328-7ea8167388c0")
+        XCTAssertEqual(get.ticketId, "RR-120")
+        guard case .workspaceCommand(let list) = try frame("workspace_command_list", in: extended) else {
+            return XCTFail("expected workspace_command")
+        }
+        XCTAssertNil(list.projectId)
+        XCTAssertNil(list.ticketId)
+        guard case .workspaceTicket(let ticket) = try frame("workspace_ticket", in: extended) else {
+            return XCTFail("expected workspace_ticket")
+        }
+        XCTAssertEqual(ticket.status, .inProgress)
+        XCTAssertEqual(ticket.agent, "puck")
+        XCTAssertTrue(try XCTUnwrap(ticket.markdown).hasPrefix("## Description\n"))
+        XCTAssertNil(ticket.truncated)
+        XCTAssertNil(ticket.error)
+        XCTAssertEqual(Frame.workspaceTicket(ticket).direction, .macToPhone)
+        XCTAssertNil(Frame.workspaceTicket(ticket).seq, "workspace_ticket is not replayed")
+        guard case .workspaceTicket(let cut) = try frame("workspace_ticket_truncated", in: extended) else {
+            return XCTFail("expected workspace_ticket")
+        }
+        XCTAssertEqual(cut.status, .done)
+        XCTAssertEqual(cut.truncated, true)
+        guard case .workspaceTicket(let failed) = try frame("workspace_ticket_error", in: extended) else {
+            return XCTFail("expected workspace_ticket")
+        }
+        XCTAssertEqual(failed.error, "That ticket no longer exists.")
+        XCTAssertNil(failed.markdown)
+        XCTAssertNil(failed.title)
     }
 
     func testAudioDataLimitOnEncodeAndDecode() throws {

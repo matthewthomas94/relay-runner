@@ -113,6 +113,40 @@ final class AgentWorkspaceSettingsTests: XCTestCase {
         }
     }
 
+    /// RR-551: `get` carries the ids, the reply is kept by ticket until it is
+    /// forgotten, and a Mac that rejects the action is reported as one that
+    /// predates ticket text.
+    func testTicketTextRoundTripAndAnOlderMac() async throws {
+        let mac = FakeMac()
+        mac.ticketReply = { command in
+            WorkspaceTicketDetail(projectId: command.projectId ?? "", ticketId: command.ticketId ?? "", title: "Board",
+                                  status: .inProgress, agent: "puck", markdown: "## Hello\n")
+        }
+        let (session, _) = await connected(mac)
+        XCTAssertTrue(session.requestWorkspaceTicket(projectID: "p-relay", ticketID: "RR-120"))
+        await eventually { !session.workspaceTickets.isEmpty }
+        XCTAssertEqual(mac.workspaceCommands.map(\.action), [.get])
+        XCTAssertEqual(mac.workspaceCommands.first?.projectId, "p-relay")
+        XCTAssertEqual(mac.workspaceCommands.first?.ticketId, "RR-120")
+        let key = SessionCore.ticketKey(projectID: "p-relay", ticketID: "RR-120")
+        XCTAssertEqual(session.workspaceTickets[key]?.markdown, "## Hello\n")
+        XCTAssertFalse(session.ticketUnsupported)
+        XCTAssertNil(session.workspace, "a ticket reply is not a list")
+        session.forgetWorkspaceTicket(projectID: "p-relay", ticketID: "RR-120")
+        XCTAssertTrue(session.workspaceTickets.isEmpty)
+
+        mac.ticketReply = nil
+        XCTAssertTrue(session.requestWorkspaceTicket(projectID: "p-relay", ticketID: "RR-120"))
+        await eventually { session.ticketUnsupported }
+        XCTAssertTrue(session.workspaceTickets.isEmpty)
+        mac.ticketReply = { WorkspaceTicketDetail(projectId: $0.projectId ?? "", ticketId: $0.ticketId ?? "", markdown: "x") }
+        XCTAssertTrue(session.requestWorkspaceTicket(projectID: "p-relay", ticketID: "RR-120"))
+        await eventually { !session.workspaceTickets.isEmpty }
+        XCTAssertFalse(session.ticketUnsupported, "a Mac that answers clears it")
+        session.stop()
+        XCTAssertFalse(session.requestWorkspaceTicket(projectID: "p-relay", ticketID: "RR-120"), "nothing to send it to")
+    }
+
     func testSettingsGetSetAndARefusedSet() async throws {
         let mac = FakeMac()
         var current = SettingsState(

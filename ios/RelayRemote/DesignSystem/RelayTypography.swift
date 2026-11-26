@@ -52,3 +52,34 @@ extension View {
             .padding(.vertical, style.lineSpacing / 2)
     }
 }
+
+/// RR-551: the same styles at the reader's Dynamic Type size. Most of the app
+/// keeps them fixed, as on the styles board; text a person reads at length, such
+/// as a ticket, scales with the Text Size setting relative to Body.
+struct RelayScaledTextStyle: ViewModifier {
+    let style: RelayTextStyle
+    @ScaledMetric(relativeTo: .body) private var scale: CGFloat = 1
+
+    func body(content: Content) -> some View {
+        content
+            .font(style.font(scaledBy: scale))
+            .lineSpacing(style.lineSpacing(scaledBy: scale))
+            .padding(.vertical, style.lineSpacing(scaledBy: scale) / 2)
+    }
+}
+
+extension RelayTextStyle {
+    func font(scaledBy scale: CGFloat) -> Font { .custom(weight.postScriptName, fixedSize: size * scale) }
+
+    func lineSpacing(scaledBy scale: CGFloat) -> CGFloat {
+        let font = UIFont(name: weight.postScriptName, size: size * scale) ?? .systemFont(ofSize: size * scale)
+        return max(0, lineHeight * scale - font.lineHeight)
+    }
+}
+
+extension View {
+    /// `relayTextStyle` that follows Dynamic Type.
+    func relayScaledTextStyle(_ style: RelayTextStyle) -> some View {
+        modifier(RelayScaledTextStyle(style: style))
+    }
+}

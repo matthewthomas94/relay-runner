@@ -117,6 +117,10 @@ public final class RemoteSession {
     public private(set) var appUnavailable = false
     /// RR-532: the Mac's latest Workspace feed, from `requestWorkspace()`.
     public private(set) var workspace: WorkspaceState?
+    /// RR-551: the Mac's ticket text replies, keyed by `SessionCore.ticketKey`.
+    public private(set) var workspaceTickets: [String: WorkspaceTicketDetail] = [:]
+    /// RR-551: the Mac refused `get`, as one that predates ticket text does.
+    public private(set) var ticketUnsupported = false
     /// RR-532: the Mac's latest settings, from `requestSettings()` or
     /// `updateSettings(...)`.
     public private(set) var settings: SettingsState?
@@ -253,6 +257,25 @@ public final class RemoteSession {
         guard let connection, core.isEstablished else { return false }
         transmit(.workspaceCommand(WorkspaceCommand(clientId: UUID().uuidString.lowercased())), on: connection)
         return true
+    }
+
+    /// RR-551: asks the Mac for one ticket's text; the answer lands in
+    /// `workspaceTickets`, or `ticketUnsupported` is set by a Mac that predates
+    /// it. Works on either kind of channel. False when no channel is up.
+    @discardableResult
+    public func requestWorkspaceTicket(projectID: String, ticketID: String) -> Bool {
+        guard let connection, core.isEstablished else { return false }
+        core.ticketRequested()
+        ticketUnsupported = false
+        transmit(.workspaceCommand(WorkspaceCommand(clientId: UUID().uuidString.lowercased(), action: .get,
+                                                    projectId: projectID, ticketId: ticketID)), on: connection)
+        return true
+    }
+
+    /// RR-551: drops the text held for a ticket, so the next open starts empty.
+    public func forgetWorkspaceTicket(projectID: String, ticketID: String) {
+        core.forgetTicket(projectID: projectID, ticketID: ticketID)
+        workspaceTickets = core.workspaceTickets
     }
 
     /// RR-532: asks the Mac for its settings; the answer lands in `settings`.
@@ -427,6 +450,8 @@ public final class RemoteSession {
             sessionError = core.sessionError
             appUnavailable = core.appUnavailable
             workspace = core.workspace
+            workspaceTickets = core.workspaceTickets
+            ticketUnsupported = core.ticketUnsupported
             settings = core.settings
             settingsError = core.settingsError
             if reaction.isNew || frame.seq == nil { onInbound?(frame) }

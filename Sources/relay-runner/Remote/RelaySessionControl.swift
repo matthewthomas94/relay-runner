@@ -390,8 +390,12 @@ final class RelaySessionControlServer: @unchecked Sendable {
             if isAppCommand {
                 perform(object ?? [:], for: client)
             } else if client.role == .remote, object?["type"] as? String == "workspace_command",
-                      case .workspaceCommand? = try? FrameCodec.decode(line) {
-                serveWorkspace(to: client)
+                      case .workspaceCommand(let command)? = try? FrameCodec.decode(line) {
+                if command.action == .get {
+                    serveTicket(command, to: client)
+                } else {
+                    serveWorkspace(to: client)
+                }
             } else {
                 sessionLines.append(line)
             }
@@ -436,6 +440,26 @@ final class RelaySessionControlServer: @unchecked Sendable {
             queue.async { [self] in
                 guard clients[ObjectIdentifier(client)] === client, let line else { return }
                 client.lastWorkspace = state
+                write([line], to: client)
+            }
+        }
+    }
+
+    /// RR-551: answers a `workspace_command` `get` with that one ticket's text.
+    /// It does not subscribe the connection: a ticket body is never pushed.
+    private func serveTicket(_ command: WorkspaceCommand, to client: Client) {
+        guard let projectID = command.projectId, let ticketID = command.ticketId else {
+            let reply = WorkspaceTicketDetail(projectId: command.projectId ?? "", ticketId: command.ticketId ?? "",
+                                              error: RelayRemoteWorkspaceFeed.unidentifiedTicket)
+            return write([try? FrameCodec.encode(.workspaceTicket(reply))].compactMap { $0 }, to: client)
+        }
+        Task { [self] in
+            let reply = await workspace?.ticket(projectID: projectID, ticketID: ticketID)
+                ?? WorkspaceTicketDetail(projectId: projectID, ticketId: ticketID,
+                                         error: RelayRemoteWorkspaceFeed.unavailable.error)
+            let line = try? FrameCodec.encode(.workspaceTicket(reply))
+            queue.async { [self] in
+                guard clients[ObjectIdentifier(client)] === client, let line else { return }
                 write([line], to: client)
             }
         }

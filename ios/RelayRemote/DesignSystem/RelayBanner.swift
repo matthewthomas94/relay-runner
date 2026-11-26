@@ -60,7 +60,23 @@ enum RelayBannerMetrics {
     static let sideMargin: CGFloat = 12
 }
 
+/// A banner a screen asks its container to float, for a screen whose container
+/// draws something over it, such as the Workspace's ticket modal (RR-551). The
+/// container shows it with `overlayPreferenceValue`, last, so it sits above.
+struct FloatingBannerKey: PreferenceKey {
+    static var defaultValue: RelayBanner? { nil }
+
+    static func reduce(value: inout RelayBanner?, nextValue: () -> RelayBanner?) {
+        value = nextValue() ?? value
+    }
+}
+
 extension View {
+    /// Hands `banner` to the container that floats banners (`FloatingBannerKey`).
+    func floatingBanner(_ banner: RelayBanner?) -> some View {
+        preference(key: FloatingBannerKey.self, value: banner)
+    }
+
     /// Floats `banner` over this view, below the status bar. It never pushes
     /// content down. Apply it to a full-screen view.
     func relayBanner(_ banner: RelayBanner?) -> some View {

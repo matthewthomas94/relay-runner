@@ -11,6 +11,8 @@ import Foundation
 ///   with sample data instead of the Mac's,
 /// - `--agents-sample=<ready|holding|playing|not-running|unreachable|long-draft>`
 ///   shows the Agents tab with sample data in one of its states (RR-540),
+/// - `--ticket-sample=<short|long|loading|error|truncated|unsupported|done>` opens the Workspace
+///   tab's ticket modal on sample data (add `--workspace-sample=unreachable` for the banner),
 /// - `--sample-settings` fills the Settings tab with sample data, unpaired,
 /// - `--scroll-bottom` opens scrolling screens at their end,
 /// - `--reset-onboarding` forgets that onboarding finished, as a fresh install.
@@ -23,6 +25,7 @@ struct LaunchOptions: Equatable {
     var pairingStep: String?
     var workspaceSample: String?
     var agentsSample: String?
+    var ticketSample: String?
     var resetsOnboarding = false
     var sampleSettings = false
     var scrollsToBottom = false
@@ -40,6 +43,7 @@ struct LaunchOptions: Equatable {
             if let value = Self.value(of: "--stage", in: argument) { stage = AppStage(rawValue: value) }
             if let value = Self.value(of: "--pairing-step", in: argument) { pairingStep = value }
             if let value = Self.value(of: "--workspace-sample", in: argument) { workspaceSample = value }
+            if let value = Self.value(of: "--ticket-sample", in: argument) { ticketSample = value }
             if let value = Self.value(of: "--tab", in: argument) { tab = MainTab(rawValue: value) }
             if let value = Self.value(of: "--agents-sample", in: argument) { agentsSample = value }
         }
