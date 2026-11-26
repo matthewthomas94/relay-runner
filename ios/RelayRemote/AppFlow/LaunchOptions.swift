@@ -7,6 +7,8 @@ import Foundation
 /// - `--stage=<splash|permissions|pairing|tutorial|app>` starts at a stage,
 /// - `--pairing-step=<scan|check>` opens the pairing flow on a step,
 /// - `--tab=<agents|workspace|settings>` opens the app on a tab,
+/// - `--permission-step=<microphone|localNetwork|camera|notifications>` opens the
+///   permissions stage on that step even if it was already decided,
 /// - `--workspace-sample=<list|empty|error|unreachable|truncated>` fills the Workspace tab
 ///   with sample data instead of the Mac's,
 /// - `--agents-sample=<ready|holding|playing|not-running|unreachable|long-draft>`
@@ -30,6 +32,7 @@ struct LaunchOptions: Equatable {
     var tutorialSample: String?
     var ticketSample: String?
     var resetsOnboarding = false
+    var permissionStep: PermissionStep?
     var sampleSettings = false
     var scrollsToBottom = false
 
@@ -45,6 +48,7 @@ struct LaunchOptions: Equatable {
             if argument == "--sample-settings" { sampleSettings = true }
             if let value = Self.value(of: "--stage", in: argument) { stage = AppStage(rawValue: value) }
             if let value = Self.value(of: "--pairing-step", in: argument) { pairingStep = value }
+            if let value = Self.value(of: "--permission-step", in: argument) { permissionStep = PermissionStep(rawValue: value) }
             if let value = Self.value(of: "--workspace-sample", in: argument) { workspaceSample = value }
             if let value = Self.value(of: "--ticket-sample", in: argument) { ticketSample = value }
             if let value = Self.value(of: "--tab", in: argument) { tab = MainTab(rawValue: value) }
