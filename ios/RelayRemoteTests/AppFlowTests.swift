@@ -64,3 +64,26 @@ final class AppFlowTests: XCTestCase {
         XCTAssertFalse(ReplyNotificationsPreference(defaults: defaults).isOn)
     }
 }
+
+final class SplashTimelineTests: XCTestCase {
+    func testBeatsFollowTheDesktopSchedule() {
+        typealias T = SplashTimeline
+        XCTAssertEqual(T.frame(at: 0).visible, 1)
+        XCTAssertEqual(T.frame(at: 0.69).visible, 1, "R holds for 0.7 s")
+        XCTAssertEqual(T.frame(at: 0.7 + 0.03).visible, 2, "one character every 0.029 s")
+        XCTAssertEqual(T.frame(at: T.glowStart).visible, 12)
+        XCTAssertEqual(T.frame(at: T.glowStart).glow, 0, accuracy: 0.001)
+        XCTAssertEqual(T.frame(at: T.glowStart + 2).glow, 0.5, accuracy: 0.001, "smoothstep midpoint")
+        XCTAssertEqual(T.frame(at: T.glowStart + 4).glow, 1, accuracy: 0.001)
+        XCTAssertEqual(T.frame(at: T.firstSwapStart - 0.01).phrase, 0)
+        let first = T.frame(at: T.firstSwapStart + 0.24 + 0.24 + 0.5)
+        XCTAssertEqual(first.phrase, 1)
+        XCTAssertEqual(first.hidden, 0, accuracy: 0.001)
+        XCTAssertEqual(first.glowOpacity, 0)
+        XCTAssertEqual(T.secondSwapStart - T.firstSwapStart, 0.24 * 2 + 1.05, accuracy: 0.001)
+        XCTAssertEqual(T.frame(at: T.secondSwapStart + 0.48 + 0.5).phrase, 2)
+        XCTAssertFalse(T.frame(at: T.duration - 0.01).isComplete)
+        XCTAssertEqual(T.duration - T.secondSwapStart, 0.48 + 1.4, accuracy: 0.001)
+        XCTAssertTrue(T.frame(at: T.duration).isComplete)
+    }
+}
