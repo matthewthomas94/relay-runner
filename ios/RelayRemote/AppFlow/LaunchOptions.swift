@@ -9,6 +9,8 @@ import Foundation
 /// - `--tab=<agents|workspace|settings>` opens the app on a tab,
 /// - `--workspace-sample=<list|empty|error|unreachable|truncated>` fills the Workspace tab
 ///   with sample data instead of the Mac's,
+/// - `--sample-settings` fills the Settings tab with sample data, unpaired,
+/// - `--scroll-bottom` opens scrolling screens at their end,
 /// - `--reset-onboarding` forgets that onboarding finished, as a fresh install.
 /// Release builds ignore them.
 struct LaunchOptions: Equatable {
@@ -19,6 +21,8 @@ struct LaunchOptions: Equatable {
     var pairingStep: String?
     var workspaceSample: String?
     var resetsOnboarding = false
+    var sampleSettings = false
+    var scrollsToBottom = false
 
     init(arguments: [String]) {
         for argument in arguments {
@@ -28,6 +32,8 @@ struct LaunchOptions: Equatable {
                 galleryPage = value
             }
             if argument == "--reset-onboarding" { resetsOnboarding = true }
+            if argument == "--scroll-bottom" { scrollsToBottom = true }
+            if argument == "--sample-settings" { sampleSettings = true }
             if let value = Self.value(of: "--stage", in: argument) { stage = AppStage(rawValue: value) }
             if let value = Self.value(of: "--pairing-step", in: argument) { pairingStep = value }
             if let value = Self.value(of: "--workspace-sample", in: argument) { workspaceSample = value }
