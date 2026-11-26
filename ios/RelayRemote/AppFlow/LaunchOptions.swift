@@ -11,6 +11,8 @@ import Foundation
 ///   with sample data instead of the Mac's,
 /// - `--agents-sample=<ready|holding|playing|not-running|unreachable|long-draft>`
 ///   shows the Agents tab with sample data in one of its states (RR-540),
+/// - `--tutorial-step=<basics|hold|release|play|stop|done>` shows a tutorial step with
+///   sample data (RR-542),
 /// - `--ticket-sample=<short|long|loading|error|truncated|unsupported|done>` opens the Workspace
 ///   tab's ticket modal on sample data (add `--workspace-sample=unreachable` for the banner),
 /// - `--sample-settings` fills the Settings tab with sample data, unpaired,
@@ -25,6 +27,7 @@ struct LaunchOptions: Equatable {
     var pairingStep: String?
     var workspaceSample: String?
     var agentsSample: String?
+    var tutorialSample: String?
     var ticketSample: String?
     var resetsOnboarding = false
     var sampleSettings = false
@@ -46,6 +49,7 @@ struct LaunchOptions: Equatable {
             if let value = Self.value(of: "--ticket-sample", in: argument) { ticketSample = value }
             if let value = Self.value(of: "--tab", in: argument) { tab = MainTab(rawValue: value) }
             if let value = Self.value(of: "--agents-sample", in: argument) { agentsSample = value }
+            if let value = Self.value(of: "--tutorial-step", in: argument) { tutorialSample = value }
         }
     }
 
