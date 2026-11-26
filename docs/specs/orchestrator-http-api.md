@@ -160,6 +160,7 @@ marked **none** have no non-test caller today.
 | GET | `/v1/artifacts/notes` | 200 | MCP, Board |
 | GET | `/v1/artifacts/notes/{identity}` | 200 | MCP, Board |
 | POST | `/v1/artifacts/notes/create` | 201 | Board |
+| POST | `/v1/artifacts/notes/chat` | 200 | Board |
 | POST | `/v1/artifacts/notes/{note_id}/update` | 200 | Board |
 | POST | `/v1/artifacts/notes/{note_id}/retry-metadata` | 200 | Board |
 | POST | `/v1/artifacts/notes/{note_id}/archive` | 200 | none |
@@ -526,6 +527,31 @@ is independent of `repo_path`.
   `request_id`, `provider`; `…/delete` and `…/cancel` (cancel also stops a
   recording) body `artifact_id`, `request_id`. A malformed note id is 400
   `invalid unpadded note ID: '<id>'`; schema errors are 422.
+- `POST /v1/artifacts/notes/chat` body `request_id` (non-empty string),
+  optional `note` (note id or artifact id; absent or `null` means the whole
+  library), `messages` (ordered `{"role": "user"|"assistant", "text"}`, the
+  last one the user's new question, at most 8,000 characters) → `{"reply",
+  "note_ids"}`. Each question is one tool-free, subscription-only provider
+  call with the metadata worker's launch line, isolated environment and
+  `[general]` provider and model, a chat system prompt and a plain-text
+  answer (Claude's `result` in its JSON envelope, Codex's last message).
+  Nothing is saved and no provider session persists. The prompt carries the
+  notes as quoted JSON material and the 10 latest earlier turns (oldest
+  dropped first, each kept to 4,000 characters). With `note`, it holds that
+  note's title, capture date, summary and transcript (past 100,000 characters
+  the start and end are kept with a `[… middle cut: N characters omitted …]`
+  marker) and `note_ids` is that note. Without it, it holds every note's
+  title, date and summary, newest first (within 40,000 characters), plus the
+  transcripts of the notes sharing the most words with the user's turns,
+  added within 60,000 characters; `note_ids` names the notes whose
+  transcripts were included, newest first. Errors: 400 for a missing
+  `request_id`, a malformed `note` or `messages`, or a last message that is
+  not the user's; 422 for an unknown note, as `GET …/{identity}` answers;
+  `{"error", "error_code", "retryable"}` with 504 `timeout` when the provider
+  has not answered within 120 seconds (its process group is killed), 503
+  `cli_unavailable`, `provider_unavailable`, `model_unavailable` or
+  `subscription_unverified` (the error sends the user to subscription
+  sign-in, never an API key), and 502 for any other provider failure.
 
 ## General tasks and personal storage
 
