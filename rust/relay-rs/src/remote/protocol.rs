@@ -1701,7 +1701,8 @@ mod tests {
             [Some("puck"), None, Some("sky")]
         );
         assert_eq!(workspace.truncated, None);
-        let Frame::WorkspaceState(truncated) = named("frames_extended", "workspace_state_truncated")
+        let Frame::WorkspaceState(truncated) =
+            named("frames_extended", "workspace_state_truncated")
         else {
             panic!("expected workspace_state");
         };
@@ -1751,7 +1752,10 @@ mod tests {
         let Frame::WorkspaceCommand(list_command) = named("workspace_command_list") else {
             panic!("expected workspace_command");
         };
-        assert_eq!((list_command.project_id, list_command.ticket_id), (None, None));
+        assert_eq!(
+            (list_command.project_id, list_command.ticket_id),
+            (None, None)
+        );
         let Frame::WorkspaceTicket(ticket) = named("workspace_ticket") else {
             panic!("expected workspace_ticket");
         };
@@ -1767,7 +1771,10 @@ mod tests {
         let Frame::WorkspaceTicket(failed) = named("workspace_ticket_error") else {
             panic!("expected workspace_ticket");
         };
-        assert_eq!(failed.error.as_deref(), Some("That ticket no longer exists."));
+        assert_eq!(
+            failed.error.as_deref(),
+            Some("That ticket no longer exists.")
+        );
         assert_eq!((failed.markdown, failed.title), (None, None));
     }
 
