@@ -78,7 +78,8 @@ struct AgentDock: View {
     }
 
     private var textBox: some View {
-        // Send stays in the bottom-right corner as the text box grows.
+        // Send sits in the bottom-right corner, 4 pt in from the edges, so on
+        // one line it is centred and as the box grows it stays at the bottom.
         HStack(alignment: .bottom, spacing: 8) {
             Group {
                 if isTalking {
@@ -103,7 +104,8 @@ struct AgentDock: View {
             }
             .relayTextStyle(.body)
             .padding(.leading, 14)
-            .padding(.vertical, 8)
+            .padding(.vertical, 10)
+            .frame(minHeight: 44, alignment: .leading)
             Button(action: sendIfPossible) {
                 LucideImage(.arrowUp, size: 18)
                     .foregroundStyle(canSend ? RelayColor.neutral10 : RelayColor.neutral7)
@@ -116,6 +118,7 @@ struct AgentDock: View {
             .animation(RelayMotion.enter, value: canSend)
             .padding(.trailing, 4)
             .padding(.bottom, 4)
+            .padding(.top, 4)
             .accessibilityLabel("Send")
         }
         .frame(minHeight: 44)

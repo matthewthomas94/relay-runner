@@ -13,6 +13,9 @@ struct AgentChatFeed: View {
     static let topFade: CGFloat = 32
     static let bottomFade: CGFloat = 24
 
+    /// Play morphs the "New reply" panel into the reply's bubble.
+    @Namespace private var replyMorph
+
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 20) {
@@ -22,6 +25,7 @@ struct AgentChatFeed: View {
                 }
                 if let waiting {
                     WaitingReplyPanel(name: name, receivedAt: waiting.receivedAt, onPlay: onPlay)
+                        .matchedGeometryEffect(id: Self.morphID(waiting.seq), in: replyMorph)
                         .id("waiting")
                         .transition(.relaySurface)
                 }
@@ -29,7 +33,7 @@ struct AgentChatFeed: View {
             .padding(.horizontal, RelayMetrics.screenMargin)
             .padding(.top, Self.topFade)
             .padding(.bottom, Self.bottomFade)
-            .animation(RelayMotion.enter, value: waiting)
+            .animation(RelayMotion.move, value: waiting)
             .animation(RelayMotion.enter, value: messages.count)
             .animation(RelayMotion.enter, value: speakingSeq)
         }
@@ -72,6 +76,7 @@ struct AgentChatFeed: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .relayGlass(.panel)
+                    .modifier(ReplyMorph(id: message.seq.map(Self.morphID), namespace: replyMorph))
                 meta(message.seq != nil && message.seq == speakingSeq
                      ? "\(name) · speaking" : "\(name) · \(Self.time(message.date))")
                     .contentTransition(.opacity)
@@ -94,6 +99,8 @@ struct AgentChatFeed: View {
             .relayTextStyle(.caption)
             .foregroundStyle(RelayColor.neutral7)
     }
+
+    static func morphID(_ seq: Int) -> String { "reply-\(seq)" }
 
     static func time(_ date: Date) -> String {
         date.formatted(.dateTime.hour(.defaultDigits(amPM: .omitted)).minute())
@@ -133,5 +140,20 @@ struct WaitingReplyPanel: View {
         if seconds < 60 { return "\(seconds) s" }
         if seconds < 3600 { return "\(seconds / 60) min" }
         return "\(seconds / 3600) h"
+    }
+}
+
+/// Ties a reply's bubble to its "New reply" panel so pressing Play morphs one
+/// into the other; replies without a seq are left alone.
+private struct ReplyMorph: ViewModifier {
+    let id: String?
+    let namespace: Namespace.ID
+
+    func body(content: Content) -> some View {
+        if let id {
+            content.matchedGeometryEffect(id: id, in: namespace)
+        } else {
+            content
+        }
     }
 }
