@@ -1,6 +1,5 @@
 import SwiftUI
 import UIKit
-import simd
 
 /// The colours and reach of a state glow, from the desktop's `ParticleFieldRenderer.Theme`.
 struct DotFieldStyle: Hashable {
@@ -32,30 +31,17 @@ struct DotField: View {
 
     @State private var cache = DotFieldCache()
     @State private var start = Date.now
-    /// Softer than the talk button's wave, as Voice's glow is, but quicker
-    /// than its 0.3 s / 0.9 s, so the field visibly follows the words.
-    @State private var envelope = VoiceEnvelope(attack: 0.08, release: 0.45)
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.micLevel) private var meter
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || reveal <= 0)) { timeline in
-            // The listening field moves with the user's voice (user,
-            // 2026-11-27); the playback field has no microphone to follow.
-            let voice: VoiceLevel? = style == .listening && !reduceMotion
-                ? envelope.follow(meter?.current ?? .silent, at: timeline.date.timeIntervalSinceReferenceDate)
-                : nil
             Canvas { context, size in
                 guard reveal > 0 else { return }
                 let elapsed = reduceMotion ? 0 : timeline.date.timeIntervalSince(start)
                 for dot in cache.grid(style: style, size: size) {
                     let wave = DotFieldCache.wave(x: dot.x, y: dot.fieldY, elapsed: elapsed)
-                    // How loud the voice is where this dot sits: the lows in
-                    // the middle, the mids beside them, the highs at the edges.
-                    let amp = voice.map { CGFloat(0.35 * $0.level + 0.65 * simd_dot($0.bands, dot.lobes)) } ?? 0
-                    let radius = dot.radius * (1 + wave * (0.2 + 0.3 * amp)) * (1 + 0.8 * amp)
-                    let alpha = dot.alpha * (1 + Double(wave) * 0.1) * (1 + 0.7 * Double(amp))
-                        * Self.revealFactor(reveal, verticalT: dot.verticalT)
+                    let radius = dot.radius * (1 + wave * 0.2)
+                    let alpha = dot.alpha * (1 + Double(wave) * 0.1) * Self.revealFactor(reveal, verticalT: dot.verticalT)
                     guard radius > 0.1, alpha > 0.002 else { continue }
                     context.fill(
                         Path(ellipseIn: CGRect(x: dot.x - radius, y: dot.y - radius,
@@ -89,8 +75,6 @@ final class DotFieldCache {
         let radius: CGFloat
         let alpha: Double
         let rgb: SIMD3<Double>
-        /// How much the lows, mids and highs of the voice move this dot.
-        let lobes: SIMD3<Float>
     }
 
     static let spacing: CGFloat = 8
@@ -156,12 +140,8 @@ final class DotFieldCache {
                 let lift = Double(pow(1 - verticalT, 3) * 0.70)
                 let base = SIMD3(Double(red), Double(green), Double(blue))
                 let rgb = base * (1 - lift) + style.highlight * lift
-                // Distance from the centre, 0 there and 1 at either edge.
-                let d = Float(abs(dx) / max(1, centerX))
-                let lobes = SIMD3<Float>(exp(-pow(d / 0.3, 2)), exp(-pow((d - 0.5) / 0.25, 2)),
-                                         exp(-pow((d - 0.9) / 0.2, 2)))
                 result.append(Dot(x: x, y: size.height - fieldY, fieldY: fieldY, verticalT: Double(verticalT),
-                                  radius: radius, alpha: alpha, rgb: rgb, lobes: lobes))
+                                  radius: radius, alpha: alpha, rgb: rgb))
             }
         }
         return result

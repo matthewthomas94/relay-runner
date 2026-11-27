@@ -18,8 +18,8 @@ struct VoiceLevel: Equatable, Sendable {
     static let silent = VoiceLevel(level: 0, bands: .zero)
 }
 
-/// The microphone's latest `VoiceLevel`, for the views that move with the
-/// voice (the talk button's sound wave and the listening dot field). Its own
+/// The microphone's latest `VoiceLevel`, for the talk button's sound wave,
+/// which moves with the voice. Its own
 /// observable, so the ~23 updates a second only reach those views.
 @MainActor
 @Observable
