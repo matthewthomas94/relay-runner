@@ -221,21 +221,22 @@ private struct ProjectTabStrip: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: 4) {
                 ForEach(tabs, id: \.id) { tab in
                     let selected = tab.id == selection
                     Button { withAnimation(RelayMotion.move) { selection = tab.id } } label: {
+                        // Sized like the agent tabs (`AgentTabStrip`).
                         (Text(tab.name).foregroundStyle(selected ? RelayColor.neutral10 : RelayColor.neutral7)
                             + Text("  \(tab.count)").foregroundStyle(RelayColor.neutral7))
-                            .font(RelayTextStyle.control.font)
+                            .relayTextStyle(AgentTabStrip.label)
                             .lineLimit(1)
-                            .padding(.horizontal, 16)
-                            .frame(height: 48)
+                            .padding(.horizontal, 14)
+                            .frame(height: AgentTabStrip.height)
                             .background {
                                 if selected {
-                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
                                         .fill(RelayColor.neutral3)
-                                        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
                                             .stroke(RelayColor.neutral5, lineWidth: 1))
                                         .matchedGeometryEffect(id: "pill", in: pill)
                                 }
