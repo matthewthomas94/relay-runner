@@ -10,6 +10,9 @@ struct TicketSample {
     var reply: WorkspaceTicketDetail?
     var unsupported = false
     var isUnreachable = false
+    /// Debug: the reply arrives this long after the modal opens, to watch
+    /// the loading hand-over (`--ticket-sample=arrive`).
+    var arrivesAfter: Duration?
 }
 
 /// The Workspace tab's ticket modal (RR-551): the tapped ticket, header from
@@ -19,6 +22,8 @@ struct TicketModalView: View {
     var sample: TicketSample?
 
     @State private var timedOut = false
+    /// Debug: whether a delayed sample reply has arrived.
+    @State private var sampleArrived = false
     @Environment(\.scenePhase) private var scenePhase
 
     /// How long the body may wait before the modal says the Mac is not answering.
@@ -29,7 +34,8 @@ struct TicketModalView: View {
     private var reading: WorkspaceTicketReading? {
         guard let row = sample?.row ?? model.shownTicket else { return nil }
         if let sample {
-            return WorkspaceTicketReading(row: row, workspace: sample.workspace, reply: sample.reply,
+            let arrived = sample.arrivesAfter == nil || sampleArrived
+            return WorkspaceTicketReading(row: row, workspace: sample.workspace, reply: arrived ? sample.reply : nil,
                                           unsupported: sample.unsupported)
         }
         let key = SessionCore.ticketKey(projectID: row.projectId, ticketID: row.id)
@@ -52,6 +58,11 @@ struct TicketModalView: View {
             }
         }
         .task(id: model.isTicketOpen ? model.ticketRequests : -1) {
+            if let delay = sample?.arrivesAfter, model.isTicketOpen {
+                sampleArrived = false
+                try? await Task.sleep(for: delay)
+                sampleArrived = true
+            }
             guard model.isTicketOpen, sample == nil, let row = model.shownTicket else { return }
             timedOut = false
             session?.requestWorkspaceTicket(projectID: row.projectId, ticketID: row.id)
@@ -100,16 +111,57 @@ private struct TicketHeader: View {
 }
 
 /// The scrolling part: loading, the rendered text, or one line and Retry.
+/// One state hands over to the next without overlapping: the old one fades
+/// out quickly, then the new one fades in from a light blur and a few points
+/// down while the panel eases to its height (user, 2026-11-28: the spinner
+/// flashed and the panel jumped).
 private struct TicketBody: View {
     let state: WorkspaceTicketReading.Body
     let dimmed: Bool
     let retry: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Which kind of state shows; a new text for the same ticket keeps it.
+    private var kind: Int {
+        switch state {
+        case .loading: 0
+        case .text: 1
+        case .error: 2
+        case .unsupported: 3
+        }
+    }
 
     var body: some View {
+        ZStack(alignment: .topLeading) {
+            content
+                .id(kind)
+                .transition(reduceMotion ? .opacity : Self.handOver)
+        }
+        .animation(RelayMotion.enter, value: kind)
+        .padding(.top, 4)
+        .opacity(dimmed ? 0.3 : 1)
+    }
+
+    private static var handOver: AnyTransition {
+        .asymmetric(
+            insertion: .modifier(active: Arriving(hidden: true), identity: Arriving(hidden: false))
+                .animation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.32).delay(0.1)),
+            removal: .opacity.animation(.easeOut(duration: 0.1)))
+    }
+
+    private struct Arriving: ViewModifier {
+        let hidden: Bool
+        func body(content: Content) -> some View {
+            content.opacity(hidden ? 0 : 1).blur(radius: hidden ? 4 : 0).offset(y: hidden ? 6 : 0)
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
             switch state {
             case .loading:
-                ProgressView().tint(RelayColor.neutral7).frame(maxWidth: .infinity).padding(.vertical, 24)
+                TicketLoading()
             case .text(let markdown, let truncated):
                 MarkdownView(blocks: MarkdownBlocks.parse(markdown))
                 if truncated {
@@ -124,8 +176,24 @@ private struct TicketBody: View {
                     .relayScaledTextStyle(.body).foregroundStyle(RelayColor.neutral7)
             }
         }
-        .padding(.top, 4)
-        .opacity(dimmed ? 0.3 : 1)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Room for the text while the Mac answers. The spinner only fades in if
+/// the answer takes longer than a moment, so a quick answer never flashes it.
+private struct TicketLoading: View {
+    @State private var showsSpinner = false
+
+    var body: some View {
+        ProgressView()
+            .tint(RelayColor.neutral7)
+            .opacity(showsSpinner ? 1 : 0)
+            .frame(maxWidth: .infinity, minHeight: 96)
+            .task {
+                try? await Task.sleep(for: .milliseconds(350))
+                withAnimation(.easeOut(duration: 0.2)) { showsSpinner = true }
+            }
     }
 }
 
@@ -268,6 +336,9 @@ extension TicketSample {
         case "unsupported": sample.unsupported = true
         case "long": sample.reply = reply(sampleMarkdown + "\n" + sampleMarkdown)
         case "truncated": sample.reply = reply(sampleMarkdown, truncated: true)
+        case "arrive":
+            sample.reply = reply(sampleMarkdown)
+            sample.arrivesAfter = .milliseconds(1200)
         case "done":
             workspace.tickets = []
             sample.workspace = workspace

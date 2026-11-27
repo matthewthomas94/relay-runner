@@ -17,6 +17,16 @@ enum RelayModalMetrics {
     static let dismissFraction: CGFloat = 1.0 / 3
     /// Or when let go faster than this, in points per second.
     static let flickVelocity: CGFloat = 700
+
+    /// Opening: the panel fades in from a light blur and 96% on the strong
+    /// ease-out, unhurried enough to read as one smooth arrival.
+    static let open = Animation.timingCurve(0.23, 1, 0.32, 1, duration: 0.34)
+    /// Closing is quicker than opening: the user is done with it.
+    static let close = Animation.timingCurve(0.23, 1, 0.32, 1, duration: 0.2)
+    /// The panel growing or shrinking to new content (the ticket's text
+    /// arriving): iOS's drawer curve, so the height eases out instead of
+    /// jumping (user, 2026-11-28).
+    static let resize = Animation.timingCurve(0.32, 0.72, 0, 1, duration: 0.42)
 }
 
 /// The app's modal: one glass panel over a black scrim that covers the whole
@@ -27,9 +37,10 @@ enum RelayModalMetrics {
 /// The 44 pt close button is pinned at the panel's top right. It closes from
 /// the button, a tap on the scrim, a drag down (past a third of the panel's
 /// height, or a fast flick, while the body is at its top) and VoiceOver's
-/// escape gesture. Opening and closing use `RelayMotion.swap`: the panel
-/// fades and scales from 96% and the scrim fades; with Reduce Motion, fade
-/// only. It is a modal for VoiceOver, and focus moves to the header.
+/// escape gesture. Opening, the panel fades in from a light blur and 96%
+/// (`RelayModalMetrics.open`) and the scrim fades; closing is the same,
+/// quicker. When the body's height changes the panel eases to its new size.
+/// With Reduce Motion, fades only and the size changes at once. It is a modal for VoiceOver, and focus moves to the header.
 ///
 /// Apply `.accessibilityHidden` and `.disabled` to what sits behind it.
 struct RelayModal<Header: View, Content: View>: View {
@@ -63,10 +74,10 @@ struct RelayModal<Header: View, Content: View>: View {
                         .padding(.horizontal, RelayMetrics.screenMargin)
                 }
                 .ignoresSafeArea(.container, edges: .bottom)
-                .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: RelayMotion.hiddenScale)))
+                .transition(reduceMotion ? .opacity : .relaySurface)
             }
         }
-        .animation(RelayMotion.swap, value: isPresented)
+        .animation(isPresented ? RelayModalMetrics.open : RelayModalMetrics.close, value: isPresented)
         .onChange(of: isPresented) { _, presented in
             guard presented else { return }
             // The next open starts at rest, not where the last drag left the panel.
@@ -129,7 +140,15 @@ struct RelayModal<Header: View, Content: View>: View {
         ScrollView {
             content
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                    // The first size is the panel's size as it opens; later
+                    // ones (the text arriving) ease the panel to fit.
+                    if contentHeight == nil || reduceMotion {
+                        contentHeight = height
+                    } else if abs((contentHeight ?? 0) - height) > 0.5 {
+                        withAnimation(RelayModalMetrics.resize) { contentHeight = height }
+                    }
+                }
         }
         .scrollIndicators(.hidden)
         .scrollDisabled(dragArmed)
