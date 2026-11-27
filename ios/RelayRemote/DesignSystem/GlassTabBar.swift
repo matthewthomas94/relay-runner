@@ -110,16 +110,6 @@ private struct BarGlass: ViewModifier {
 extension GlassTabBar {
     static let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 
-    /// Where `tab`'s item (and the selected pill behind it) sits in a bar
-    /// drawn at `bar`.
-    static func itemRect(_ tab: MainTab, in bar: CGRect) -> CGRect {
-        let tabs = MainTab.allCases
-        let width = (bar.width - 2 * inset) / CGFloat(tabs.count)
-        let index = CGFloat(tabs.firstIndex(of: tab) ?? 0)
-        return CGRect(x: bar.minX + inset + index * width, y: bar.minY + inset,
-                      width: width, height: bar.height - 2 * inset)
-    }
-
     /// The bar's glass alone, with its glass ID, for `MainTabView`'s
     /// `GlassEffectContainer`, so another surface can morph into it. The bar,
     /// given the same `morph`, draws its tabs over it.
