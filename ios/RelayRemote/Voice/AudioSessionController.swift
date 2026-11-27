@@ -105,6 +105,9 @@ final class AudioSessionController {
             case .voice:
                 try session.setCategory(.playAndRecord, mode: .default,
                                         options: [.duckOthers, .allowBluetoothHFP, .defaultToSpeaker])
+                // iOS mutes haptics while recording unless asked, which left
+                // the tap that sends with no feedback.
+                try? session.setAllowHapticsAndSystemSoundsDuringRecording(true)
                 try session.setActive(true)
             case .silent:
                 try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])

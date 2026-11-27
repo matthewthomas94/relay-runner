@@ -14,6 +14,11 @@ enum RelayGlass {
     case control
     /// Selected tabs and pressed controls: #212529 at 75%.
     case selected
+    /// The primary (white) button: white at 85% over the glass, so the
+    /// backdrop's refraction and the glass rim still show at its edges.
+    case primary
+    /// The primary button pressed or active: the pressed grey at 85%.
+    case primaryPressed
 
     var tint: Color {
         switch self {
@@ -21,6 +26,8 @@ enum RelayGlass {
         case .bar: return RelayColor.neutral2.opacity(0.7)
         case .control: return RelayColor.neutral3.opacity(0.75)
         case .selected: return RelayColor.neutral4.opacity(0.75)
+        case .primary: return RelayColor.neutral10.opacity(0.85)
+        case .primaryPressed: return RelayColor.primaryPressed.opacity(0.85)
         }
     }
 }

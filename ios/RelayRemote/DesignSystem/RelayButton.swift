@@ -34,7 +34,7 @@ private struct RelayButtonBody: View {
             .frame(minWidth: height, maxWidth: fullWidth ? .infinity : nil, minHeight: height)
             .background {
                 if role == .primary {
-                    shape.fill(configuration.isPressed ? RelayColor.primaryPressed : RelayColor.neutral10)
+                    RelayGlassBackground(glass: configuration.isPressed ? .primaryPressed : .primary, shape: shape)
                 } else {
                     RelayGlassBackground(glass: configuration.isPressed ? .selected : .control, shape: shape)
                 }

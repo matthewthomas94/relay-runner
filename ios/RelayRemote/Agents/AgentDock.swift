@@ -179,20 +179,22 @@ struct TalkButton: View {
         .relayTextStyle(.control)
         .foregroundStyle(RelayColor.neutral1)
         .frame(maxWidth: .infinity, minHeight: RelayMetrics.controlHeight)
-        .background(shape.fill(active ? RelayColor.primaryPressed : RelayColor.neutral10)
+        .background(RelayGlassBackground(glass: active ? .primaryPressed : .primary, shape: shape)
             .animation(RelayMotion.press, value: active))
         .contentShape(shape)
         .scaleEffect(touching ? RelayMotion.pressedScale : 1)
         .animation(RelayMotion.press, value: touching)
-        .sensoryFeedback(trigger: touching) { _, down in down ? .impact(weight: .medium) : .impact(weight: .light) }
+        .onAppear { RelayHaptics.prepare() }
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { _ in
                     guard !touching else { return }
+                    RelayHaptics.press()
                     touching = true
                     onCommand(TalkGesture.touchDown(mode: mode, isTalking: isTalking))
                 }
                 .onEnded { _ in
+                    RelayHaptics.release()
                     touching = false
                     onCommand(TalkGesture.touchUp(mode: mode, isTalking: isTalking))
                 }
