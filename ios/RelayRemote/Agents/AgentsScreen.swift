@@ -97,10 +97,7 @@ struct AgentsScreen: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            // The orb at half size, in a 60 x 56 frame around its dots.
-            AgentOrb(state: state.orb)
-                .scaleEffect(0.5)
-                .frame(width: 60, height: 56)
+            AgentOrb(state: state.orb, frameSize: AgentOrb.headerSize, step: AgentOrb.headerStep)
             // The name and status swap with the chat, the old ones gone first.
             ZStack(alignment: .leading) {
                 VStack(alignment: .leading, spacing: 0) {

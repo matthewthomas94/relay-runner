@@ -14,14 +14,23 @@ enum AgentOrbState: String, CaseIterable, Equatable {
 /// The agent's blob: a SwiftUI port of `buildOrbGrid` in the desktop's
 /// `ParticleFieldRenderer`. Three Gaussian lobes on a halftone dot grid form
 /// one liquid volume with a white core whose sparse edge takes the state's
-/// colour. 168 × 112 pt on a 7 pt grid. It is never dimmed, and it holds still
-/// with Reduce Motion on.
+/// colour. 168 × 112 pt on a 7 pt grid, or the Agents header's 60 × 56 pt on
+/// a 6 pt grid. It is never dimmed, and it holds still with Reduce Motion on.
 struct AgentOrb: View {
     let state: AgentOrbState
     /// Where in its cycle the orb starts, so neighbouring orbs do not move in step.
     var phase: Double = 0
 
+    /// The frame, and the grid the dots sit on. The biggest dot is half the
+    /// step across, as on the desktop (10 pt grid, 5 pt dots).
+    var frameSize = Self.size
+    var step = AgentOrbEngine.step
+
     static let size = CGSize(width: 168, height: 112)
+    /// The Agents header (Figma Final 21, 2026-11-28): fewer, bigger dots, the
+    /// biggest 3 pt like the status glyph's.
+    static let headerSize = CGSize(width: 60, height: 56)
+    static let headerStep: CGFloat = 6
 
     @State private var engine = AgentOrbEngine()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -30,7 +39,8 @@ struct AgentOrb: View {
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { timeline in
             Canvas { context, size in
                 let now = timeline.date.timeIntervalSinceReferenceDate
-                for dot in engine.dots(state: state, phase: phase, size: size, now: now, reduceMotion: reduceMotion) {
+                for dot in engine.dots(state: state, phase: phase, size: size, step: step, now: now,
+                                       reduceMotion: reduceMotion) {
                     let rect = CGRect(x: dot.x - dot.radius, y: dot.y - dot.radius,
                                       width: dot.radius * 2, height: dot.radius * 2)
                     context.fill(Path(ellipseIn: rect),
@@ -39,7 +49,7 @@ struct AgentOrb: View {
                 }
             }
         }
-        .frame(width: Self.size.width, height: Self.size.height)
+        .frame(width: frameSize.width, height: frameSize.height)
         .accessibilityHidden(true)
     }
 }
@@ -103,8 +113,8 @@ final class AgentOrbEngine {
     }
 
     /// The orb's dots at `now`, in SwiftUI's y-down coordinates.
-    func dots(state: AgentOrbState, phase initialPhase: Double, size: CGSize, now: TimeInterval,
-              reduceMotion: Bool) -> [Dot] {
+    func dots(state: AgentOrbState, phase initialPhase: Double, size: CGSize, step: CGFloat = step,
+              now: TimeInterval, reduceMotion: Bool) -> [Dot] {
         if self.state == nil {
             self.state = state
             motionFrom = Motion.of(state)
@@ -128,7 +138,7 @@ final class AgentOrbEngine {
         displayedRim = rim
 
         let (motion, phase) = self.motion(at: now, reduceMotion: reduceMotion)
-        return Self.grid(rim: rim, motion: motion, phase: phase, size: size)
+        return Self.grid(rim: rim, motion: motion, phase: phase, size: size, step: step)
     }
 
     /// The motion and phase at `now`. Speed ramps linearly over the blend, so
@@ -152,7 +162,8 @@ final class AgentOrbEngine {
     }
 
     /// `buildOrbGrid`, sized for the phone.
-    static func grid(rim: SIMD3<Double>, motion: Motion, phase: Double, size: CGSize) -> [Dot] {
+    static func grid(rim: SIMD3<Double>, motion: Motion, phase: Double, size: CGSize,
+                     step: CGFloat = step) -> [Dot] {
         let spread = motion.spread
         let stretch = sin(phase * 0.72) * 0.10 * motion.stretch
         let curl = sin(phase * 0.53) * 0.055 * motion.wander

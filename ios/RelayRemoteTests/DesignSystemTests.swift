@@ -65,6 +65,14 @@ final class DesignSystemTests: XCTestCase {
         XCTAssertTrue(dots.contains { $0.rgb == SIMD3(repeating: 1) }, "a white core")
     }
 
+    func testHeaderOrbHasFewerDotsNoBiggerThanTheGlyphs() {
+        let header = AgentOrbEngine.grid(rim: AgentOrbEngine.rim(.idle), motion: .of(.idle), phase: 9.2,
+                                         size: AgentOrb.headerSize, step: AgentOrb.headerStep)
+        let biggest = header.map { $0.radius * 2 }.max() ?? 0
+        XCTAssertEqual(biggest, 3, accuracy: 0.01, "the biggest dot matches the status glyph's 3 pt dots")
+        XCTAssertLessThan(header.count, 90, "a coarse grid, not the full orb shrunk")
+    }
+
     func testDotFieldStaysInItsCoverage() {
         let size = CGSize(width: 402, height: 874)
         for style in [DotFieldStyle.listening, .playback] {
