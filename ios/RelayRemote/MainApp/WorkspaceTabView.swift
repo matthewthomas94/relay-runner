@@ -134,7 +134,7 @@ struct WorkspaceTabView: View {
             .padding(.horizontal, 32)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .list(let listing):
-            WorkspaceList(listing: listing, dimmed: feed.isUnreachable, open: { model.openTicket($0) }) {
+            WorkspaceList(listing: listing, dimmed: feed.isUnreachable, open: { model.openTicket($0, from: $1) }) {
                 await refresh(feed)
             }
         }
@@ -161,8 +161,15 @@ struct WorkspaceTabView: View {
 private struct WorkspaceList: View {
     let listing: WorkspaceListing
     let dimmed: Bool
-    let open: (WorkspaceTicket) -> Void
+    let open: (WorkspaceTicket, CGRect?) -> Void
     let refresh: () async -> Void
+    /// Each card's place on screen, for the modal to grow out of. A box, so
+    /// scrolling writes to it without redrawing the list.
+    @State private var frames = CardFrames()
+
+    private final class CardFrames {
+        var byID: [String: CGRect] = [:]
+    }
 
     var body: some View {
         ScrollView {
@@ -178,10 +185,13 @@ private struct WorkspaceList: View {
                             + Text("  \(group.tickets.count)").font(RelayTextStyle.body.font).foregroundStyle(RelayColor.neutral7))
                         VStack(spacing: 8) {
                             ForEach(group.tickets, id: \.id) { ticket in
-                                Button { open(ticket) } label: {
+                                Button { open(ticket, frames.byID[ticket.id]) } label: {
                                     TicketRow(ticket: ticket, project: listing.projectName(of: ticket))
                                 }
                                 .buttonStyle(TicketRowButtonStyle())
+                                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                                    frames.byID[ticket.id] = $0
+                                }
                                 .transition(.relayRise)
                             }
                         }

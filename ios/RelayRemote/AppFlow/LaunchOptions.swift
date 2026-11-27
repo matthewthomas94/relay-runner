@@ -44,6 +44,10 @@ struct LaunchOptions: Equatable {
     var scriptedMacReplyEvery: Double?
     var scriptedMacDropAfter: Double?
     var cycleTabsEvery: Double?
+    /// Debug: switches the sample agent every so many seconds, or opens and
+    /// closes the sample ticket, to record those transitions.
+    var cycleAgentsEvery: Double?
+    var cycleTicketEvery: Double?
     var sampleGlow: String?
 
     init(arguments: [String]) {
@@ -67,6 +71,8 @@ struct LaunchOptions: Equatable {
             if let value = Self.value(of: "--scripted-mac", in: argument) { scriptedMacReplyEvery = Double(value) }
             if let value = Self.value(of: "--scripted-mac-drop", in: argument) { scriptedMacDropAfter = Double(value) }
             if let value = Self.value(of: "--cycle-tabs", in: argument) { cycleTabsEvery = Double(value) }
+            if let value = Self.value(of: "--cycle-agents", in: argument) { cycleAgentsEvery = Double(value) }
+            if let value = Self.value(of: "--cycle-ticket", in: argument) { cycleTicketEvery = Double(value) }
             if let value = Self.value(of: "--sample-glow", in: argument) { sampleGlow = value }
         }
     }

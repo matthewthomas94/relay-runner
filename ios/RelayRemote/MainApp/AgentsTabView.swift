@@ -14,7 +14,11 @@ struct AgentsTabView: View {
         if launch.agentsSample == "play-demo" {
             AgentsPlayDemo()
         } else if let sample = launch.agentsSample.flatMap(AgentsSample.init(rawValue:)) {
-            AgentsScreen(state: sample.state, draft: sample.draft)
+            if let every = launch.cycleAgentsEvery {
+                AgentsCycleDemo(state: sample.state, every: every)
+            } else {
+                AgentsScreen(state: sample.state, draft: sample.draft)
+            }
         } else {
             live
         }
@@ -97,3 +101,27 @@ struct TabPlaceholder: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
+
+#if DEBUG
+/// Debug: the sample screen switching agents on a timer (`--cycle-agents`).
+private struct AgentsCycleDemo: View {
+    @State var state: AgentsScreenState
+    let every: Double
+
+    var body: some View {
+        AgentsScreen(state: state)
+            .task {
+                let order = ["puck", "sky", "isabella", "george"]
+                while !Task.isCancelled {
+                    for slug in order {
+                        try? await Task.sleep(for: .seconds(every))
+                        withAnimation(RelayMotion.move) {
+                            state.selected = slug
+                            state.name = state.tabs.first { $0.slug == slug }?.name ?? slug
+                        }
+                    }
+                }
+            }
+    }
+}
+#endif

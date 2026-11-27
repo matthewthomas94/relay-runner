@@ -73,11 +73,12 @@ struct MainTabView: View {
         .overlayPreferenceValue(FloatingBannerKey.self) { banner in
             Color.clear.ignoresSafeArea().relayBanner(banner)
         }
-        .onAppear { if let ticketSample { model.showSampleTicket(ticketSample.row) } }
+        .onAppear { if let ticketSample, LaunchOptions.current.cycleTicketEvery == nil { model.showSampleTicket(ticketSample.row) } }
         // RR-545: a tapped reply notification opens the Agents tab on its agent.
         .onChange(of: model.agentsTabRequests) { withAnimation(RelayMotion.move) { tabSelection.wrappedValue = .agents } }
         #if DEBUG
         .task { await cycleTabsForRecording() }
+        .task { await cycleTicketForRecording() }
         #endif
     }
 
@@ -205,6 +206,17 @@ struct MainTabView: View {
     #if DEBUG
     /// `--cycle-tabs=<seconds>`: steps through every pair of tabs both ways on
     /// its own, so the glass morphs can be recorded in the simulator.
+    /// Debug: opens the sample ticket from the first card and closes it again.
+    private func cycleTicketForRecording() async {
+        guard let every = LaunchOptions.current.cycleTicketEvery, let ticketSample else { return }
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(every))
+            model.showSampleTicket(ticketSample.row, from: CGRect(x: 16, y: 170, width: 370, height: 84))
+            try? await Task.sleep(for: .seconds(every))
+            model.closeTicket()
+        }
+    }
+
     private func cycleTabsForRecording() async {
         guard let every = LaunchOptions.current.cycleTabsEvery else { return }
         let order: [MainTab] = [.workspace, .agents, .settings, .agents, .workspace, .settings, .workspace, .agents]

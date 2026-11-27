@@ -37,6 +37,9 @@ final class AppModel {
     /// modal fades out, so the panel keeps its text as it leaves.
     private(set) var shownTicket: WorkspaceTicket?
     private(set) var isTicketOpen = false
+    /// Where the open ticket's card was on screen, so the modal grows out of
+    /// it and shrinks back into it (global coordinates).
+    private(set) var ticketOrigin: CGRect?
     /// RR-545: counts the asks to show the Agents tab, as a tapped reply
     /// notification makes; the tab view switches on each change.
     private(set) var agentsTabRequests = 0
@@ -111,7 +114,8 @@ final class AppModel {
 
     /// RR-551: opens a Workspace row in the ticket modal. Text held from an
     /// earlier open is dropped, so the body loads fresh.
-    func openTicket(_ row: WorkspaceTicket) {
+    func openTicket(_ row: WorkspaceTicket, from origin: CGRect? = nil) {
+        ticketOrigin = origin
         session?.forgetWorkspaceTicket(projectID: row.projectId, ticketID: row.id)
         shownTicket = row
         isTicketOpen = true
@@ -121,7 +125,8 @@ final class AppModel {
     func closeTicket() { isTicketOpen = false }
 
     /// Debug only: shows a sample row in the modal without asking the Mac.
-    func showSampleTicket(_ row: WorkspaceTicket) {
+    func showSampleTicket(_ row: WorkspaceTicket, from origin: CGRect? = nil) {
+        ticketOrigin = origin
         shownTicket = row
         isTicketOpen = true
     }

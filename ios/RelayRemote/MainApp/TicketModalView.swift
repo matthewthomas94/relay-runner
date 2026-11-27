@@ -49,7 +49,7 @@ struct TicketModalView: View {
     }
 
     var body: some View {
-        RelayModal(isPresented: model.isTicketOpen, onClose: { model.closeTicket() },
+        RelayModal(isPresented: model.isTicketOpen, origin: model.ticketOrigin, onClose: { model.closeTicket() },
                    refresh: sample == nil ? refresh : nil) {
             if let reading { TicketHeader(reading: reading) }
         } content: {
