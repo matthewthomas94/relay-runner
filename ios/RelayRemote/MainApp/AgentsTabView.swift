@@ -42,7 +42,7 @@ private struct LiveAgentsScreen: View {
         let talkMode = TalkModePreference().mode
         let snapshot = VoiceSnapshot(isTalking: voice.isListening, transcript: voice.transcript,
                                      playingSeq: voice.isSpeaking ? voice.currentSeq : nil,
-                                     waitingSeqs: voice.waitingSeqs)
+                                     waitingSeqs: voice.waitingSeqs, isPreparing: voice.isPreparing)
         AgentsScreen(state: AgentsScreenState(agents: agents, voice: snapshot, talkMode: talkMode),
                      actions: actions(playing: agents.agent(ofSeq: snapshot.playingSeq)
                                         ?? agents.activities.first { $0.value == .playing }?.key))

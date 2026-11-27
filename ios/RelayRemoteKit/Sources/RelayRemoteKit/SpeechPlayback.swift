@@ -76,6 +76,10 @@ public typealias SpeechTimer = @MainActor (_ delay: TimeInterval, _ fire: @escap
 ///   stream with an empty final part before any audio, or the player fails,
 ///   the text is synthesised instead. A stream that stops delivering for
 ///   `stallTimeout` ends with what it has and is acknowledged `played: false`.
+/// - Without a synthesizer the phone never speaks in its own voice (user,
+///   2026-11-28): a reply with no audio from the Mac, or whose audio is
+///   missing, fails or never starts, is shown only and acknowledged
+///   `played: false`.
 /// - In `.onDemand` mode speech waits for `play()`; status and control frames
 ///   resolve as before.
 @MainActor
@@ -178,7 +182,7 @@ public final class SpeechPlaybackQueue {
         var released = false
     }
 
-    private let synthesizer: SpeechSynthesizing
+    private let synthesizer: SpeechSynthesizing?
     private let player: SpeechAudioPlaying?
     private let audioWait: TimeInterval
     private let stallTimeout: TimeInterval
@@ -196,6 +200,8 @@ public final class SpeechPlaybackQueue {
     private var releaseNext = false
 
     /// - Parameters:
+    ///   - synthesizer: the phone's own voice, for text-only frames and as the
+    ///     fallback for the Mac's; nil to never speak in it.
     ///   - player: plays `audio: true` frames in the Mac's voice; without one
     ///     every frame is synthesised.
     ///   - audioWait: how long a reply in the Mac's voice waits for its first
@@ -203,7 +209,7 @@ public final class SpeechPlaybackQueue {
     ///     about 3 s to voice the start of a long reply, so 1.5 s often fell
     ///     back to the phone's voice when the Mac's was on its way.
     ///   - stallTimeout: how long a started stream may go without a new part.
-    public init(synthesizer: SpeechSynthesizing, player: SpeechAudioPlaying? = nil,
+    public init(synthesizer: SpeechSynthesizing?, player: SpeechAudioPlaying? = nil,
                 mode: PlaybackMode = .autoPlay, audioWait: TimeInterval = 5,
                 stallTimeout: TimeInterval = 15, schedule: SpeechTimer? = nil,
                 log: RemoteLogger = .silent, sendAck: @escaping (Ack) -> Void) {
@@ -371,7 +377,7 @@ public final class SpeechPlaybackQueue {
     /// completion is ignored.
     private func silenceVoice() {
         switch currentVoice {
-        case .synthesizer: synthesizer.stopSpeaking()
+        case .synthesizer: synthesizer?.stopSpeaking()
         case .player: player?.stop()
         case .pending, nil: break
         }
@@ -387,7 +393,14 @@ public final class SpeechPlaybackQueue {
 
     private func pump() {
         flushAcks()
-        if !isSpeaking, !isHeld, let index = entries.firstIndex(where: isPlayable) {
+        while !isSpeaking, !isHeld, let index = entries.firstIndex(where: isPlayable) {
+            guard entries[index].audio != nil || synthesizer != nil else {
+                // Text only, and the phone has no voice of its own: shown, never spoken.
+                entries[index].state = .resolved(played: false)
+                log("speech not voiced")
+                flushAcks()
+                continue
+            }
             entries[index].state = .speaking
             isSpeaking = true
             currentSeq = entries[index].seq
@@ -412,6 +425,12 @@ public final class SpeechPlaybackQueue {
     }
 
     private func synthesize(_ entry: Entry) {
+        guard let synthesizer else {
+            // No voice of the phone's own to fall back to: the reply ends unplayed.
+            log("speech not voiced")
+            finished(seq: entry.seq, generation: generation, played: false)
+            return
+        }
         currentVoice = .synthesizer
         let generation = self.generation
         synthesizer.speak(entry.text ?? "") { [weak self] played in
@@ -419,7 +438,8 @@ public final class SpeechPlaybackQueue {
         }
     }
 
-    /// Falls back to the phone's own voice for the current frame.
+    /// Falls back to the phone's own voice for the current frame, or ends it
+    /// unplayed without one.
     private func fallBack(_ event: String) {
         guard let seq = currentSeq, let index = index(of: seq) else { return }
         log(event)

@@ -29,6 +29,8 @@ struct VoiceSnapshot: Equatable {
     var playingSeq: Int?
     /// Replies waiting for Play in Queue mode, oldest first.
     var waitingSeqs: [Int] = []
+    /// A replay or reply is on its way but its audio has not started.
+    var isPreparing = false
 }
 
 /// Everything the Agents screen draws, derived from the per-agent model and
@@ -61,6 +63,8 @@ struct AgentsScreenState: Equatable {
     /// A reply is playing, any agent's, on the phone or on the Mac (a Replay
     /// plays on the Mac when Remote mode is off): the dock's control reads Stop.
     var isPlaying: Bool
+    /// The phone is waiting for a replay or a reply's audio: "Preparing message".
+    var isPreparing: Bool
     var waiting: WaitingReply?
     /// The Mac reports the selected agent stopped (screen 24).
     var notRunning: Bool
@@ -91,6 +95,7 @@ struct AgentsScreenState: Equatable {
         feed = chat
         speakingSeq = playing == selected ? voice.playingSeq : nil
         isPlaying = voice.playingSeq != nil || agents.activities.values.contains(.playing)
+        isPreparing = voice.isPreparing
         waiting = mine.last.map { WaitingReply(seq: $0, skipping: Set(mine.dropLast())) }
         notRunning = agents.isStopped(selected) && !voice.isTalking
         reachability = agents.reachability

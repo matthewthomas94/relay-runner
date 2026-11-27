@@ -86,7 +86,7 @@ struct AgentsScreen: View {
                   talkMode: state.talkMode,
                   isTalking: state.isTalking, transcript: state.transcript,
                   canReplay: !state.notRunning, canPlay: state.waiting != nil,
-                  isPlaying: state.isPlaying, canStop: !state.notRunning,
+                  isPlaying: state.isPlaying, isPreparing: state.isPreparing, canStop: !state.notRunning,
                   drawsGlass: !hostsPanels,
                   onSend: send, onTalk: actions.talk, onCancel: actions.cancelTalk,
                   onReplay: actions.replay, onPlay: play, onStop: actions.stop)

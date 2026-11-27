@@ -32,6 +32,9 @@ struct AgentDock: View {
     var canPlay = false
     /// A reply is playing: the control reads Stop.
     var isPlaying = false
+    /// A replay or reply has not started playing yet: the control reads
+    /// "Preparing message", as on the desktop, and stops it.
+    var isPreparing = false
     var canStop = true
     /// Controls drawn at 30%, as the tutorial dims controls it is not teaching.
     var dimmed: Set<DockControl> = []
@@ -92,12 +95,13 @@ struct AgentDock: View {
         .animation(RelayMotion.enter, value: dimmed)
     }
 
-    enum ReplayFace { case cancel, stop, play, replay }
+    enum ReplayFace { case cancel, preparing, stop, play, replay }
 
     @ViewBuilder
     private var replayLabel: some View {
         switch replayFace {
         case .cancel: Self.fitting("Cancel message", icon: .x)
+        case .preparing: Self.fitting("Preparing message", icon: .square)
         case .stop: Self.fitting("Stop message", icon: .square)
         case .play:
             // As much of "Play new message" as fits half the row.
@@ -122,7 +126,7 @@ struct AgentDock: View {
     private var replayEnabled: Bool {
         switch replayFace {
         case .cancel, .play: return true
-        case .stop: return canStop
+        case .stop, .preparing: return canStop
         case .replay: return canReplay
         }
     }
@@ -130,16 +134,18 @@ struct AgentDock: View {
     private func replayAction() {
         switch replayFace {
         case .cancel: onCancel()
-        case .stop: onStop()
+        case .stop, .preparing: onStop()
         case .play: onPlay()
         case .replay: onReplay()
         }
     }
 
-    /// What the playback control reads: Cancel while talking, Stop while a
-    /// reply plays, Play while a reply waits to be played, otherwise Replay.
+    /// What the playback control reads: Cancel while talking, Preparing until
+    /// a replay or reply starts, Stop while one plays, Play while a reply
+    /// waits to be played, otherwise Replay.
     var replayFace: ReplayFace {
         if isTalking { return .cancel }
+        if isPreparing { return .preparing }
         if isPlaying { return .stop }
         return canPlay ? .play : .replay
     }
