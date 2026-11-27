@@ -33,7 +33,18 @@ enum RelayGlass {
     static let material = Glass.clear
 
     /// This surface's Liquid Glass: the clear glass tinted with its fill.
-    var liquid: Glass { RelayGlass.material.tint(tint) }
+    var liquid: Glass { RelayGlass.material.tint(liquidTint) }
+
+    /// The tint inside the glass. iOS's glass lightens what it tints, so the
+    /// panels and bars take a stronger tint than their Figma fill to come
+    /// out as dark as the designs (user, 2026-11-27).
+    private var liquidTint: Color {
+        switch self {
+        case .panel: return RelayColor.neutral2.opacity(0.55)
+        case .bar: return RelayColor.neutral2.opacity(0.7)
+        default: return tint
+        }
+    }
 
     /// How bright the lit rim is: panels and bars carry Figma's 0.8 light,
     /// controls its 0.5, filled pills a little.
