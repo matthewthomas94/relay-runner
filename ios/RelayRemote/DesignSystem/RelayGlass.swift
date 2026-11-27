@@ -6,9 +6,10 @@ import SwiftUI
 /// fill laid over it, so the backdrop refracts and the rim catches the light
 /// the way the designs show, instead of a flat blur.
 enum RelayGlass {
-    /// Panels, the dock and chat bubbles: #0c0f13 at 50%.
+    /// Panels, the dock and chat bubbles: #0c0f13, at 35% (the Figma's 50%
+    /// read darker on the phone than the design).
     case panel
-    /// The bottom tab bar: #0c0f13 at 70%.
+    /// The bottom tab bar: #0c0f13 at 55% (the Figma's 70%, lightened to match).
     case bar
     /// Secondary buttons: #171a1e at 75%.
     case control
@@ -28,8 +29,8 @@ enum RelayGlass {
 
     var tint: Color {
         switch self {
-        case .panel: return RelayColor.neutral2.opacity(0.5)
-        case .bar: return RelayColor.neutral2.opacity(0.7)
+        case .panel: return RelayColor.neutral2.opacity(0.35)
+        case .bar: return RelayColor.neutral2.opacity(0.55)
         case .control: return RelayColor.neutral3.opacity(0.75)
         case .selected: return RelayColor.neutral4.opacity(0.75)
         case .primary: return RelayColor.neutral10.opacity(0.85)
@@ -72,30 +73,22 @@ struct RelayGlassBackground<S: InsettableShape>: View {
     }
 }
 
-/// The glass surface applied to the content itself, so the content draws on
-/// top of the glass. A glass background view beside the content can draw
-/// over it inside a `GlassEffectContainer`, as in the dock (RR-552).
+/// A control's surface (buttons, the talk button): the Figma fill only.
+/// The Figma's controls carry a light 8 pt glass that barely shows on the
+/// panels beneath them; iOS's Liquid Glass reads far stronger, so controls
+/// draw the fill alone.
 struct RelayGlassSurface<S: Shape>: ViewModifier {
     let glass: RelayGlass
     let shape: S
-    @Environment(\.relayGlassFlat) private var flat
 
     func body(content: Content) -> some View {
-        Group {
-            if flat {
-                content.background(flatFill)
-            } else {
-                content
-                    .background(shape.fill(glass.tint))
-                    .glassEffect(RelayGlass.material, in: shape)
-            }
-        }
-        .environment(\.colorScheme, .dark)
-        .animation(RelayMotion.press, value: glass)
+        content
+            .background(fill)
+            .animation(RelayMotion.press, value: glass)
     }
 
     @ViewBuilder
-    private var flatFill: some View {
+    private var fill: some View {
         switch glass {
         case .primary: shape.fill(RelayColor.neutral10)
         case .primaryPressed: shape.fill(RelayColor.primaryPressed)

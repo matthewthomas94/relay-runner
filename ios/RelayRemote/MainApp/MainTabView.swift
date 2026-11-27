@@ -120,11 +120,7 @@ struct MainTabView: View {
         let shape = RoundedRectangle(cornerRadius: AgentDock.cornerRadius, style: .continuous)
         return ZStack {
             if let dock {
-                // The dock's buttons carry glass of their own, in a container
-                // of their own so they neither merge into the dock's glass
-                // nor take part in its morph.
-                GlassEffectContainer(spacing: 0) { dock.content }
-                    .environment(\.relayGlassFlat, false)
+                dock.content
                     .transition(.asymmetric(
                         insertion: .opacity.animation(.easeOut(duration: 0.15).delay(0.15)),
                         removal: .opacity.animation(.easeOut(duration: 0.08))))

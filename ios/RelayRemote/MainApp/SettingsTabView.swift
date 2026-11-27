@@ -433,11 +433,11 @@ private struct SegmentedRow<Value: Hashable>: View {
                         Text(option.0).relayTextStyle(.control)
                             .foregroundStyle(selected ? RelayColor.neutral10 : RelayColor.neutral7)
                             .animation(RelayMotion.enter, value: selected)
-                            .frame(maxWidth: .infinity, minHeight: 40)
+                            .frame(maxWidth: .infinity, minHeight: 32)
                             .background {
                                 // One pill that slides to the selected option.
                                 if selected {
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous).fill(RelayColor.neutral4)
+                                    RoundedRectangle(cornerRadius: 9, style: .continuous).fill(RelayColor.neutral4)
                                         .matchedGeometryEffect(id: "pill", in: pill)
                                 }
                             }
@@ -447,8 +447,9 @@ private struct SegmentedRow<Value: Hashable>: View {
                     .accessibilityAddTraits(selected ? .isSelected : [])
                 }
             }
-            .padding(2)
-            .modifier(RelayGlassSurface(glass: .control, shape: RoundedRectangle(cornerRadius: 12, style: .continuous)))
+            .padding(4)
+            .frame(height: 40)
+            .modifier(FieldSurface())
         }
     }
 }
@@ -487,13 +488,21 @@ private struct ChoiceRow: View {
                 }
                 .padding(.horizontal, 12)
                 .frame(minHeight: RelayMetrics.controlHeight)
-                .modifier(RelayGlassSurface(glass: .control,
-                                            shape: RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius,
-                                                                    style: .continuous)))
+                .modifier(FieldSurface())
             }
             .disabled(!isEnabled || options.isEmpty)
             .opacity(isEnabled ? 1 : 0.4)
         }
+    }
+}
+
+/// The Figma's fields (select, segmented control, text box): black with a
+/// hairline of #212529 at 50%, radius 12.
+struct FieldSurface: ViewModifier {
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius, style: .continuous)
+        content.background(shape.fill(RelayColor.neutral1)
+            .overlay(shape.strokeBorder(RelayColor.neutral4.opacity(0.5), lineWidth: 1)))
     }
 }
 
@@ -505,13 +514,16 @@ private struct SpeedSlider: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let knob: CGFloat = 32
+            // Figma 27: a 4 pt rail of white at 12%, the fill white at 85%,
+            // and a 22 pt white knob with a soft shadow.
+            let knob: CGFloat = 22
             let travel = max(proxy.size.width - knob, 1)
             let fraction = (value - range.lowerBound) / (range.upperBound - range.lowerBound)
             ZStack(alignment: .leading) {
-                Capsule().fill(RelayColor.neutral5).frame(height: 4)
-                Capsule().fill(RelayColor.neutral10).frame(width: travel * fraction + knob / 2, height: 4)
+                Capsule().fill(RelayColor.neutral10.opacity(0.12)).frame(height: 4)
+                Capsule().fill(RelayColor.neutral10.opacity(0.85)).frame(width: travel * fraction + knob / 2, height: 4)
                 Circle().fill(RelayColor.neutral10).frame(width: knob, height: knob)
+                    .shadow(color: .black.opacity(0.3), radius: 3, y: 1)
                     .offset(x: travel * fraction)
             }
             .frame(height: proxy.size.height)
