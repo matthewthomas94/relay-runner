@@ -113,7 +113,7 @@ struct MainTabView: View {
                         panelGlass(panel, frame: frame ?? Self.tucked(in: bar), morphs: true)
                     }
                     if !keyboardShown {
-                        GlassTabBar(selection: tabSelection, morph: glassMorph)
+                        GlassTabBar.MorphGlass(morph: glassMorph)
                             .padding(.bottom, GlassTabBar.bottomOffset)
                             .transition(.opacity.combined(with: .offset(y: 16)))
                     }
@@ -121,6 +121,15 @@ struct MainTabView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             }
             .environment(\.relayGlassFlat, true)
+            // The tabs above every glass in the container, so a panel's glass
+            // sinking into the bar passes under them, not over them.
+            .overlay(alignment: .bottom) {
+                if !keyboardShown {
+                    GlassTabBar(selection: tabSelection, morph: glassMorph)
+                        .padding(.bottom, GlassTabBar.bottomOffset)
+                        .transition(.opacity.combined(with: .offset(y: 16)))
+                }
+            }
         }
         .ignoresSafeArea()
     }
@@ -143,8 +152,9 @@ struct MainTabView: View {
         .frame(width: frame.width, height: frame.height, alignment: .bottom)
         // Contents leaving a glass that is shrinking stay inside it.
         .clipShape(shape)
-        // Tucked into the tab bar with no panel, it takes the bar's tint.
-        .glassEffect((panel?.glass ?? .bar).liquid, in: shape)
+        // Sinking into the tab bar with no panel, it is untinted: the bar's
+        // tint over its own read as a dark band as the two merged.
+        .glassEffect(panel?.glass.liquid ?? RelayGlass.material, in: shape)
         .modifier(PanelGlassID(id: morphs ? Self.panelGlassID : nil, namespace: glassMorph))
         .position(x: frame.midX, y: frame.midY)
         // When talking starts or stops, the place the Agents screen holds

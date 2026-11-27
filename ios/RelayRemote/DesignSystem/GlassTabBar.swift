@@ -31,9 +31,9 @@ struct GlassTabBar: View {
     @Binding var selection: MainTab
     /// Tabs drawn at 30%, as the tutorial dims controls it is not teaching.
     var dimmed = false
-    /// Set by `MainTabView`, which puts the bar and the Agents dock in one
-    /// `GlassEffectContainer`: the bar then carries its glass itself, with this
-    /// glass ID, so the dock's glass can melt into it (RR-552).
+    /// Set by `MainTabView`, which puts the bar's glass (`MorphGlass`) and the
+    /// panels' glass in one `GlassEffectContainer`, so the dock's glass can
+    /// melt into it (RR-552). The bar then draws only its tabs.
     var morph: Namespace.ID?
     @Namespace private var pill
 
@@ -89,21 +89,40 @@ struct GlassTabBar: View {
     }
 }
 
-/// The bar's glass: behind it, or, in a `GlassEffectContainer`, on the bar
-/// itself with a glass ID, so another surface can morph into it.
+/// The bar's glass: behind it, or, under `MainTabView`, none here: the bar's
+/// glass is `GlassTabBar.MorphGlass` in the tab view's `GlassEffectContainer`,
+/// and the bar's tabs are drawn above that container. A panel's glass melting
+/// into the bar then passes under the tabs; when the bar carried the glass
+/// itself, the sinking glass was drawn over its icons and labels, a dark
+/// flicker leaving Agents for Settings (user, 2026-11-27).
 private struct BarGlass: ViewModifier {
     let morph: Namespace.ID?
 
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: GlassTabBar.cornerRadius, style: .continuous)
-        if let morph {
-            content
-                .glassEffect(RelayGlass.bar.liquid, in: shape)
+        if morph != nil {
+            content.environment(\.relayGlassFlat, true)
+        } else {
+            content.background(RelayGlassBackground(glass: .bar, shape: GlassTabBar.shape))
+        }
+    }
+}
+
+extension GlassTabBar {
+    static let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+
+    /// The bar's glass alone, with its glass ID, for `MainTabView`'s
+    /// `GlassEffectContainer`, so another surface can morph into it. The bar,
+    /// given the same `morph`, draws its tabs over it.
+    struct MorphGlass: View {
+        let morph: Namespace.ID
+
+        var body: some View {
+            Color.clear
+                .frame(height: GlassTabBar.height)
+                .glassEffect(RelayGlass.bar.liquid, in: GlassTabBar.shape)
                 .glassEffectID(GlassTabBar.morphID, in: morph)
                 .glassEffectTransition(.materialize)
-                .environment(\.relayGlassFlat, true)
-        } else {
-            content.background(RelayGlassBackground(glass: .bar, shape: shape))
+                .padding(.horizontal, RelayMetrics.screenMargin)
         }
     }
 }
