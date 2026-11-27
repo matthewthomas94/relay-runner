@@ -9,6 +9,9 @@ struct AppFlowRouter: View {
     var launch = LaunchOptions.current
 
     @State private var stage: AppStage?
+    /// The permissions steps, loaded before their stage shows so its first
+    /// frame already has the first step.
+    @State private var permissions: PermissionsFlowModel?
 
     var body: some View {
         ZStack {
@@ -20,11 +23,11 @@ struct AppFlowRouter: View {
             if launch.showsGallery {
                 galleryOrApp
             } else if let stage {
-                // Stages (splash, permissions, pairing, tutorial, app) replace
-                // each other with the desktop's page transition.
+                // Onboarding stages swap their hero line in place; the app
+                // arrives with the desktop's page transition.
                 stageView(stage)
                     .id(stage)
-                    .transition(.relayPage(direction: 1))
+                    .transition(stage == .app ? .relayPage(direction: 1) : .relayStageSwap)
             }
         }
         .animation(RelayMotion.pageEnter, value: stage)
@@ -51,7 +54,7 @@ struct AppFlowRouter: View {
     private func stageView(_ stage: AppStage) -> some View {
         switch stage {
         case .splash: SplashView(onFinished: advance)
-        case .permissions: PermissionsFlowView(onFinished: advance)
+        case .permissions: PermissionsFlowView(model: permissions, onFinished: advance)
         case .pairing: PairingFlowView(model: model, onFinished: advance, initialStep: launch.pairingStep)
         case .tutorial: TutorialView(model: model, onFinished: advance, sample: launch.tutorialSample)
         case .app:
@@ -78,6 +81,15 @@ struct AppFlowRouter: View {
         var next = AppFlow.stage(after: current, onboardingFinished: progress.isFinished)
         // A replay keeps the pairing, so it goes from permissions to the tutorial.
         if next == .pairing, progress.isReplaying, model.paired != nil { next = .tutorial }
-        stage = next
+        guard next == .permissions else {
+            stage = next
+            return
+        }
+        let flow = PermissionsFlowModel()
+        Task {
+            await flow.load(startingAt: launch.permissionStep, everyStep: progress.isReplaying)
+            permissions = flow
+            stage = .permissions
+        }
     }
 }

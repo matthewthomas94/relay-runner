@@ -36,7 +36,7 @@ Debug builds only. Launch the installed app with `xcrun simctl launch booted com
 | --- | --- |
 | 01–05 splash (about 11 s; screenshot at 0.5, 2.5, 6, 7.3 and 9.6 s) | `--reset-onboarding --stage=splash` |
 | 06, 09, 10, 11 permissions | `--stage=permissions --permission-step=microphone\|localNetwork\|camera\|notifications` (opens the step even if decided) |
-| 07 system prompt | raised by the system when Grant permission is tapped; not capturable by argument |
+| 07 system prompt | raised by the system when the step's Allow button is tapped; not capturable by argument |
 | 08 speech recognition | not built, see Permissions |
 | 12, 13, 14 pairing | `--stage=pairing`, `--stage=pairing --pairing-step=scan`, `--stage=pairing --pairing-step=check` |
 | 15–20 tutorial | `--stage=tutorial --tutorial-step=basics\|hold\|release\|play\|stop\|done` |

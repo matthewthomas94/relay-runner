@@ -10,9 +10,19 @@ enum PermissionStep: String, CaseIterable, Equatable {
     var hero: HeroText {
         switch self {
         case .microphone: "Let’s start with your mic"
-        case .localNetwork: "Next, local network\nto find your Mac"
+        case .localNetwork: "Next, your Wi-Fi\nto reach your Mac"
         case .camera: "Next, your camera\nto scan the pairing code"
         case .notifications: "Lastly, notifications\nfor replies"
+        }
+    }
+
+    /// The primary button, naming the prompt it raises.
+    var actionTitle: String {
+        switch self {
+        case .microphone: "Allow microphone"
+        case .localNetwork: "Allow local network"
+        case .camera: "Allow camera"
+        case .notifications: "Allow notifications"
         }
     }
 }
@@ -37,6 +47,16 @@ final class PermissionsFlowModel {
     private(set) var current: PermissionStep?
     private(set) var isLoaded = false
     private var pending: [PermissionStep] = []
+    /// Steps whose permission was already answered, so the system shows no
+    /// prompt for them (a replay walks them anyway). Local network has no
+    /// status, so it is never in here.
+    private(set) var decided: Set<PermissionStep> = []
+
+    /// "Continue" when no prompt will appear, else the step's own label.
+    var actionTitle: String {
+        guard let current else { return "" }
+        return decided.contains(current) ? "Continue" : current.actionTitle
+    }
 
     private let client: PermissionsClient
     private var notifications: ReplyNotificationsPreference
@@ -51,6 +71,9 @@ final class PermissionsFlowModel {
     /// `everyStep` (Redo onboarding) asks to show them all.
     func load(startingAt forced: PermissionStep? = nil, everyStep: Bool = false) async {
         guard !isLoaded else { return }
+        for step in PermissionStep.allCases where await client.status(of: step) != .undetermined {
+            decided.insert(step)
+        }
         if everyStep {
             pending = PermissionStep.allCases
             current = pending.first
@@ -63,10 +86,7 @@ final class PermissionsFlowModel {
             isLoaded = true
             return
         }
-        var steps: [PermissionStep] = []
-        for step in PermissionStep.allCases where await client.status(of: step) == .undetermined {
-            steps.append(step)
-        }
+        let steps = PermissionStep.allCases.filter { !decided.contains($0) }
         pending = steps
         current = steps.first
         isLoaded = true

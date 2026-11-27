@@ -57,6 +57,21 @@ final class PermissionsFlowTests: XCTestCase {
         XCTAssertEqual(model.current, .notifications)
     }
 
+    func testButtonNamesThePromptOrContinuesWhenAlreadyAnswered() async throws {
+        let client = FakeClient()
+        client.statuses = [.microphone: .granted, .notifications: .denied]
+        let (model, _, cleanup) = try makeModel(client)
+        defer { cleanup() }
+        // A replay walks every step; answered ones raise no prompt.
+        await model.load(everyStep: true)
+        var titles: [String] = []
+        while model.current != nil {
+            titles.append(model.actionTitle)
+            model.skip()
+        }
+        XCTAssertEqual(titles, ["Continue", "Allow local network", "Allow camera", "Continue"])
+    }
+
     func testNotificationsPreferenceFollowsTheAnswer() async throws {
         for (answer, expected) in [(PermissionStatus.granted, true), (.denied, false)] {
             let client = FakeClient()

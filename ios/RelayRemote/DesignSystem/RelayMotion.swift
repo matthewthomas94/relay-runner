@@ -195,6 +195,39 @@ extension AnyTransition {
     }
 }
 
+// MARK: - Onboarding stages
+
+extension AnyTransition {
+    /// Onboarding stages (splash, permissions, pairing, tutorial) all put the
+    /// hero line in the same place, so moving between them is a line swap,
+    /// not a page change: the old stage fades out with a light blur on the
+    /// exit curve, then after the same short beat the new one fades in on the
+    /// strong ease-out. Nothing scales, slides or bounces, so the line stays
+    /// exactly where the eye is.
+    static var relayStageSwap: AnyTransition {
+        .asymmetric(
+            insertion: .modifier(active: RelayStageEffect(hidden: true), identity: RelayStageEffect(hidden: false))
+                .animation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.24)
+                    .delay(RelayMotion.pageExitDuration + RelayMotion.pageGap)),
+            removal: .modifier(active: RelayStageEffect(hidden: true), identity: RelayStageEffect(hidden: false))
+                .animation(RelayMotion.pageExit)
+        )
+    }
+}
+
+/// An onboarding stage's hidden state: faded and blurred by 6 pt. Reduce
+/// Motion keeps only the fade.
+struct RelayStageEffect: ViewModifier {
+    let hidden: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(hidden ? 0 : 1)
+            .blur(radius: hidden && !reduceMotion ? 6 : 0)
+    }
+}
+
 // MARK: - Tab switches
 
 extension AnyTransition {
