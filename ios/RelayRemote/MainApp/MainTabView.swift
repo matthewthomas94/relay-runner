@@ -6,6 +6,8 @@ import SwiftUI
 struct MainTabView: View {
     let model: AppModel
     @State private var selection: MainTab
+    /// The tab bar steps aside while the keyboard is up (user, 2026-11-27).
+    @State private var keyboardShown = false
 
     /// Debug only: sample Workspace data for a screenshot (`LaunchOptions`).
     private let workspaceSample: String?
@@ -33,7 +35,13 @@ struct MainTabView: View {
                                     removal: .opacity))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .glassTabBar { GlassTabBar(selection: $selection) }
+        .glassTabBar(hidden: keyboardShown) { GlassTabBar(selection: $selection) }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            keyboardShown = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardShown = false
+        }
         // RR-551: the ticket modal covers the tab bar too, and what is behind it is out of reach.
         .disabled(model.isTicketOpen)
         .accessibilityHidden(model.isTicketOpen)

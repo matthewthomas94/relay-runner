@@ -88,13 +88,19 @@ struct GlassTabBar: View {
 extension View {
     /// Pins `bar` to the bottom of the screen, 30 pt above its edge, and
     /// insets this view's safe area so its content ends at the bar's top.
-    func glassTabBar<Bar: View>(@ViewBuilder _ bar: () -> Bar) -> some View {
+    /// `hidden` (while the keyboard is up) takes the bar away, so the content
+    /// sits straight on the keyboard.
+    func glassTabBar<Bar: View>(hidden: Bool = false, @ViewBuilder _ bar: () -> Bar) -> some View {
         ZStack(alignment: .bottom) {
-            safeAreaPadding(.bottom, GlassTabBar.contentInset)
-            bar()
-                .padding(.bottom, GlassTabBar.bottomOffset)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                .ignoresSafeArea(.container, edges: .bottom)
+            safeAreaPadding(.bottom, hidden ? 0 : GlassTabBar.contentInset)
+            if !hidden {
+                bar()
+                    .padding(.bottom, GlassTabBar.bottomOffset)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .ignoresSafeArea(.container, edges: .bottom)
+                    .transition(.opacity.combined(with: .offset(y: 16)))
+            }
         }
+        .animation(RelayMotion.enter, value: hidden)
     }
 }

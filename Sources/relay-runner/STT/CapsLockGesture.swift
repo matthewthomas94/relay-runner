@@ -229,6 +229,15 @@ final class CapsLockGesture {
         }
     }
 
+    /// Takes a pending double-Shift Workspace toggle without polling anything
+    /// else, for while a remote device (Relay Remote) holds the microphone and
+    /// recording gestures are ignored.
+    func takeBoardToggle() -> Bool {
+        guard pendingBoardToggle else { return false }
+        pendingBoardToggle = false
+        return true
+    }
+
     /// Poll the activation key state and return any gesture event detected.
     /// Call this at ~50ms intervals.
     func poll(currentSegment: String) -> Event? {
