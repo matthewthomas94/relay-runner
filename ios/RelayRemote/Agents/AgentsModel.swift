@@ -202,9 +202,14 @@ final class AgentsModel {
     /// The tab glyph. The phone's own talking and playback win over the Mac's
     /// report; a start shows as the spinning glyph, as the desktop's starting
     /// notch does, and the grey dot splits into four when it begins.
-    func glyph(for slug: String, talking: String?, playing: String?) -> StatusGlyphState {
+    /// `waiting` holds the agents with a reply waiting for Play in Queue mode.
+    /// Like the desktop notch (`NotchSessionStatus.resolve` maps
+    /// `.messageWaiting` to `.playing`), a waiting reply shows the purple
+    /// playing glyph so it reads at a glance.
+    func glyph(for slug: String, talking: String?, playing: String?,
+               waiting: Set<String> = []) -> StatusGlyphState {
         if slug == talking { return .listening }
-        if slug == playing { return .playing }
+        if slug == playing || waiting.contains(slug) { return .playing }
         if starting.contains(slug) { return .working }
         return Self.glyph(activities[slug] ?? .off)
     }

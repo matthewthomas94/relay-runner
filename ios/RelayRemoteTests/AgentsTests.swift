@@ -284,6 +284,12 @@ final class AgentsTests: XCTestCase {
         XCTAssertEqual(waiting.feed.map(\.text), ["George one", "George two"],
                        "every waiting reply shows in the chat as a bubble at once")
         XCTAssertEqual(waiting.orb, .idle)
+        let glyphs = Dictionary(uniqueKeysWithValues: waiting.tabs.map { ($0.slug, $0.glyph) })
+        XCTAssertEqual(glyphs["puck"], .playing, "an agent with a reply waiting shows the purple glyph, as on the Mac")
+        XCTAssertEqual(glyphs["george"], .playing)
+        XCTAssertNotEqual(glyphs["isabella"], .playing, "no reply waiting")
+        let nothingWaiting = AgentsScreenState(agents: agents, voice: VoiceSnapshot(), talkMode: .hold)
+        XCTAssertNotEqual(nothingWaiting.tabs.first { $0.slug == "george" }?.glyph, .playing, "played replies clear it")
 
         let playingPuck = AgentsScreenState(agents: agents, voice: VoiceSnapshot(playingSeq: 5), talkMode: .hold)
         XCTAssertNil(playingPuck.waiting)

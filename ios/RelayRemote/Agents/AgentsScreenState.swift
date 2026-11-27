@@ -74,9 +74,10 @@ struct AgentsScreenState: Equatable {
         let selected = agents.selected
         let talking = voice.isTalking ? selected : nil
         let playing = agents.agent(ofSeq: voice.playingSeq)
+        let waitingAgents = Set(voice.waitingSeqs.compactMap { agents.agent(ofSeq: $0) })
         tabs = AgentsModel.slugs.map { slug in
             Tab(slug: slug, name: AgentsModel.name(slug),
-                glyph: agents.glyph(for: slug, talking: talking, playing: playing),
+                glyph: agents.glyph(for: slug, talking: talking, playing: playing, waiting: waitingAgents),
                 marked: agents.marked.contains(slug))
         }
         self.selected = selected
