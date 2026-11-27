@@ -38,15 +38,17 @@ struct TutorialView: View {
 }
 
 extension TutorialStep {
-    /// The hero text, with its line breaks as in the reference images.
-    var hero: HeroText {
+    /// The hero text, with its line breaks as in the reference images, in
+    /// the words of the user's Talk setting.
+    func hero(talkMode: TalkMode) -> HeroText {
         switch self {
         case .basics:
             return "Now let’s learn the basics"
         case .holdToTalk:
-            return HeroText(lines: [[.chip(icon: .mic, label: "Hold to talk", style: .primary), .text(" & say hi")]])
+            let label = talkMode == .hold ? "Hold to talk" : "Tap to talk"
+            return HeroText(lines: [[.chip(icon: .mic, label: label, style: .primary), .text(" & say hi")]])
         case .releaseToSend:
-            return "Now release to send"
+            return talkMode == .hold ? "Now release to send" : "Now tap to send"
         case .playReply:
             return HeroText(lines: [[.text("Wait for a reply,")],
                                     [.text("then tap "), .chip(icon: .play, label: "Play", style: .secondary)]])
@@ -76,6 +78,7 @@ struct TutorialScreen: View {
     let step: TutorialStep
     let problem: TutorialProblem?
     let agentName: String
+    var talkMode = TalkMode.hold
     var isTalking = false
     var transcript = ""
     var waiting: AgentsScreenState.WaitingReply?
@@ -94,7 +97,7 @@ struct TutorialScreen: View {
             if let sampleGlow {
                 DotField(style: sampleGlow).ignoresSafeArea().allowsHitTesting(false)
             }
-            OnboardingHeroLayout(hero: step.hero, onSkip: step == .allDone ? nil : onSkip,
+            OnboardingHeroLayout(hero: step.hero(talkMode: talkMode), onSkip: step == .allDone ? nil : onSkip,
                                  drawsBackground: false,
                                  accessory: {
                 RelaySwap(subtitle) { text in
@@ -133,7 +136,7 @@ struct TutorialScreen: View {
 
     private var dock: some View {
         let dimmed = Set(DockControl.allCases).subtracting(step.litControls)
-        return AgentDock(text: .constant(""), placeholder: "Message \(agentName)", talkMode: .hold,
+        return AgentDock(text: .constant(""), placeholder: "Message \(agentName)", talkMode: talkMode,
                          isTalking: isTalking, transcript: transcript, dimmed: dimmed, inert: dimmed,
                          onTalk: actions.talk, onStop: actions.stop)
     }
@@ -150,6 +153,8 @@ private struct LiveTutorial: View {
     @State private var tutorial: TutorialModel
     @State private var speech = TutorialSignals.Speech.preparing
     @State private var agent: String?
+    /// The user's Talk setting: Hold, or tap to start and tap to send.
+    private let talkMode = TalkModePreference().mode
 
     init(model: AppModel, session: RemoteSession, voice: VoiceController, onFinished: @escaping () -> Void) {
         self.model = model
@@ -170,7 +175,7 @@ private struct LiveTutorial: View {
             voice: VoiceSnapshot(isTalking: voice.isListening, transcript: voice.transcript,
                                  playingSeq: voice.isSpeaking ? voice.currentSeq : nil,
                                  waitingSeqs: voice.waitingSeqs),
-            talkMode: .hold)
+            talkMode: talkMode)
         let signals = TutorialSignals(
             speech: speech,
             agentAvailable: TutorialAgent.isAvailable(agent.flatMap { agents.activities[$0] }),
@@ -181,7 +186,7 @@ private struct LiveTutorial: View {
             replyWaiting: state.waiting != nil,
             isPlaying: voice.isSpeaking)
         TutorialScreen(step: tutorial.machine.step, problem: tutorial.machine.problem, agentName: state.name,
-                       isTalking: state.isTalking, transcript: state.transcript, waiting: state.waiting,
+                       talkMode: talkMode, isTalking: state.isTalking, transcript: state.transcript, waiting: state.waiting,
                        onSkip: { tutorial.skip() },
                        actions: actions(agents: agents))
             .onChange(of: MacSessionStatus(session), initial: true) { _, status in

@@ -280,7 +280,9 @@ final class AgentsTests: XCTestCase {
         let waiting = AgentsScreenState(agents: agents, voice: VoiceSnapshot(waitingSeqs: [5, 6, 7]), talkMode: .hold)
         XCTAssertEqual(waiting.waiting?.seq, 7)
         XCTAssertEqual(waiting.waiting?.skipping, [6])
-        XCTAssertEqual(waiting.feed.map(\.text), ["George one"],
+        XCTAssertEqual(waiting.feed.map(\.text), ["George one", "George two"],
+                       "the feed keeps every reply in order")
+        XCTAssertEqual(waiting.waiting?.messageID, agents.chat("george").last?.id,
                        "only the newest waiting reply shows as the New reply panel")
         XCTAssertEqual(waiting.orb, .idle)
 
@@ -310,9 +312,28 @@ final class AgentsTests: XCTestCase {
         agents.receive(speech(6, "New George reply", agent: "george"))
 
         let state = AgentsScreenState(agents: agents, voice: VoiceSnapshot(waitingSeqs: [6]), talkMode: .hold)
-        XCTAssertEqual(state.feed.map(\.text), ["Old George reply"], "the older reply stays in the chat")
+        XCTAssertEqual(state.feed.map(\.text), ["Old George reply", "New George reply"],
+                       "the older reply stays in the chat")
         XCTAssertEqual(state.waiting?.messageID, agents.chat("george").last?.id,
                        "the New reply panel is the new message, not the old one with the same seq")
+    }
+
+    func testAReplayedReplyPlaysWithoutBeingFiledAgain() {
+        let agents = model()
+        agents.select("george")
+        agents.receive(speech(4, "Done, installed.", agent: "george"))
+        agents.replayRequested(for: "george")
+        agents.receive(speech(5, "Done, installed.", agent: "george"))
+        XCTAssertEqual(agents.chat("george").map(\.text), ["Done, installed."])
+        XCTAssertEqual(agents.agent(ofSeq: 5), "george", "the replay still plays as George's")
+        agents.receive(speech(6, "Done, installed.", agent: "george"))
+        XCTAssertEqual(agents.chat("george").count, 2, "only the one replay is folded in")
+    }
+
+    func testTheTutorialSpeaksInTheTalkSetting() {
+        XCTAssertEqual(TutorialStep.releaseToSend.hero(talkMode: .hold), "Now release to send")
+        XCTAssertEqual(TutorialStep.releaseToSend.hero(talkMode: .toggle), "Now tap to send")
+        XCTAssertNotEqual(TutorialStep.holdToTalk.hero(talkMode: .hold), TutorialStep.holdToTalk.hero(talkMode: .toggle))
     }
 
     func testTalkModes() {

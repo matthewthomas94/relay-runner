@@ -38,8 +38,13 @@ struct AgentChatFeed: View {
         }
     }
 
+    /// The waiting reply stands in for its message, where it is in the chat.
     private var items: [Item] {
-        messages.map(Item.message) + (waiting.map { [Item.waiting($0)] } ?? [])
+        guard let waiting else { return messages.map(Item.message) }
+        guard let id = waiting.messageID, messages.contains(where: { $0.id == id }) else {
+            return messages.map(Item.message) + [.waiting(waiting)]
+        }
+        return messages.map { $0.id == id ? .waiting(waiting) : .message($0) }
     }
 
     var body: some View {

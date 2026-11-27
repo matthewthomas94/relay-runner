@@ -235,8 +235,8 @@ final class TutorialTests: XCTestCase {
     }
 
     func testTutorialHeroLinesFollowTheReferenceImages() {
-        XCTAssertEqual(TutorialStep.playReply.hero.lines.count, 2)
-        XCTAssertEqual(TutorialStep.basics.hero.lines.count, 1)
-        XCTAssertEqual(TutorialStep.stopPlayback.hero.lines.count, 1)
+        XCTAssertEqual(TutorialStep.playReply.hero(talkMode: .hold).lines.count, 2)
+        XCTAssertEqual(TutorialStep.basics.hero(talkMode: .hold).lines.count, 1)
+        XCTAssertEqual(TutorialStep.stopPlayback.hero(talkMode: .hold).lines.count, 1)
     }
 }

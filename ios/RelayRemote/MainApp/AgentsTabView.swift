@@ -67,7 +67,10 @@ private struct LiveAgentsScreen: View {
                 if let playing, playing != agents.selected { targets.append(playing) }
                 voice.stop(agents: targets)
             },
-            replay: { voice.replay(agent: agents.selected) },
+            replay: {
+                agents.replayRequested(for: agents.selected)
+                voice.replay(agent: agents.selected)
+            },
             start: { agents.start(agents.selected) },
             retry: {
                 if case .waiting = session.state { session.retryNow() } else { session.start() }

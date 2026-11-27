@@ -123,11 +123,16 @@ struct MainTabView: View {
                         removal: .opacity.animation(.easeOut(duration: 0.08))))
             }
         }
-        .frame(width: frame.width, height: frame.height)
+        // Bottom-anchored, so while the dock's own height animates (the
+        // text box after talking) its buttons stay put inside the glass.
+        .frame(width: frame.width, height: frame.height, alignment: .bottom)
         .background(shape.fill(RelayGlass.panel.tint).opacity(filled ? 1 : 0))
         .glassEffect(.regular, in: shape)
         .glassEffectID(Self.dockGlassID, in: glassMorph)
         .position(x: frame.midX, y: frame.midY)
+        // The place the Agents screen holds jumps to its new size at once;
+        // move the glass with the dock's own animation instead.
+        .animation(RelayMotion.move, value: frame)
     }
 
     /// Where the dock's glass waits away from Agents: inside the tab bar.

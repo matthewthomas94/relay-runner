@@ -89,7 +89,9 @@ struct AgentsScreenState: Equatable {
         // acknowledgement before the full reply) show as bubbles: Play skips
         // them anyway, and revealing them only on Play made the chat jump.
         let waitingMessage = mine.last.flatMap { last in chat.last(where: { $0.seq == last }) }
-        feed = chat.filter { $0.id != waitingMessage?.id }
+        // The feed keeps every message in order; the chat draws the waiting
+        // one as "New reply" where it is, so a message sent after it lands below.
+        feed = chat
         speakingSeq = playing == selected ? voice.playingSeq : nil
         if let last = mine.last {
             waiting = WaitingReply(seq: last, messageID: waitingMessage?.id, skipping: Set(mine.dropLast()),

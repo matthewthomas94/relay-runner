@@ -40,6 +40,9 @@ final class AgentsModel {
     @ObservationIgnored private let defaults: UserDefaults
     /// Which agent each reply's seq was filed under, for playback.
     @ObservationIgnored private var seqOwners: [Int: String] = [:]
+    /// Agents whose newest reply the user asked to hear again. The Mac sends
+    /// a replay as a new `speech` frame; it plays but is not a new message.
+    @ObservationIgnored private var replaying: Set<String> = []
 
     init(store: ChatStore = .standard, defaults: UserDefaults = .standard) {
         self.store = store
@@ -71,6 +74,13 @@ final class AgentsModel {
     func receive(_ frame: Frame) {
         switch frame {
         case .speech(let speech):
+            let agent = owner(of: speech.agent)
+            if replaying.contains(agent),
+               chats[agent]?.suffix(10).contains(where: { $0.role == .agent && $0.text == speech.text }) == true {
+                replaying.remove(agent)
+                seqOwners[speech.seq] = agent
+                return
+            }
             file(ChatMessage(role: .agent, text: speech.text, date: now(), seq: speech.seq), to: owner(of: speech.agent))
         case .status(let status):
             file(ChatMessage(role: .status, text: status.text, date: now(), seq: status.seq), to: owner(of: status.agent))
@@ -88,6 +98,12 @@ final class AgentsModel {
         if let tag, Self.slugs.contains(tag) { return tag }
         if let activeAgent, Self.slugs.contains(activeAgent) { return activeAgent }
         return selected
+    }
+
+    /// Replay was pressed for `agent`: its replayed reply plays without
+    /// being filed again.
+    func replayRequested(for agent: String) {
+        replaying.insert(agent)
     }
 
     /// The agent whose chat holds the reply `seq`.
