@@ -45,6 +45,8 @@ Debug builds only. Launch the installed app with `xcrun simctl launch booted com
 | 27 Settings | `--stage=app --tab=settings --sample-settings` (`--scroll-bottom` for the lower half) |
 | 28 lock-screen notification | `--stage=app --scripted-mac=10`, allow notifications, lock or background the app and wait for a reply; capture with `simctl io` |
 | 29 ticket modal | `--stage=app --workspace-sample=list --ticket-sample=short\|long\|loading\|error\|truncated\|unsupported\|done` (add `--workspace-sample=unreachable` for the banner) |
+| 26b, 27b listening on Workspace and Settings | add `--sample-glow=listening` (or `playing`; `cycle` raises and sinks them in turn) to any app screen |
+| tab transitions (glass morphs) | `--stage=app --agents-sample=ready --workspace-sample=list --sample-settings --cycle-tabs=2` steps through every pair of tabs both ways |
 | design-system gallery | `--gallery` or `--gallery=<type\|controls\|glyphs\|orbs\|listening\|playback>` |
 
 `--scripted-mac=<seconds>` connects to a scripted Mac inside the app that sends a two-frame reply from George every `seconds`, and `--scripted-mac-drop=<seconds>` makes it unreachable after that long (RR-545). With it, `--stage=app` is a first-launch-free way to type or speak an exchange with an agent on the simulator without a real Mac. The same arguments on a Release build do nothing.

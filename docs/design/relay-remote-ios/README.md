@@ -48,7 +48,7 @@ First launch: splash (01–05) → permissions (06–11) → pairing (12–14) �
 
 - Black background. Typeface Bai Jamjuree (the desktop app's typeface; bundle it in the app).
 - Panels: `#0c0f13` at 50% with a glass effect, corner radius 16.
-- Buttons: one primary (white) button per screen at most. Secondary buttons are glass (`#171a1e` at 75%). A danger button is the secondary surface with a red (`#f41509`) label and icon, never a red fill.
+- Buttons: one primary (white) button per screen at most. Secondary buttons are glass (`#171a1e` at 50%; the clearer glass of RR-553: panels `#0c0f13` at 30%, the tab bar at 45%, selected pills `#212529` at 50%, solid cards and the selected project tab `#171a1e` at 60%, black fields at 50%, other `#212529` fills at 65%). A danger button is the secondary surface with a red (`#f41509`) label and icon, never a red fill.
 - Icons are outline (stroke) Lucide icons everywhere, including the chips in the tutorial text. Never filled shapes.
 - No coloured status lights or pills anywhere. Agent status is shown only by the four-dot status glyph and the header blob.
 - Copy is brief: subtitles are one short line or absent.
@@ -102,7 +102,8 @@ Each step advances only when the user does the action; there are no Next buttons
 ## Agents tab (21–25)
 
 - The tab opens straight into the selected agent's chat. There is no nested chat view and no project picker; agents infer the project from the conversation.
-- Bottom to top: tab bar; the dock (text box, then a row of Replay, a wide "Hold to talk", and Stop; Replay and Stop are slim 44 pt squares); a horizontally scrollable strip of agent tabs (Puck, Isabella, George, Sky) styled like the desktop terminal tabs.
+- Bottom to top: tab bar; the dock, one glass message panel (10 pt padding, 8 pt gaps, radius 20, RR-553) holding a horizontally scrollable strip of agent tabs (Puck, Isabella, George, Sky) styled like the desktop terminal tabs, the text box with the white talk/Send button, and labelled Replay and Stop sharing a row. While the Mac is unreachable the panel's contents dim once, the agent tabs with them.
+- **Tab transitions (RR-553):** the tab bar stays put; the glass above it is one liquid glass in the tab bar's `GlassEffectContainer`. Agents to Workspace: the dock reshapes straight into the project tabs container, and back. Agents or Workspace to Settings: the panel melts down into the tab bar, and rises back out. Its contents fade, so only the glass morphs. The pages swap without overlapping: the old page is gone in 100 ms, then the new one fades in over 200 ms drifting 8 pt. Reduce Motion crossfades the panels and drops the drift.
 - The dock is pinned just above the tab bar. As the text box fills while the user speaks it grows upward; it never overlaps the tab bar.
 - **Header:** just the agent's blob over the agent's name. No Mac subtitle.
 - **Blob:** a port of the desktop Settings agent-card orb, `buildOrbGrid` in `Sources/relay-runner/Overlay/ParticleFieldRenderer.swift`: three Gaussian lobes on a halftone dot grid with a white core (168 × 112 pt, 7 pt grid in the design). Its edge colour follows the agent's state: orange when listening, blue-purple when playing back, navy `#11161D` when idle. It is never dimmed, even when the agent is not running. No blob and no glow inside the agent tabs.
@@ -123,7 +124,7 @@ A port of `buildDotGrid` in `ParticleFieldRenderer.swift` on an 8 pt grid, sligh
 
 ## Workspace tab (26)
 
-Tickets grouped by status: In progress, Queued, Backlog. Each row shows the ticket and the agent that owns it. Above the tab bar is a scrollable strip of project tabs: All, then one per project, styled like the agent tabs. These are tabs, not filter chips. There is no page title.
+Tickets grouped by status: In progress, Queued, Backlog. Each row shows the ticket and the agent that owns it. Above the tab bar is a scrollable strip of project tabs: All, then one per project, styled like the agent tabs, in their own glass container (the tab bar's glass, 4 pt padding, radius 20, 12 pt above the tab bar, RR-553); the list scrolls on under it and fades as it passes behind. These are tabs, not filter chips. There is no page title.
 
 ## Ticket modal (opens from a Workspace row)
 
@@ -145,7 +146,7 @@ There is no Figma screen for this; it is built from the styles above and the scr
 
 No page title.
 
-- **Voice:** Remote mode; Talk: Hold / Toggle (there is no hands-free mode); Replies: Auto-play / Queue; Reply notifications toggle; Speech speed slider, 0.5–2.0x in 0.1 steps, mirroring the desktop TTS rate.
+- **Voice:** Remote mode; Talk: Hold / Toggle (there is no hands-free mode); Replies: Auto-play / Queue; Reply notifications toggle; Speech speed slider, 0.5–2.0x in 0.1 steps, mirroring the desktop TTS rate; it copies the Mac's `SettingsSlider` (a 44 pt track with a white value fill up to an upright thumb and the value as a caption inside the track, RR-553).
 - **Orchestrator:** Model, Effort and Sub-agent sizing, with the same options as the desktop's General settings (`GeneralSettingsTab.swift`, `Config.swift`). Model options depend on the provider (Claude: Fable, Opus, Sonnet, Haiku; Codex: Astra, Sol, Terra, Luna). Effort options depend on the model. Sizing is "Orchestrator decides" or "Use my defaults".
 - **Mac** and **Pairing:** session and paired-Mac details, with "Stop all" and "Forget this Mac" as danger buttons.
 

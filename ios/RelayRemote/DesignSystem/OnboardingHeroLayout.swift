@@ -80,7 +80,13 @@ struct OnboardingHeroLayout<Accessory: View, Secondary: View>: View {
                 Spacer(minLength: 0)
                 secondary
                 if let action {
-                    Button(action: action.perform) { RelayButtonLabel(action.title, icon: action.icon) }
+                    // The label swaps with the hero line (one permission step
+                    // to the next), rather than jumping while the line swaps.
+                    Button(action: action.perform) {
+                        RelaySwap(ActionFace(title: action.title, icon: action.icon)) {
+                            RelayButtonLabel($0.title, icon: $0.icon)
+                        }
+                    }
                         .buttonStyle(RelayButtonStyle(role: action.role, height: RelayMetrics.largeControlHeight,
                                                       fullWidth: true))
                 }
@@ -107,6 +113,12 @@ struct OnboardingHeroLayout<Accessory: View, Secondary: View>: View {
         }
         .background { if drawsBackground { RelayColor.neutral1 } }
     }
+}
+
+/// What an onboarding action's label shows.
+private struct ActionFace: Equatable {
+    let title: String
+    let icon: LucideIcon?
 }
 
 /// The hero lines, centred, with the cursor after the last one.

@@ -57,7 +57,7 @@ struct AgentChatFeed: View {
                     .foregroundStyle(RelayColor.neutral10)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
-                    .modifier(FeedGlass(glass: .selected))
+                    .modifier(FeedGlass(glass: .raised))
                 meta("You · \(Self.time(message.date))")
             }
             .padding(.leading, 72)
@@ -70,10 +70,14 @@ struct AgentChatFeed: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .modifier(FeedGlass())
-                Text(speaking ? "\(name) · speaking" : "\(name) · \(Self.time(message.date))")
-                    .relayTextStyle(.caption)
-                    .foregroundStyle(RelayColor.neutral7)
-                    .contentTransition(.opacity)
+                // "speaking" swaps in and out without the two lines overlapping.
+                ZStack(alignment: .leading) {
+                    Text(speaking ? "\(name) · speaking" : "\(name) · \(Self.time(message.date))")
+                        .relayTextStyle(.caption)
+                        .foregroundStyle(RelayColor.neutral7)
+                        .id(speaking)
+                        .transition(.relayControlSwap)
+                }
             }
             .padding(.trailing, 51)
             .frame(maxWidth: .infinity, alignment: .leading)

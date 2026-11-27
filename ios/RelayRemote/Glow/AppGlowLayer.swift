@@ -35,8 +35,11 @@ enum AppGlowState: Equatable {
 /// keeps only the fades.
 struct AppGlowLayer: View {
     let model: AppModel
+    /// Debug only: the glow `--sample-glow` shows (`LaunchOptions`).
+    @State private var sample: AppGlowState?
 
     private var target: AppGlowState {
+        if let sample { return sample }
         guard let voice = model.voice else { return .none }
         let listening = voice.isListening || voice.activity == .listening || voice.activity == .hearing
         return .resolve(listening: listening, playing: voice.isSpeaking)
@@ -44,7 +47,30 @@ struct AppGlowLayer: View {
 
     var body: some View {
         StateGlowLayer(target: target)
+        #if DEBUG
+            .task { await playSample() }
+        #endif
     }
+
+    #if DEBUG
+    /// `--sample-glow=listening|playing` holds that glow; `cycle` raises
+    /// listening, sinks it, raises playback and sinks it, over and over.
+    private func playSample() async {
+        switch LaunchOptions.current.sampleGlow {
+        case "listening": sample = .listening
+        case "playing": sample = .playing
+        case "cycle":
+            sample = AppGlowState.none
+            while !Task.isCancelled {
+                for (state, hold) in [(AppGlowState.listening, 2.0), (.none, 1.5), (.playing, 2.0), (.none, 1.5)] {
+                    sample = state
+                    try? await Task.sleep(for: .seconds(hold))
+                }
+            }
+        default: break
+        }
+    }
+    #endif
 }
 
 /// The glow for a given state; `AppGlowLayer` feeds it the live voice state.

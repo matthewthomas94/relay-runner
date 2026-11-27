@@ -18,7 +18,9 @@ import Foundation
 /// - `--ticket-sample=<short|long|loading|error|truncated|unsupported|done>` opens the Workspace
 ///   tab's ticket modal on sample data (add `--workspace-sample=unreachable` for the banner),
 /// - `--sample-settings` fills the Settings tab with sample data, unpaired,
-/// - `--cycle-tabs=<seconds>` switches between the tabs on its own (RR-552, recording the dock morph),
+/// - `--cycle-tabs=<seconds>` switches between the tabs on its own (RR-552, recording the glass morphs),
+/// - `--sample-glow=<listening|playing|cycle>` shows a state glow behind every screen, or
+///   raises and sinks them in turn (RR-553, recording the glows on each tab),
 /// - `--scroll-bottom` opens scrolling screens at their end,
 /// - `--reset-onboarding` forgets that onboarding finished, as a fresh install,
 /// - `--scripted-mac=<seconds>` connects to a scripted Mac inside the app that
@@ -42,6 +44,7 @@ struct LaunchOptions: Equatable {
     var scriptedMacReplyEvery: Double?
     var scriptedMacDropAfter: Double?
     var cycleTabsEvery: Double?
+    var sampleGlow: String?
 
     init(arguments: [String]) {
         for argument in arguments {
@@ -64,6 +67,7 @@ struct LaunchOptions: Equatable {
             if let value = Self.value(of: "--scripted-mac", in: argument) { scriptedMacReplyEvery = Double(value) }
             if let value = Self.value(of: "--scripted-mac-drop", in: argument) { scriptedMacDropAfter = Double(value) }
             if let value = Self.value(of: "--cycle-tabs", in: argument) { cycleTabsEvery = Double(value) }
+            if let value = Self.value(of: "--sample-glow", in: argument) { sampleGlow = value }
         }
     }
 

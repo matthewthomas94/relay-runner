@@ -432,7 +432,7 @@ private struct SegmentedRow<Value: Hashable>: View {
                             .background {
                                 // One pill that slides to the selected option.
                                 if selected {
-                                    RoundedRectangle(cornerRadius: 9, style: .continuous).fill(RelayColor.neutral4)
+                                    RoundedRectangle(cornerRadius: 9, style: .continuous).fill(RelayGlass.raised.tint)
                                         .matchedGeometryEffect(id: "pill", in: pill)
                                 }
                             }
@@ -491,12 +491,12 @@ private struct ChoiceRow: View {
     }
 }
 
-/// The Figma's fields (select, segmented control, text box): black with a
-/// hairline of #212529 at 50%, radius 12.
+/// The Figma's fields (select, segmented control, text box): black at 50%
+/// with a hairline of #212529 at 50%, radius 12.
 struct FieldSurface: ViewModifier {
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius, style: .continuous)
-        content.background(shape.fill(RelayColor.neutral1)
+        content.background(shape.fill(RelayColor.neutral1.opacity(0.5))
             .overlay(shape.strokeBorder(RelayColor.neutral4.opacity(0.5), lineWidth: 1)))
     }
 }
@@ -521,7 +521,7 @@ private struct SpeedSlider: View {
             let thumb = Self.thumbInset + (width - Self.thumbInset * 2) * fraction
             let shape = RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius, style: .continuous)
             ZStack {
-                shape.fill(RelayColor.neutral3.opacity(0.5))
+                shape.fill(RelayGlass.control.tint)
                 shape.fill(RelayColor.neutral10.opacity(isEnabled ? 0.72 : 0.3))
                     .mask(alignment: .leading) { Rectangle().frame(width: fraction >= 1 ? width : thumb) }
                 Capsule()

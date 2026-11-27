@@ -163,7 +163,7 @@ struct MarkdownView: View {
                             .padding(12)
                     }
                     .background(RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius, style: .continuous)
-                        .fill(RelayColor.neutral4))
+                        .fill(RelayGlass.raised.tint))
                 }
             }
         }

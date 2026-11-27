@@ -129,6 +129,8 @@ struct TutorialScreen: View {
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
                 .opacity(step == .basics || step == .allDone ? 0 : 1)
+                // It arrives and leaves with the dock instead of popping.
+                .animation(RelayMotion.change, value: step.showsDock)
         }
     }
 

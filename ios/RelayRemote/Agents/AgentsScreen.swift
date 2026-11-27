@@ -14,7 +14,8 @@ struct AgentsScreenActions {
     var retry: () -> Void = {}
 }
 
-/// Agents (21–25), bottom to top: the dock, the agent tab strip, the chat feed
+/// Agents (21–25), bottom to top: the dock (one glass message panel holding
+/// the agent tabs, the text box and Replay and Stop, RR-553), the chat feed
 /// and the header with the agent's orb over its name. The tab bar below
 /// belongs to `MainTabView`. While the Mac is unreachable a banner floats over
 /// the screen and the chat and controls dim and take no input; the orb is
@@ -23,10 +24,10 @@ struct AgentsScreen: View {
     let state: AgentsScreenState
     var actions = AgentsScreenActions()
     @State private var draft: String
-    @Environment(\.hostsDock) private var hostsDock
+    @Environment(\.hostsPanels) private var hostsPanels
 
-    /// How far the dock sits above the tab bar.
-    static let dockBottomGap: CGFloat = 13
+    /// How far the dock sits above the tab bar (Figma Final 21).
+    static let dockBottomGap: CGFloat = 12
     static let dimmedOpacity = 0.45
 
     init(state: AgentsScreenState, actions: AgentsScreenActions = AgentsScreenActions(), draft: String = "") {
@@ -39,28 +40,29 @@ struct AgentsScreen: View {
         VStack(spacing: 0) {
             header
             Group {
+                // Switching agents swaps the chats quickly, and never with
+                // both on screen (RR-553): the old one is gone in 100 ms,
+                // then the new one fades in.
                 if state.notRunning {
                     notRunning
-                        .transition(.relaySurface)
+                        .id(state.selected)
+                        .transition(.relayControlSwap)
                 } else {
                     AgentChatFeed(name: state.name, messages: state.feed, speakingSeq: state.speakingSeq)
                     .id(state.selected)
-                    // Switching agents crossfades the chats, quickly.
-                    .transition(.asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.18)),
-                                            removal: .opacity.animation(.easeOut(duration: 0.1))))
+                    .transition(.asymmetric(
+                        insertion: .opacity.animation(.easeOut(duration: 0.18).delay(RelayMotion.controlExitDuration)),
+                        removal: .opacity.animation(RelayMotion.controlExit)))
                 }
             }
             .animation(RelayMotion.enter, value: state.notRunning)
             .animation(RelayMotion.enter, value: state.selected)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.bottom, 6)
+            .padding(.bottom, 10)
             // Tapping the chat puts the keyboard away; buttons in it still work.
             .contentShape(Rectangle())
             .onTapGesture { dismissKeyboard() }
             .modifier(Dimmed(isDimmed: isOffline))
-            AgentTabStrip(tabs: state.tabs, selected: state.selected, onSelect: actions.select)
-                .modifier(Dimmed(isDimmed: isOffline))
-                .padding(.bottom, 10)
             dock
                 .padding(.horizontal, AgentDock.sideInset)
                 .padding(.bottom, Self.dockBottomGap)
@@ -73,36 +75,34 @@ struct AgentsScreen: View {
     private var isOffline: Bool { state.reachability != .reachable }
 
     /// Under `MainTabView` the dock is drawn by the tab view, in the tab bar's
-    /// glass container (`HostedDock`); here a hidden copy holds its place.
-    @ViewBuilder
+    /// glass container (`HostedPanel`); here a hidden copy holds its place.
+    /// Offline, the whole panel's contents dim once, the agent tabs with them.
     private var dock: some View {
-        let dock = AgentDock(text: $draft, placeholder: "Message \(state.name)", talkMode: state.talkMode,
-                             isTalking: state.isTalking, transcript: state.transcript,
-                             canReplay: !state.notRunning, canPlay: state.waiting != nil,
-                             canStop: !state.notRunning,
-                             drawsGlass: !hostsDock,
-                             onSend: send, onTalk: actions.talk, onCancel: actions.cancelTalk,
-                             onReplay: actions.replay, onPlay: play, onStop: actions.stop)
+        AgentDock(text: $draft, placeholder: "Message \(state.name)",
+                  tabs: AgentTabStrip(tabs: state.tabs, selected: state.selected, onSelect: actions.select),
+                  talkMode: state.talkMode,
+                  isTalking: state.isTalking, transcript: state.transcript,
+                  canReplay: !state.notRunning, canPlay: state.waiting != nil,
+                  canStop: !state.notRunning,
+                  drawsGlass: !hostsPanels,
+                  onSend: send, onTalk: actions.talk, onCancel: actions.cancelTalk,
+                  onReplay: actions.replay, onPlay: play, onStop: actions.stop)
             .modifier(Dimmed(isDimmed: isOffline))
-        if hostsDock {
-            dock.hidden()
-                .accessibilityHidden(true)
-                .anchorPreference(key: HostedDockKey.self, value: .bounds) {
-                    HostedDock(anchor: $0, content: AnyView(dock), isTalking: state.isTalking)
-                }
-        } else {
-            dock
-        }
+            .hostedPanel(.agents, hosted: hostsPanels, isTalking: state.isTalking)
     }
 
     private var header: some View {
         VStack(spacing: 10) {
             AgentOrb(state: state.orb)
-            Text(state.name)
-                .relayTextStyle(.cardTitle)
-                .foregroundStyle(RelayColor.neutral10)
-                .contentTransition(.opacity)
-                .animation(RelayMotion.enter, value: state.name)
+            // The name swaps with the chat, the old name gone first.
+            ZStack {
+                Text(state.name)
+                    .relayTextStyle(.cardTitle)
+                    .foregroundStyle(RelayColor.neutral10)
+                    .id(state.name)
+                    .transition(.relayControlSwap)
+            }
+            .animation(RelayMotion.enter, value: state.name)
         }
         .padding(.top, 2)
         .contentShape(Rectangle())

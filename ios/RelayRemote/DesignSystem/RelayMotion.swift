@@ -113,21 +113,42 @@ extension AnyTransition {
         )
     }
 
-    /// A control swapping for another in the same place (Replay and Cancel,
-    /// the Talk label): a short crossfade with a slight blur and scale.
+    /// A control swapping for another in the same place (Replay, Play and
+    /// Cancel, the talk button's icon): the desktop's control swap, shortened
+    /// for something pressed many times a day. The old control fades out,
+    /// blurring to 6 pt and shrinking to 96%, in 100 ms on the exit curve;
+    /// the new one arrives the same way as it goes, 160 ms on the strong
+    /// ease-out, starting when the old one has gone. They never overlap, and
+    /// the swap is over in 260 ms. Reduce Motion keeps only the fades.
     static var relayControlSwap: AnyTransition {
-        .modifier(active: RelayControlSwapModifier(hidden: true), identity: RelayControlSwapModifier(hidden: false))
+        .asymmetric(
+            insertion: .modifier(active: RelayControlSwapModifier(hidden: true),
+                                 identity: RelayControlSwapModifier(hidden: false))
+                .animation(RelayMotion.controlEnter),
+            removal: .modifier(active: RelayControlSwapModifier(hidden: true),
+                               identity: RelayControlSwapModifier(hidden: false))
+                .animation(RelayMotion.controlExit))
     }
+}
+
+extension RelayMotion {
+    /// A control leaving its place for another: 100 ms on the exit curve.
+    static let controlExitDuration: TimeInterval = 0.1
+    static let controlExit = Animation.timingCurve(0.4, 0, 1, 1, duration: controlExitDuration)
+    /// The control taking its place, once the old one has gone.
+    static let controlEnter = Animation.timingCurve(0.23, 1, 0.32, 1, duration: 0.16).delay(controlExitDuration)
 }
 
 struct RelayControlSwapModifier: ViewModifier {
     let hidden: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
+        let move = hidden && !reduceMotion
         content
             .opacity(hidden ? 0 : 1)
-            .blur(radius: hidden ? 2 : 0)
-            .scaleEffect(hidden ? 0.9 : 1)
+            .blur(radius: move ? RelayMotion.hiddenBlur : 0)
+            .scaleEffect(move ? RelayMotion.hiddenScale : 1)
     }
 }
 
@@ -232,15 +253,38 @@ struct RelayStageEffect: ViewModifier {
 
 extension AnyTransition {
     /// Switching tabs happens tens of times a day, so it must feel instant
-    /// (Emil Kowalski: frequent actions get little or no motion). The pages
-    /// cross over at once, with no gap and no blur: the new page fades in
-    /// over 200 ms on the strong ease-out while drifting 8 pt from the side it
-    /// came from; the old one is gone in 120 ms.
+    /// (Emil Kowalski: frequent actions get little or no motion), and like
+    /// every swap the two pages never share the screen (RR-553: crossing
+    /// over, both pages showed through each other mid-switch). The old page
+    /// is gone in 100 ms on the exit curve; the new one then fades in over
+    /// 200 ms on the strong ease-out while drifting 8 pt from the side it came
+    /// from, so the switch is over in 300 ms. No blur, no gap. Reduce Motion
+    /// keeps only the fades.
     static func relayTab(direction: CGFloat) -> AnyTransition {
         .asymmetric(
-            insertion: .opacity.combined(with: .offset(x: 8 * direction))
-                .animation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.2)),
-            removal: .opacity.animation(.easeOut(duration: 0.12))
+            insertion: .modifier(active: RelayTabEffect(hidden: true, travel: 8 * direction),
+                                 identity: RelayTabEffect(hidden: false, travel: 0))
+                .animation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.2).delay(RelayMotion.tabExitDuration)),
+            removal: .opacity.animation(.timingCurve(0.4, 0, 1, 1, duration: RelayMotion.tabExitDuration))
         )
+    }
+}
+
+extension RelayMotion {
+    /// How long the old page takes to leave on a tab switch.
+    static let tabExitDuration: TimeInterval = 0.1
+}
+
+/// A tab page's hidden state: faded and shifted by `travel`; Reduce Motion
+/// keeps only the fade.
+struct RelayTabEffect: ViewModifier {
+    let hidden: Bool
+    let travel: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(hidden ? 0 : 1)
+            .offset(x: hidden && !reduceMotion ? travel : 0)
     }
 }

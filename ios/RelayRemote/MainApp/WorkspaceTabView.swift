@@ -60,16 +60,23 @@ struct WorkspaceTabView: View {
     var sample: WorkspaceFeed?
 
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.hostsPanels) private var hostsPanels
 
     private var feed: WorkspaceFeed { sample ?? WorkspaceFeed(session: model.session) }
 
     var body: some View {
         let feed = feed
         let phase = WorkspacePhase(feed, project: model.workspaceProject)
-        VStack(spacing: 0) {
+        // The list runs on under the project tabs, which float in their own
+        // glass container 12 pt above the tab bar (Figma Final 26).
+        ZStack(alignment: .bottom) {
             content(phase, feed: feed)
             if case .list(let listing) = phase {
-                ProjectTabStrip(tabs: listing.tabs, selection: Bindable(model).workspaceProject)
+                ProjectTabStrip(tabs: listing.tabs, selection: Bindable(model).workspaceProject,
+                                drawsGlass: !hostsPanels)
+                    .hostedPanel(.workspace, hosted: hostsPanels, glass: .bar, stroke: ProjectTabStrip.stroke)
+                    .padding(.horizontal, RelayMetrics.screenMargin)
+                    .padding(.bottom, ProjectTabStrip.bottomGap)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -168,6 +175,8 @@ private struct WorkspaceList: View {
                 }
                 .padding(.horizontal, RelayMetrics.screenMargin)
                 .padding(.top, 72)
+                // The last ticket scrolls clear of the project tabs.
+                .padding(.bottom, ProjectTabStrip.reserved)
                 // Tickets arriving, leaving or moving lanes animate instead of jumping.
                 .animation(RelayMotion.move, value: listing.groups.map { $0.tickets.map(\.id) })
             }
@@ -179,8 +188,9 @@ private struct WorkspaceList: View {
                 LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
                     .frame(height: AgentChatFeed.topFade)
                 Rectangle().fill(.black)
+                // Tickets fade out as they pass behind the project tabs.
                 LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
-                    .frame(height: AgentChatFeed.bottomFade)
+                    .frame(height: ProjectTabStrip.reserved)
             }
         }
         .opacity(dimmed ? 0.3 : 1)
@@ -217,19 +227,35 @@ private struct TicketRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .relayGlass(.control, cornerRadius: 20)
+        .relayGlass(.card, cornerRadius: 20)
         .accessibilityElement(children: .combine)
     }
 }
 
 /// "All" then one tab per project, in the style of the agent tabs: plain
-/// labels with a count, the selected one on an outlined pill.
-private struct ProjectTabStrip: View {
+/// labels with a count, the selected one on an outlined pill. They sit in
+/// their own glass container, the tab bar's glass with 4 pt padding and
+/// radius 20 (RR-553, Figma Final 26), which `MainTabView` draws so the
+/// Agents dock can reshape into it.
+struct ProjectTabStrip: View {
     let tabs: [WorkspaceListing.ProjectTab]
     @Binding var selection: String?
+    /// False when `MainTabView` draws the container's glass (`HostedPanel`).
+    var drawsGlass = true
     @Namespace private var pill
 
+    static let padding: CGFloat = 4
+    static let cornerRadius: CGFloat = 20
+    /// The tab bar's hairline.
+    static let stroke = 0.06
+    /// How far the container sits above the tab bar.
+    static let bottomGap: CGFloat = 12
+    /// The room the container takes at the bottom of the list, and a little
+    /// more for the fade above it.
+    static let reserved: CGFloat = AgentTabStrip.height + 2 * padding + bottomGap + 24
+
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
                 ForEach(tabs, id: \.id) { tab in
@@ -244,8 +270,8 @@ private struct ProjectTabStrip: View {
                             .frame(height: AgentTabStrip.height)
                             .background {
                                 if selected {
-                                    // The agent tabs' glass pill (`AgentTabStrip`).
-                                    RelayGlassBackground(glass: .panel,
+                                    // One outlined pill (#171a1e at 60%) that slides to the selection.
+                                    RelayGlassBackground(glass: .card,
                                                          shape: RoundedRectangle(cornerRadius: 12, style: .continuous),
                                                          stroke: 0.08)
                                         .matchedGeometryEffect(id: "pill", in: pill)
@@ -257,9 +283,15 @@ private struct ProjectTabStrip: View {
                     .accessibilityAddTraits(selected ? [.isSelected, .isButton] : .isButton)
                 }
             }
-            .padding(.horizontal, RelayMetrics.screenMargin)
         }
-        .padding(.vertical, 12)
+        // The tabs scroll to the container's edges, under its padding.
+        .contentMargins(.horizontal, Self.padding, for: .scrollContent)
+        .padding(.vertical, Self.padding)
+        .frame(maxWidth: .infinity)
+        .clipShape(shape)
+        .background {
+            if drawsGlass { RelayGlassBackground(glass: .bar, shape: shape, stroke: Self.stroke) }
+        }
     }
 }
 

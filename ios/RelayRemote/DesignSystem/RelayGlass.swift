@@ -6,15 +6,21 @@ import SwiftUI
 /// fill laid over it, so the backdrop refracts and the rim catches the light
 /// the way the designs show, instead of a flat blur.
 enum RelayGlass {
-    /// Panels, the dock and chat bubbles: #0c0f13, at 35% (the Figma's 50%
-    /// read darker on the phone than the design).
+    /// Panels, the dock and chat bubbles: #0c0f13 at 30% (Figma Final,
+    /// clearer glass, user 2026-11-27).
     case panel
-    /// The bottom tab bar: #0c0f13 at 55% (the Figma's 70%, lightened to match).
+    /// The bottom tab bar and the Workspace project tabs container: #0c0f13 at 45%.
     case bar
-    /// Secondary buttons: #171a1e at 75%.
+    /// Secondary buttons and controls: #171a1e at 50%.
     case control
-    /// Selected tabs and pressed controls: #212529 at 75%.
+    /// Selected tabs and pressed controls: #212529 at 50%.
     case selected
+    /// Solid cards and pills (Workspace ticket cards, the selected project
+    /// tab): #171a1e at 60%.
+    case card
+    /// Other #212529 fills (the user's chat bubbles, a segmented control's
+    /// selected segment): at 65%.
+    case raised
     /// The primary (white) button: white at 85% over the glass, so the
     /// backdrop's refraction and the glass rim still show at its edges.
     case primary
@@ -29,10 +35,12 @@ enum RelayGlass {
 
     var tint: Color {
         switch self {
-        case .panel: return RelayColor.neutral2.opacity(0.35)
-        case .bar: return RelayColor.neutral2.opacity(0.55)
-        case .control: return RelayColor.neutral3.opacity(0.75)
-        case .selected: return RelayColor.neutral4.opacity(0.75)
+        case .panel: return RelayColor.neutral2.opacity(0.3)
+        case .bar: return RelayColor.neutral2.opacity(0.45)
+        case .control: return RelayColor.neutral3.opacity(0.5)
+        case .selected: return RelayColor.neutral4.opacity(0.5)
+        case .card: return RelayColor.neutral3.opacity(0.6)
+        case .raised: return RelayColor.neutral4.opacity(0.65)
         case .primary: return RelayColor.neutral10.opacity(0.85)
         case .primaryPressed: return RelayColor.primaryPressed.opacity(0.85)
         }

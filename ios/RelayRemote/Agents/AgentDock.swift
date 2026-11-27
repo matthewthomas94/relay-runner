@@ -7,15 +7,19 @@ enum DockControl: Hashable, CaseIterable {
     case textBox, replay, talk, stop
 }
 
-/// The dock from screens 21–25 (RR-552): a text box whose white button is
-/// both the talk button and Send, then labelled Replay and Stop sharing a row.
-/// It sits at the bottom of its container, so as the text box fills it grows
-/// upward. While the selected agent has a reply not played yet (Queue mode)
-/// Replay reads Play and plays it (RR-554). While the user talks the text box
-/// shows the live transcript and Replay becomes Cancel.
+/// The dock from screens 21–25 (RR-552, RR-553): one glass message panel
+/// holding the agent tabs, a text box whose white button is both the talk
+/// button and Send, then labelled Replay and Stop sharing a row. The
+/// tutorial's dock has no agent tabs. It sits at the bottom of its
+/// container, so as the text box fills it grows upward. While the selected
+/// agent has a reply not played yet (Queue mode) Replay reads Play and plays
+/// it (RR-554). While the user talks the text box shows the live transcript
+/// and Replay becomes Cancel.
 struct AgentDock: View {
     @Binding var text: String
     let placeholder: String
+    /// The agent tabs, the panel's top row (Figma Final 21–25); nil in the tutorial.
+    var tabs: AgentTabStrip?
     var talkMode: TalkMode = .hold
     var isTalking = false
     /// The live transcript, shown in the text box while talking.
@@ -29,7 +33,7 @@ struct AgentDock: View {
     /// Controls that take no touches, so a dimmed control does nothing.
     var inert: Set<DockControl> = []
     /// False when `MainTabView` draws the dock in the tab bar's glass
-    /// container, so its glass can melt into the tab bar (`HostedDock`).
+    /// container, so its glass can melt into the tab bar (`HostedPanel`).
     var drawsGlass = true
     var onSend: () -> Void = {}
     var onTalk: (TalkGesture.Command) -> Void = { _ in }
@@ -42,27 +46,30 @@ struct AgentDock: View {
     static let maxLines = 3
     /// The Figma dock: radius 20, 10 pt padding, 12 pt in from the screen.
     static let cornerRadius: CGFloat = 20
+    static let padding: CGFloat = 10
     static let sideInset: CGFloat = 12
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
         VStack(spacing: 8) {
+            if let tabs {
+                // The strip scrolls to the panel's edges, under its padding.
+                tabs
+                    .contentMargins(.horizontal, Self.padding, for: .scrollContent)
+                    .padding(.horizontal, -Self.padding)
+            }
             textBox
             HStack(spacing: 8) {
-                Group {
-                    switch replayFace {
-                    case .cancel:
-                        Button(action: onCancel) { RelayButtonLabel("Cancel", icon: .x) }
-                            .transition(.relayControlSwap)
-                    case .play:
-                        Button(action: onPlay) { RelayButtonLabel("Play", icon: .play) }
-                            .transition(.relayControlSwap)
-                    case .replay:
-                        Button(action: onReplay) { RelayButtonLabel("Replay", icon: .rotateCcw) }
-                            .disabled(!canReplay)
+                // One button whose label swaps: the old label leaves before
+                // the new one arrives, and the button's surface stays put.
+                Button(action: replayAction) {
+                    ZStack {
+                        replayLabel
+                            .id(replayFace)
                             .transition(.relayControlSwap)
                     }
                 }
+                .disabled(replayFace == .replay && !canReplay)
                 .buttonStyle(RelayButtonStyle(role: .secondary, fullWidth: true))
                 .animation(RelayMotion.enter, value: replayFace)
                 .opacity(dimmed.contains(.replay) ? 0.3 : 1)
@@ -74,14 +81,32 @@ struct AgentDock: View {
                     .allowsHitTesting(!inert.contains(.stop))
             }
         }
-        .padding(10)
+        .padding(Self.padding)
         .background {
             if drawsGlass { RelayGlassBackground(glass: .panel, shape: shape) }
         }
+        .clipShape(shape)
         .animation(RelayMotion.enter, value: dimmed)
     }
 
     enum ReplayFace { case cancel, play, replay }
+
+    @ViewBuilder
+    private var replayLabel: some View {
+        switch replayFace {
+        case .cancel: RelayButtonLabel("Cancel", icon: .x)
+        case .play: RelayButtonLabel("Play", icon: .play)
+        case .replay: RelayButtonLabel("Replay", icon: .rotateCcw)
+        }
+    }
+
+    private func replayAction() {
+        switch replayFace {
+        case .cancel: onCancel()
+        case .play: onPlay()
+        case .replay: onReplay()
+        }
+    }
 
     /// What the control beside Stop reads: Cancel while talking, Play while a
     /// reply waits to be played, otherwise Replay.
@@ -135,7 +160,7 @@ struct AgentDock: View {
                 .padding(.top, 4)
         }
         .frame(minHeight: 44)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(RelayColor.neutral1))
+        .modifier(FieldSurface())
         .animation(RelayMotion.move, value: isTalking)
     }
 
@@ -143,32 +168,6 @@ struct AgentDock: View {
         guard !isTalking, hasText else { return }
         onSend()
     }
-}
-
-/// The Agents dock handed up to `MainTabView` (RR-552): the Agents screen
-/// keeps its place, and the tab view draws it there in the same
-/// `GlassEffectContainer` as the tab bar, so between tabs the dock's glass
-/// melts into the tab bar and rises back out of it.
-struct HostedDock {
-    /// The place the dock takes in the Agents screen.
-    let anchor: Anchor<CGRect>
-    /// The dock, without its glass.
-    let content: AnyView
-    /// Talking or not: the one change that resizes the dock in place.
-    var isTalking = false
-}
-
-struct HostedDockKey: PreferenceKey {
-    static let defaultValue: HostedDock? = nil
-
-    static func reduce(value: inout HostedDock?, nextValue: () -> HostedDock?) {
-        value = value ?? nextValue()
-    }
-}
-
-extension EnvironmentValues {
-    /// True under `MainTabView`, which draws the Agents dock (`HostedDock`).
-    @Entry var hostsDock = false
 }
 
 /// The white button in the text box: the talk button and Send in one
@@ -199,9 +198,12 @@ struct DockTalkButton: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
         let active = face == .wave
-        icon
-            .id(face)
-            .transition(.relayControlSwap)
+        // The icon swaps in its own slot, the old one gone before the new arrives.
+        ZStack {
+            icon
+                .id(face)
+                .transition(.relayControlSwap)
+        }
             .animation(RelayMotion.enter, value: face)
             .foregroundStyle(RelayColor.neutral1)
             .frame(width: Self.size, height: Self.size)
