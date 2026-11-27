@@ -135,25 +135,11 @@ private struct TicketBody: View {
         ZStack(alignment: .topLeading) {
             content
                 .id(kind)
-                .transition(reduceMotion ? .opacity : Self.handOver)
+                .transition(reduceMotion ? .opacity : .relayHandOver)
         }
         .animation(RelayMotion.enter, value: kind)
         .padding(.top, 4)
         .opacity(dimmed ? 0.3 : 1)
-    }
-
-    private static var handOver: AnyTransition {
-        .asymmetric(
-            insertion: .modifier(active: Arriving(hidden: true), identity: Arriving(hidden: false))
-                .animation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.32).delay(0.1)),
-            removal: .opacity.animation(.easeOut(duration: 0.1)))
-    }
-
-    private struct Arriving: ViewModifier {
-        let hidden: Bool
-        func body(content: Content) -> some View {
-            content.opacity(hidden ? 0 : 1).blur(radius: hidden ? 4 : 0).offset(y: hidden ? 6 : 0)
-        }
     }
 
     @ViewBuilder
@@ -180,20 +166,10 @@ private struct TicketBody: View {
     }
 }
 
-/// Room for the text while the Mac answers. The spinner only fades in if
-/// the answer takes longer than a moment, so a quick answer never flashes it.
+/// Room for the text while the Mac answers, with a spinner only if it is slow.
 private struct TicketLoading: View {
-    @State private var showsSpinner = false
-
     var body: some View {
-        ProgressView()
-            .tint(RelayColor.neutral7)
-            .opacity(showsSpinner ? 1 : 0)
-            .frame(maxWidth: .infinity, minHeight: 96)
-            .task {
-                try? await Task.sleep(for: .milliseconds(350))
-                withAnimation(.easeOut(duration: 0.2)) { showsSpinner = true }
-            }
+        RelayDelayedSpinner().frame(maxWidth: .infinity, minHeight: 96)
     }
 }
 

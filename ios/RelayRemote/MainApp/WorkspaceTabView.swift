@@ -38,6 +38,15 @@ enum WorkspacePhase: Equatable {
 
     static let appNotRunning = "Relay Runner isn’t running on your Mac."
 
+    /// Which kind of body shows; a refreshed list keeps the same one.
+    var kind: Int {
+        switch self {
+        case .loading: 0
+        case .list: 1
+        case .error: 2
+        }
+    }
+
     init(_ feed: WorkspaceFeed, project: String?) {
         if let workspace = feed.workspace {
             if let message = workspace.error {
@@ -61,6 +70,7 @@ struct WorkspaceTabView: View {
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.hostsPanels) private var hostsPanels
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var feed: WorkspaceFeed { sample ?? WorkspaceFeed(session: model.session) }
 
@@ -70,7 +80,15 @@ struct WorkspaceTabView: View {
         // The list runs on under the project tabs, which float in their own
         // glass container 12 pt above the tab bar (Figma Final 26).
         ZStack(alignment: .bottom) {
-            content(phase, feed: feed)
+            // Loading hands over to the list (or a message) without a cut:
+            // the spinner only shows if the Mac is slow, then the list fades
+            // in from a light blur (user, 2026-11-28).
+            ZStack {
+                content(phase, feed: feed)
+                    .id(phase.kind)
+                    .transition(reduceMotion ? .opacity : .relayHandOver)
+            }
+            .animation(RelayMotion.enter, value: phase.kind)
             if case .list(let listing) = phase {
                 ProjectTabStrip(tabs: listing.tabs, selection: Bindable(model).workspaceProject,
                                 drawsGlass: !hostsPanels)
@@ -98,7 +116,7 @@ struct WorkspaceTabView: View {
             if feed.isUnreachable {
                 Spacer()
             } else {
-                ProgressView().tint(RelayColor.neutral7).frame(maxHeight: .infinity)
+                RelayDelayedSpinner().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         case .error(let message):
             VStack(spacing: 12) {

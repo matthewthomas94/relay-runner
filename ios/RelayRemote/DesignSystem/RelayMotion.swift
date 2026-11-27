@@ -288,3 +288,40 @@ struct RelayTabEffect: ViewModifier {
             .offset(x: hidden && !reduceMotion ? travel : 0)
     }
 }
+
+extension AnyTransition {
+    /// One state of a view handing over to the next (loading to loaded):
+    /// the old state fades out in 100 ms, then the new one fades in from a
+    /// 4 pt blur and 6 pt down on the strong ease-out. They never overlap.
+    static var relayHandOver: AnyTransition {
+        .asymmetric(
+            insertion: .modifier(active: RelayArrivingModifier(hidden: true),
+                                 identity: RelayArrivingModifier(hidden: false))
+                .animation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.32).delay(0.1)),
+            removal: .opacity.animation(.easeOut(duration: 0.1)))
+    }
+}
+
+struct RelayArrivingModifier: ViewModifier {
+    let hidden: Bool
+
+    func body(content: Content) -> some View {
+        content.opacity(hidden ? 0 : 1).blur(radius: hidden ? 4 : 0).offset(y: hidden ? 6 : 0)
+    }
+}
+
+/// A spinner that only fades in if the wait outlasts a moment, so a quick
+/// answer never flashes it (user, 2026-11-28).
+struct RelayDelayedSpinner: View {
+    @State private var shown = false
+
+    var body: some View {
+        ProgressView()
+            .tint(RelayColor.neutral7)
+            .opacity(shown ? 1 : 0)
+            .task {
+                try? await Task.sleep(for: .milliseconds(350))
+                withAnimation(.easeOut(duration: 0.2)) { shown = true }
+            }
+    }
+}
