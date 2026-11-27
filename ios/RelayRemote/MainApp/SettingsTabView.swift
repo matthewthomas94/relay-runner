@@ -509,28 +509,9 @@ private struct ChoiceRow: View {
     }
 
     private var menu: some View {
-            Menu {
-                ForEach(options, id: \.value) { option in
-                    Button {
-                        choose(option.value)
-                    } label: {
-                        if option.value == value {
-                            Label(option.label, systemImage: "checkmark")
-                        } else {
-                            Text(option.label)
-                        }
-                    }
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Text(label).relayTextStyle(.body).foregroundStyle(RelayColor.neutral10)
-                        .lineLimit(1).minimumScaleFactor(0.85)
-                    LucideImage(.chevronDown, size: 16).foregroundStyle(RelayColor.neutral7)
-                }
-                .padding(.horizontal, 12)
-                .frame(minHeight: RelayMetrics.controlHeight)
-                .modifier(FieldSurface())
-            }
+        RelayDropdown(label: label, options: options.map { ($0.value, $0.label) }, selection: value,
+                      choose: choose)
+            .accessibilityLabel(title)
             .disabled(!isEnabled || options.isEmpty)
             .opacity(isEnabled ? 1 : 0.4)
     }

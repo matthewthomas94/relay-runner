@@ -244,58 +244,28 @@ private struct Dimmed: ViewModifier {
     }
 }
 
-/// The header's work style switch (user, 2026-11-28): the agent's style on a
-/// small pill; tapping it lists the three, as the Mac's agent card does. The
+/// The header's work style switch (user, 2026-11-28): the agent's style on
+/// the same dropdown as Settings, listing the three styles by name only. The
 /// change is saved on the Mac and applies from the agent's next request.
 struct WorkStyleMenu: View {
     let style: String
     let agentName: String
     let choose: (String) -> Void
 
-    /// Each style's name and what it does, as on the Mac (`ProjectWorkStyle`).
-    static let styles: [(value: String, title: String, detail: String)] = [
-        ("auto", "Auto", "Decides per request, and asks when unsure"),
-        ("direct", "Direct", "Makes changes now, without tickets"),
-        ("orchestrated", "Orchestrated", "Turns changes into tickets for workers"),
+    /// Each style's name, as on the Mac (`ProjectWorkStyle`).
+    static let styles: [(value: String, label: String)] = [
+        ("auto", "Auto"),
+        ("direct", "Direct"),
+        ("orchestrated", "Orchestrated"),
     ]
 
     static func title(_ style: String) -> String {
-        styles.first { $0.value == style }?.title ?? style.capitalized
+        styles.first { $0.value == style }?.label ?? style.capitalized
     }
 
     var body: some View {
-        Menu {
-            Section("\(agentName)’s work style") {
-                ForEach(Self.styles, id: \.value) { option in
-                    Button {
-                        RelayHaptics.tap()
-                        choose(option.value)
-                    } label: {
-                        if option.value == style {
-                            Label(option.title, systemImage: "checkmark")
-                        } else {
-                            Text(option.title)
-                        }
-                        Text(option.detail)
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Text(Self.title(style))
-                    .relayTextStyle(.caption)
-                    .foregroundStyle(RelayColor.neutral10)
-                    .contentTransition(.opacity)
-                    .animation(RelayMotion.enter, value: style)
-                LucideImage(.chevronDown, size: 14)
-                    .foregroundStyle(RelayColor.neutral7)
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 32)
-            .modifier(FieldSurface())
-            .contentShape(Rectangle())
-        }
-        .accessibilityLabel("Work style")
-        .accessibilityValue(Self.title(style))
+        RelayDropdown(label: Self.title(style), options: Self.styles, selection: style,
+                      heading: "\(agentName)’s work style", choose: choose)
+            .accessibilityLabel("Work style")
     }
 }
