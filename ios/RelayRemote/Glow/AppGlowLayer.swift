@@ -69,10 +69,12 @@ struct StateGlowLayer: View {
     /// Leaving takes as long as the sink, so the falling edge stays visible.
     static let exit = Animation.timingCurve(0.4, 0, 1, 1, duration: 0.34)
     /// The field rises from the bottom edge to its full height, pushing up.
-    static let rise = Animation.timingCurve(0.16, 1, 0.3, 1, duration: 0.5)
+    static let rise = Animation.timingCurve(0.33, 1, 0.68, 1, duration: 0.55)
     /// And pulls back down into the bottom edge as it leaves.
     static let sink = Animation.timingCurve(0.4, 0, 1, 1, duration: 0.34)
     static let crossfade = Animation.timingCurve(0.16, 1, 0.3, 1, duration: 0.45)
+    /// The height of the rising field's soft top edge.
+    static let edge: CGFloat = 120
 
     /// The centre of the field showing, which the desktop scales about.
     private var anchor: UnitPoint {
@@ -80,13 +82,32 @@ struct StateGlowLayer: View {
         return UnitPoint(x: 0.5, y: 1 - coverage / 2)
     }
 
+    /// The tallest field showing, so a crossfade never clips the taller one.
+    private var coverage: CGFloat {
+        max(current.style?.coverage ?? 0, previous.style?.coverage ?? 0)
+    }
+
     var body: some View {
         ZStack {
             if let style = previous.style {
-                DotField(style: style, reveal: reveal).opacity(1 - arrival)
+                DotField(style: style).opacity(1 - arrival)
             }
             if let style = current.style {
-                DotField(style: style, reveal: reveal).opacity(arrival)
+                DotField(style: style).opacity(arrival)
+            }
+        }
+        // The field rises from the bottom edge behind a soft-topped mask.
+        // Only the mask's offset animates, on the GPU, so the dots keep
+        // their own frame rate and the edge moves at the display's.
+        .mask {
+            GeometryReader { geo in
+                let height = geo.size.height
+                VStack(spacing: 0) {
+                    LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                        .frame(height: Self.edge)
+                    Color.black.frame(height: height)
+                }
+                .offset(y: height - (height * coverage + Self.edge) * reveal)
             }
         }
         .opacity(1 - departure)

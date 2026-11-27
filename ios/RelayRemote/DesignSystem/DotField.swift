@@ -63,14 +63,6 @@ struct DotField: View {
     }
 }
 
-/// `reveal` animates, so the field can rise from the bottom and sink back.
-extension DotField: Animatable {
-    var animatableData: Double {
-        get { reveal }
-        set { reveal = newValue }
-    }
-}
-
 /// Builds the field's dots once per size and style.
 final class DotFieldCache {
     struct Dot {
