@@ -109,16 +109,15 @@ struct AgentChatFeed: View {
     static let feedChange = Animation.spring(duration: 0.45, bounce: 0.22)
 }
 
-/// A chat surface's glass (radius 16): the Figma fill and lit rim, applied
-/// to the content itself so the text always draws above it.
+/// A chat surface's glass (radius 16): Liquid Glass tinted with the Figma
+/// fill, applied to the content itself so the text always draws above it.
 private struct FeedGlass: ViewModifier {
     var glass: RelayGlass = .panel
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: RelayMetrics.panelRadius, style: .continuous)
         content
-            .background(shape.fill(glass.tint))
-            .overlay(RelayGlassRim(shape: shape, light: glass.rimLight))
+            .glassEffect(glass.liquid, in: shape)
             .environment(\.colorScheme, .dark)
     }
 }

@@ -249,7 +249,7 @@ final class VoiceController {
             return
         }
         do {
-            try audio.setRecording(true)
+            try await audio.startRecording()
             try await recognizer.startUtterance()
             utteranceOpen = true
             transcript = ""
