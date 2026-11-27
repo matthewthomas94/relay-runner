@@ -2,6 +2,7 @@ import Foundation
 import Network
 import RelayRemoteKit
 import RelayRemoteProtocol
+import SwiftUI
 import XCTest
 @testable import RelayRemote
 
@@ -281,9 +282,7 @@ final class AgentsTests: XCTestCase {
         XCTAssertEqual(waiting.waiting?.seq, 7)
         XCTAssertEqual(waiting.waiting?.skipping, [6])
         XCTAssertEqual(waiting.feed.map(\.text), ["George one", "George two"],
-                       "the feed keeps every reply in order")
-        XCTAssertEqual(waiting.waiting?.messageID, agents.chat("george").last?.id,
-                       "only the newest waiting reply shows as the New reply panel")
+                       "every waiting reply shows in the chat as a bubble at once")
         XCTAssertEqual(waiting.orb, .idle)
 
         let playingPuck = AgentsScreenState(agents: agents, voice: VoiceSnapshot(playingSeq: 5), talkMode: .hold)
@@ -314,8 +313,29 @@ final class AgentsTests: XCTestCase {
         let state = AgentsScreenState(agents: agents, voice: VoiceSnapshot(waitingSeqs: [6]), talkMode: .hold)
         XCTAssertEqual(state.feed.map(\.text), ["Old George reply", "New George reply"],
                        "the older reply stays in the chat")
-        XCTAssertEqual(state.waiting?.messageID, agents.chat("george").last?.id,
-                       "the New reply panel is the new message, not the old one with the same seq")
+        XCTAssertEqual(state.waiting?.seq, 6)
+    }
+
+    func testTheDockReadsPlayForAnUnplayedReplyThenReplay() {
+        let agents = model()
+        agents.select("george")
+        agents.receive(speech(5, "For Puck", agent: "puck"))
+        agents.receive(speech(6, "For George", agent: "george"))
+
+        func face(_ voice: VoiceSnapshot) -> AgentDock.ReplayFace {
+            let state = AgentsScreenState(agents: agents, voice: voice, talkMode: .hold)
+            return AgentDock(text: .constant(""), placeholder: "", isTalking: state.isTalking,
+                             canPlay: state.waiting != nil).replayFace
+        }
+
+        XCTAssertEqual(face(VoiceSnapshot(waitingSeqs: [5, 6])), .play, "George's reply has not played")
+        XCTAssertEqual(face(VoiceSnapshot(playingSeq: 6, waitingSeqs: [5])), .replay, "once played it reads Replay")
+        XCTAssertEqual(face(VoiceSnapshot(waitingSeqs: [5])), .replay)
+        XCTAssertEqual(face(VoiceSnapshot(isTalking: true, waitingSeqs: [6])), .cancel, "talking still reads Cancel")
+
+        agents.select("puck")
+        XCTAssertEqual(face(VoiceSnapshot(waitingSeqs: [5])), .play, "Puck's own reply is still unplayed")
+        XCTAssertEqual(face(VoiceSnapshot()), .replay, "auto-play leaves nothing waiting")
     }
 
     func testAReplayedReplyPlaysWithoutBeingFiledAgain() {

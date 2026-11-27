@@ -43,10 +43,7 @@ struct AgentsScreen: View {
                     notRunning
                         .transition(.relaySurface)
                 } else {
-                    AgentChatFeed(name: state.name, messages: state.feed, speakingSeq: state.speakingSeq,
-                                  waiting: state.waiting) {
-                        if let waiting = state.waiting { actions.play(waiting) }
-                    }
+                    AgentChatFeed(name: state.name, messages: state.feed, speakingSeq: state.speakingSeq)
                     .id(state.selected)
                     // Switching agents crossfades the chats, quickly.
                     .transition(.asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.18)),
@@ -81,10 +78,11 @@ struct AgentsScreen: View {
     private var dock: some View {
         let dock = AgentDock(text: $draft, placeholder: "Message \(state.name)", talkMode: state.talkMode,
                              isTalking: state.isTalking, transcript: state.transcript,
-                             canReplay: !state.notRunning, canStop: !state.notRunning,
+                             canReplay: !state.notRunning, canPlay: state.waiting != nil,
+                             canStop: !state.notRunning,
                              drawsGlass: !hostsDock,
                              onSend: send, onTalk: actions.talk, onCancel: actions.cancelTalk,
-                             onReplay: actions.replay, onStop: actions.stop)
+                             onReplay: actions.replay, onPlay: play, onStop: actions.stop)
             .modifier(Dimmed(isDimmed: isOffline))
         if hostsDock {
             dock.hidden()
@@ -141,6 +139,10 @@ struct AgentsScreen: View {
             return RelayBanner(icon: .laptop, title: "Relay Runner isn’t running", message: "Open it on your Mac.",
                                action: .init(title: "Retry", perform: actions.retry))
         }
+    }
+
+    private func play() {
+        if let waiting = state.waiting { actions.play(waiting) }
     }
 
     private func send() {

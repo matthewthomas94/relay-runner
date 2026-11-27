@@ -120,7 +120,7 @@ final class TutorialTests: XCTestCase {
     func testLitControlsPerStep() {
         XCTAssertEqual(TutorialStep.holdToTalk.litControls, [.talk])
         XCTAssertEqual(TutorialStep.releaseToSend.litControls, [.talk, .textBox])
-        XCTAssertEqual(TutorialStep.playReply.litControls, [])
+        XCTAssertEqual(TutorialStep.playReply.litControls, [.replay], "the dock's Play")
         XCTAssertEqual(TutorialStep.stopPlayback.litControls, [.stop])
         XCTAssertFalse(TutorialStep.basics.showsDock)
         XCTAssertFalse(TutorialStep.allDone.showsDock)
