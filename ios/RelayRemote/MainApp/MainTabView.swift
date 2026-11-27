@@ -143,10 +143,8 @@ struct MainTabView: View {
         .frame(width: frame.width, height: frame.height, alignment: .bottom)
         // Contents leaving a glass that is shrinking stay inside it.
         .clipShape(shape)
-        .background(shape.fill((panel?.glass ?? .panel).tint).opacity(panel == nil ? 0 : 1))
-        .background(RelayFrost(shape: shape).opacity(panel == nil ? 0 : 1))
-        .overlay(RelayGlassRim(shape: shape, light: (panel?.glass ?? .panel).rimLight).opacity(panel == nil ? 0 : 1))
-        .glassEffect(RelayGlass.material, in: shape)
+        // Tucked into the tab bar with no panel, it takes the bar's tint.
+        .glassEffect((panel?.glass ?? .bar).liquid, in: shape)
         .modifier(PanelGlassID(id: morphs ? Self.panelGlassID : nil, namespace: glassMorph))
         .position(x: frame.midX, y: frame.midY)
         // When talking starts or stops, the place the Agents screen holds

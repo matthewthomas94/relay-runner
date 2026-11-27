@@ -72,6 +72,28 @@ final class AudioSessionController {
         try update()
     }
 
+    /// Starts recording with the session switch off the main thread: moving
+    /// to `playAndRecord` and activating can block for a good part of a
+    /// second (longer with Bluetooth), and on the main thread that froze the
+    /// talk button's press until the microphone was up (user, 2026-11-27).
+    func startRecording() async throws {
+        recording = true
+        guard hold != .voice else { return }
+        stopSilence()
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try Self.applyVoice(AVAudioSession.sharedInstance())
+            }.value
+        } catch {
+            recording = false
+            updateSilence()
+            throw error
+        }
+        hold = .voice
+        isActive = true
+        updateSilence()
+    }
+
     func setPlaying(_ on: Bool) throws {
         playing = on
         try update()
@@ -103,12 +125,7 @@ final class AudioSessionController {
         do {
             switch wanted {
             case .voice:
-                try session.setCategory(.playAndRecord, mode: .default,
-                                        options: [.duckOthers, .allowBluetoothHFP, .defaultToSpeaker])
-                // iOS mutes haptics while recording unless asked, which left
-                // the tap that sends with no feedback.
-                try? session.setAllowHapticsAndSystemSoundsDuringRecording(true)
-                try session.setActive(true)
+                try Self.applyVoice(session)
             case .silent:
                 try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
                 try session.setActive(true)
@@ -122,6 +139,16 @@ final class AudioSessionController {
         hold = wanted
         isActive = wanted != nil
         updateSilence()
+    }
+
+    /// The voice configuration: record and play, as before RR-545.
+    nonisolated private static func applyVoice(_ session: AVAudioSession) throws {
+        try session.setCategory(.playAndRecord, mode: .default,
+                                options: [.duckOthers, .allowBluetoothHFP, .defaultToSpeaker])
+        // iOS mutes haptics while recording unless asked, which left
+        // the tap that sends with no feedback.
+        try? session.setAllowHapticsAndSystemSoundsDuringRecording(true)
+        try session.setActive(true)
     }
 
     private func updateSilence() {

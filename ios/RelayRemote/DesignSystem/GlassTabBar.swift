@@ -98,10 +98,7 @@ private struct BarGlass: ViewModifier {
         let shape = RoundedRectangle(cornerRadius: GlassTabBar.cornerRadius, style: .continuous)
         if let morph {
             content
-                .background(shape.fill(RelayGlass.bar.tint))
-                .background(RelayFrost(shape: shape))
-                .overlay(RelayGlassRim(shape: shape, light: RelayGlass.bar.rimLight))
-                .glassEffect(RelayGlass.material, in: shape)
+                .glassEffect(RelayGlass.bar.liquid, in: shape)
                 .glassEffectID(GlassTabBar.morphID, in: morph)
                 .glassEffectTransition(.materialize)
                 .environment(\.relayGlassFlat, true)
