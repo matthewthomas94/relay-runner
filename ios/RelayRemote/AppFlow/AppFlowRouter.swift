@@ -20,9 +20,14 @@ struct AppFlowRouter: View {
             if launch.showsGallery {
                 galleryOrApp
             } else if let stage {
-                RelaySwap(stage) { stageView($0) }
+                // Stages (splash, permissions, pairing, tutorial, app) replace
+                // each other with the desktop's page transition.
+                stageView(stage)
+                    .id(stage)
+                    .transition(.relayPage(direction: 1))
             }
         }
+        .animation(RelayMotion.pageEnter, value: stage)
         .preferredColorScheme(.dark)
         .onAppear(perform: start)
         .onChange(of: model.paired != nil) { wasPaired, isPaired in

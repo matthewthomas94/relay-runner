@@ -140,3 +140,55 @@ extension ButtonStyle where Self == RelayPressableStyle {
     /// A plain button with press feedback.
     static var relayPlain: RelayPressableStyle { RelayPressableStyle() }
 }
+
+// MARK: - Page transitions (the desktop's `relayReplacing(.surface)`)
+
+extension RelayMotion {
+    /// The desktop's exit: 160 ms on (0.4, 0, 1, 1), so the page leaves quickly.
+    static let pageExitDuration: TimeInterval = 0.16
+    static let pageExit = Animation.timingCurve(0.4, 0, 1, 1, duration: pageExitDuration)
+    /// The new page arrives only after the old one has gone, plus a 75 ms beat.
+    static let pageGap: TimeInterval = 0.075
+    /// The desktop's large entrance: a 360 ms spring with a little bounce.
+    static let pageEnter = Animation.spring(duration: 0.36, bounce: 0.2).delay(pageExitDuration + pageGap)
+    /// Pages blur to 12 pt and shrink to 96% while hidden, like desktop surfaces.
+    static let pageBlur: CGFloat = 12
+    /// How far a page drifts sideways, toward where it went in the tab order.
+    static let pageTravel: CGFloat = 14
+}
+
+/// A page's hidden state: faded, blurred, slightly smaller and shifted by
+/// `travel` points. Reduce Motion keeps only the fade.
+struct RelayPageEffect: ViewModifier {
+    let hidden: Bool
+    let travel: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        let move = hidden && !reduceMotion
+        content
+            .opacity(hidden ? 0 : 1)
+            .blur(radius: move ? RelayMotion.pageBlur : 0)
+            .scaleEffect(move ? RelayMotion.hiddenScale : 1)
+            .offset(x: move ? travel : 0)
+    }
+}
+
+extension AnyTransition {
+    /// Whole pages replacing each other, ported from the desktop: the old page
+    /// contracts, blurs and fades out fast; after a short beat the new one
+    /// springs in from the same blur. `direction` (+1 forward, -1 back, 0 none)
+    /// slides them a few points the way the user moved, so the tab bar and
+    /// the page agree about where things are.
+    static func relayPage(direction: CGFloat = 0) -> AnyTransition {
+        let travel = RelayMotion.pageTravel * direction
+        return .asymmetric(
+            insertion: .modifier(active: RelayPageEffect(hidden: true, travel: travel),
+                                 identity: RelayPageEffect(hidden: false, travel: 0))
+                .animation(RelayMotion.pageEnter),
+            removal: .modifier(active: RelayPageEffect(hidden: true, travel: -travel),
+                               identity: RelayPageEffect(hidden: false, travel: 0))
+                .animation(RelayMotion.pageExit)
+        )
+    }
+}
