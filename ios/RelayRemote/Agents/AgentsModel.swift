@@ -143,7 +143,8 @@ final class AgentsModel {
     func send(_ text: String, to agent: String? = nil) -> Bool {
         let agent = agent ?? selected
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let session else { return false }
+        // An agent starting up takes nothing until it is ready (user, 2026-11-28).
+        guard !trimmed.isEmpty, !isStarting(agent), let session else { return false }
         if isStopped(agent) { start(agent) }
         guard session.send(text: trimmed, agent: agent) else { return false }
         file(ChatMessage(role: .user, text: trimmed, date: now()), to: agent)

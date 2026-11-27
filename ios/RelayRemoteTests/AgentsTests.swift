@@ -418,6 +418,14 @@ final class AgentsTests: XCTestCase {
         XCTAssertEqual(status("isabella"), "Ready")
         XCTAssertEqual(status("sky"), "Working", "a turn in progress is not starting up")
         XCTAssertEqual(status("george"), "Not running")
+
+        // Nothing can be sent to it, by text or voice, until it is ready.
+        agents.select("puck")
+        XCTAssertTrue(AgentsScreenState(agents: agents, voice: VoiceSnapshot(), talkMode: .hold).isStarting)
+        XCTAssertFalse(agents.send("Hello?"), "a starting agent takes no message")
+        XCTAssertTrue(agents.chat("puck").isEmpty)
+        agents.select("isabella")
+        XCTAssertFalse(AgentsScreenState(agents: agents, voice: VoiceSnapshot(), talkMode: .hold).isStarting)
     }
 
     func testAReplayedReplyPlaysWithoutBeingFiledAgain() {

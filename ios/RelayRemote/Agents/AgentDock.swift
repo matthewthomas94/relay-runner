@@ -36,6 +36,10 @@ struct AgentDock: View {
     /// "Preparing message", as on the desktop, and stops it.
     var isPreparing = false
     var canStop = true
+    /// False while the agent is starting up: the text box, Send and the talk
+    /// button are disabled, so nothing is sent by text or voice until it is
+    /// ready (user, 2026-11-28).
+    var canMessage = true
     /// Controls drawn at 30%, as the tutorial dims controls it is not teaching.
     var dimmed: Set<DockControl> = []
     /// Controls that take no touches, so a dimmed control does nothing.
@@ -83,8 +87,10 @@ struct AgentDock: View {
                 .opacity(dimmed.contains(.replay) ? 0.3 : 1)
                 .allowsHitTesting(!inert.contains(.replay))
                 DockTalkButton(mode: talkMode, isTalking: isTalking, onCommand: onTalk)
-                    .opacity(dimmed.contains(.talk) ? 0.3 : 1)
-                    .allowsHitTesting(!inert.contains(.talk))
+                    .opacity(dimmed.contains(.talk) || !canMessage ? 0.3 : 1)
+                    .allowsHitTesting(!inert.contains(.talk) && canMessage)
+                    .disabled(!canMessage)
+                    .animation(RelayMotion.enter, value: canMessage)
             }
         }
         .padding(Self.padding)
@@ -155,7 +161,7 @@ struct AgentDock: View {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var canSend: Bool { hasText && !isTalking }
+    private var canSend: Bool { hasText && !isTalking && canMessage }
 
     private var textBox: some View {
         // Send sits in the bottom-right corner, 4 pt in from the edges, so on
@@ -204,8 +210,10 @@ struct AgentDock: View {
         }
         .frame(minHeight: 44)
         .modifier(FieldSurface())
-        .opacity(dimmed.contains(.textBox) ? 0.3 : 1)
-        .allowsHitTesting(!inert.contains(.textBox))
+        .opacity(dimmed.contains(.textBox) || !canMessage ? 0.3 : 1)
+        .allowsHitTesting(!inert.contains(.textBox) && canMessage)
+        .disabled(!canMessage)
+        .animation(RelayMotion.enter, value: canMessage)
         .animation(RelayMotion.move, value: showsTranscript)
     }
 
@@ -216,7 +224,7 @@ struct AgentDock: View {
     private var showsTranscript: Bool { isTalking || !transcript.isEmpty }
 
     private func sendIfPossible() {
-        guard !isTalking, hasText else { return }
+        guard canSend else { return }
         onSend()
     }
 }

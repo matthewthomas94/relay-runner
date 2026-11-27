@@ -71,6 +71,8 @@ struct AgentsScreenState: Equatable {
     /// The phone is waiting for a replay or a reply's audio: "Preparing message".
     var isPreparing: Bool
     var waiting: WaitingReply?
+    /// The selected agent is starting up: nothing can be sent to it yet.
+    var isStarting: Bool
     /// The Mac reports the selected agent stopped (screen 24).
     var notRunning: Bool
     var reachability: AgentsModel.Reachability
@@ -107,6 +109,7 @@ struct AgentsScreenState: Equatable {
         isPlaying = voice.playingSeq != nil || agents.activities.values.contains(.playing)
         isPreparing = voice.isPreparing
         waiting = mine.last.map { WaitingReply(seq: $0, skipping: Set(mine.dropLast())) }
+        isStarting = agents.isStarting(selected)
         notRunning = agents.isStopped(selected) && !voice.isTalking
         reachability = agents.reachability
         isTalking = voice.isTalking
