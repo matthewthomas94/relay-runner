@@ -73,6 +73,16 @@ final class DesignSystemTests: XCTestCase {
         XCTAssertLessThan(header.count, 90, "a coarse grid, not the full orb shrunk")
     }
 
+    func testGradualColourLeavesOnlyTheCentreWhite() {
+        func whiteDots(gradual: Bool) -> Int {
+            AgentOrbEngine.grid(rim: AgentOrbEngine.rim(.listening), motion: .of(.listening), phase: 9.2,
+                                size: AgentOrb.headerSize, step: AgentOrb.headerStep, gradualColor: gradual)
+                .filter { $0.rgb.z > 0.98 }.count
+        }
+        XCTAssertGreaterThan(whiteDots(gradual: false), 10, "the desktop rule whitens the whole core")
+        XCTAssertLessThanOrEqual(whiteDots(gradual: true), 3, "gradual colour keeps only the centre white")
+    }
+
     func testDotFieldStaysInItsCoverage() {
         let size = CGSize(width: 402, height: 874)
         for style in [DotFieldStyle.listening, .playback] {

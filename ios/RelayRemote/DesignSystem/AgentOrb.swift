@@ -25,6 +25,9 @@ struct AgentOrb: View {
     /// step across, as on the desktop (10 pt grid, 5 pt dots).
     var frameSize = Self.size
     var step = AgentOrbEngine.step
+    /// The state colour fades toward the centre across the whole orb rather
+    /// than ringing its edge (`AgentOrbEngine.grid`).
+    var gradualColor = false
 
     static let size = CGSize(width: 168, height: 112)
     /// The Agents header (Figma Final 21, 2026-11-28): fewer, bigger dots, the
@@ -39,8 +42,8 @@ struct AgentOrb: View {
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { timeline in
             Canvas { context, size in
                 let now = timeline.date.timeIntervalSinceReferenceDate
-                for dot in engine.dots(state: state, phase: phase, size: size, step: step, now: now,
-                                       reduceMotion: reduceMotion) {
+                for dot in engine.dots(state: state, phase: phase, size: size, step: step,
+                                       gradualColor: gradualColor, now: now, reduceMotion: reduceMotion) {
                     let rect = CGRect(x: dot.x - dot.radius, y: dot.y - dot.radius,
                                       width: dot.radius * 2, height: dot.radius * 2)
                     context.fill(Path(ellipseIn: rect),
@@ -114,7 +117,7 @@ final class AgentOrbEngine {
 
     /// The orb's dots at `now`, in SwiftUI's y-down coordinates.
     func dots(state: AgentOrbState, phase initialPhase: Double, size: CGSize, step: CGFloat = step,
-              now: TimeInterval, reduceMotion: Bool) -> [Dot] {
+              gradualColor: Bool = false, now: TimeInterval, reduceMotion: Bool) -> [Dot] {
         if self.state == nil {
             self.state = state
             motionFrom = Motion.of(state)
@@ -138,7 +141,7 @@ final class AgentOrbEngine {
         displayedRim = rim
 
         let (motion, phase) = self.motion(at: now, reduceMotion: reduceMotion)
-        return Self.grid(rim: rim, motion: motion, phase: phase, size: size, step: step)
+        return Self.grid(rim: rim, motion: motion, phase: phase, size: size, step: step, gradualColor: gradualColor)
     }
 
     /// The motion and phase at `now`. Speed ramps linearly over the blend, so
@@ -161,9 +164,13 @@ final class AgentOrbEngine {
                        spread: mix(motionFrom.spread, target.spread, ease)), phase)
     }
 
-    /// `buildOrbGrid`, sized for the phone.
+    /// `buildOrbGrid`, sized for the phone. The desktop whitens every dot
+    /// past 70% of the body, so on a coarse grid the colour is one ring at
+    /// the edge. `gradualColor` whitens by the raw density against the orb's
+    /// peak instead, so only the very centre is white and the colour reaches
+    /// in gradually (user, 2026-11-28).
     static func grid(rim: SIMD3<Double>, motion: Motion, phase: Double, size: CGSize,
-                     step: CGFloat = step) -> [Dot] {
+                     step: CGFloat = step, gradualColor: Bool = false) -> [Dot] {
         let spread = motion.spread
         let stretch = sin(phase * 0.72) * 0.10 * motion.stretch
         let curl = sin(phase * 0.53) * 0.055 * motion.wander
@@ -183,8 +190,8 @@ final class AgentOrbEngine {
                         max(1, Double(size.height)) / (top - bottom)) * overscale
         let cols = Int(size.width / step)
         let rows = Int(size.height / step)
-        var result: [Dot] = []
-        result.reserveCapacity(cols * rows)
+        var cells: [(x: CGFloat, y: CGFloat, density: Double)] = []
+        cells.reserveCapacity(cols * rows)
         for row in 0..<rows {
             for col in 0..<cols {
                 // Desktop maths runs y-up; draw it flipped into y-down.
@@ -198,16 +205,22 @@ final class AgentOrbEngine {
                     let dy = (ny - lobe.y) / lobe.ry
                     density += exp(-2 * (dx * dx + dy * dy))
                 }
-                let body = max(0, min(1, (density - 0.035) / 0.85))
-                guard body > 0.001 else { continue }
-                let highlight = min(1, body / 0.7)
-                let white = highlight * highlight * (3 - 2 * highlight)
-                let rgb = rim + (SIMD3<Double>(repeating: 1) - rim) * white
-                let radius = step * 0.25 * CGFloat(pow(body, 0.72))
-                let alpha = min(1, body * 5)
-                guard radius > 0.1, alpha > 0.02 else { continue }
-                result.append(Dot(x: x, y: size.height - y, radius: radius, alpha: alpha, rgb: rgb))
+                cells.append((x, y, density))
             }
+        }
+        let peak = max(0.001, cells.map(\.density).max() ?? 1)
+        var result: [Dot] = []
+        result.reserveCapacity(cells.count)
+        for (x, y, density) in cells {
+            let body = max(0, min(1, (density - 0.035) / 0.85))
+            guard body > 0.001 else { continue }
+            let highlight = gradualColor ? density / peak : min(1, body / 0.7)
+            let white = highlight * highlight * (3 - 2 * highlight)
+            let rgb = rim + (SIMD3<Double>(repeating: 1) - rim) * white
+            let radius = step * 0.25 * CGFloat(pow(body, 0.72))
+            let alpha = min(1, body * 5)
+            guard radius > 0.1, alpha > 0.02 else { continue }
+            result.append(Dot(x: x, y: size.height - y, radius: radius, alpha: alpha, rgb: rgb))
         }
         return result
     }

@@ -25,7 +25,10 @@ struct AgentsScreen: View {
     let state: AgentsScreenState
     var actions = AgentsScreenActions()
     @State private var draft: String
+    /// The agent whose chat is showing, to tell which way a switch goes.
+    @State private var shownAgent: String
     @Environment(\.hostsPanels) private var hostsPanels
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// How far the dock sits above the tab bar (Figma Final 21).
     static let dockBottomGap: CGFloat = 12
@@ -35,27 +38,36 @@ struct AgentsScreen: View {
         self.state = state
         self.actions = actions
         _draft = State(initialValue: draft)
+        _shownAgent = State(initialValue: state.selected)
+    }
+
+    /// +1 when the new agent's tab is right of the old one's, -1 left.
+    private var switchDirection: CGFloat {
+        let order = state.tabs.map(\.slug)
+        guard let new = order.firstIndex(of: state.selected), let old = order.firstIndex(of: shownAgent),
+              new != old else { return 0 }
+        return new > old ? 1 : -1
     }
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Group {
-                // Switching agents swaps the chats quickly, and never with
-                // both on screen (RR-553): the old one is gone in 100 ms,
-                // then the new one fades in.
+                // Switching agents swaps the chats, never with both on
+                // screen: the old one blurs and fades in 120 ms, then the new
+                // one slides in from the side of the tab that was picked,
+                // sharpening as it settles (user, 2026-11-28).
                 if state.notRunning {
                     notRunning
                         .id(state.selected)
-                        .transition(.relayControlSwap)
+                        .transition(Self.chatSwap(direction: reduceMotion ? 0 : switchDirection))
                 } else {
                     AgentChatFeed(name: state.name, messages: state.feed, speakingSeq: state.speakingSeq)
                     .id(state.selected)
-                    .transition(.asymmetric(
-                        insertion: .opacity.animation(.easeOut(duration: 0.18).delay(RelayMotion.controlExitDuration)),
-                        removal: .opacity.animation(RelayMotion.controlExit)))
+                    .transition(Self.chatSwap(direction: reduceMotion ? 0 : switchDirection))
                 }
             }
+            .onChange(of: state.selected) { _, new in shownAgent = new }
             .animation(RelayMotion.enter, value: state.notRunning)
             .animation(RelayMotion.enter, value: state.selected)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -78,6 +90,29 @@ struct AgentsScreen: View {
 
     private var isOffline: Bool { state.reachability != .reachable }
 
+    /// The old chat leaves where it is; the new one arrives from `direction`.
+    static func chatSwap(direction: CGFloat) -> AnyTransition {
+        .asymmetric(
+            insertion: .modifier(active: ChatSwapEffect(hidden: true, travel: 24 * direction),
+                                 identity: ChatSwapEffect(hidden: false, travel: 0))
+                .animation(.spring(duration: 0.34, bounce: 0.08).delay(0.12 + RelayMotion.tabGap)),
+            removal: .modifier(active: ChatSwapEffect(hidden: true, travel: 0),
+                               identity: ChatSwapEffect(hidden: false, travel: 0))
+                .animation(.timingCurve(0.4, 0, 1, 1, duration: 0.12)))
+    }
+
+    private struct ChatSwapEffect: ViewModifier {
+        let hidden: Bool
+        let travel: CGFloat
+
+        func body(content: Content) -> some View {
+            content
+                .opacity(hidden ? 0 : 1)
+                .blur(radius: hidden ? 6 : 0)
+                .offset(x: travel)
+        }
+    }
+
     /// Under `MainTabView` the dock is drawn by the tab view, in the tab bar's
     /// glass container (`HostedPanel`); here a hidden copy holds its place.
     /// Offline, the whole panel's contents dim once, the agent tabs with them.
@@ -97,7 +132,7 @@ struct AgentsScreen: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            AgentOrb(state: state.orb, frameSize: AgentOrb.headerSize, step: AgentOrb.headerStep)
+            AgentOrb(state: state.orb, frameSize: AgentOrb.headerSize, step: AgentOrb.headerStep, gradualColor: true)
             // The name and status swap with the chat, the old ones gone first.
             ZStack(alignment: .leading) {
                 VStack(alignment: .leading, spacing: 0) {
