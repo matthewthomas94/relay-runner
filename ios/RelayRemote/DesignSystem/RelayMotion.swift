@@ -260,45 +260,41 @@ extension AnyTransition {
     /// 200 ms on the strong ease-out while drifting 8 pt from the side it came
     /// from, so the switch is over in 300 ms. No blur, no gap. Reduce Motion
     /// keeps only the fades.
-    static func relayTab(direction: CGFloat) -> AnyTransition {
+    /// A tab's page replacing another, as the Mac replaces whole pages
+    /// (`relayReplacing(.surface)`, user 2026-11-28): the old page contracts
+    /// to 96%, blurs to 12 pt and fades out in 160 ms, accelerating away;
+    /// after a 75 ms beat the new one expands from 96% and sharpens in on a
+    /// 0.2 s spring with a little bounce. They never share the screen.
+    /// Reduce Motion keeps the crossfade.
+    static var relayTab: AnyTransition {
         .asymmetric(
-            insertion: .modifier(active: RelayTabEffect(hidden: true, travel: 8 * direction),
-                                 identity: RelayTabEffect(hidden: false, travel: 0))
-                .animation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.2).delay(RelayMotion.tabExitDuration)),
-            removal: .opacity.animation(.timingCurve(0.4, 0, 1, 1, duration: RelayMotion.tabExitDuration))
+            insertion: .modifier(active: RelayTabEffect(hidden: true), identity: RelayTabEffect(hidden: false))
+                .animation(.spring(duration: 0.2, bounce: 0.2).delay(RelayMotion.tabExitDuration + RelayMotion.tabGap)),
+            removal: .modifier(active: RelayTabEffect(hidden: true), identity: RelayTabEffect(hidden: false))
+                .animation(.timingCurve(0.4, 0, 1, 1, duration: RelayMotion.tabExitDuration))
         )
     }
 }
 
 extension RelayMotion {
-    /// How long the old page takes to leave on a tab switch.
-    static let tabExitDuration: TimeInterval = 0.1
+    /// How long the old page takes to leave on a tab switch, as the Mac's exits.
+    static let tabExitDuration: TimeInterval = 0.16
+    /// The beat between the old page leaving and the new one arriving.
+    static let tabGap: TimeInterval = 0.075
 }
 
-/// A tab page's hidden state: faded and shifted by `travel`; Reduce Motion
-/// keeps only the fade.
+/// A tab page's hidden state: contracted, blurred and faded, as the Mac's
+/// surfaces; Reduce Motion keeps only the fade.
 struct RelayTabEffect: ViewModifier {
     let hidden: Bool
-    let travel: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
+        let moves = hidden && !reduceMotion
         content
             .opacity(hidden ? 0 : 1)
-            .offset(x: hidden && !reduceMotion ? travel : 0)
-    }
-}
-
-extension AnyTransition {
-    /// One state of a view handing over to the next (loading to loaded):
-    /// the old state fades out in 100 ms, then the new one fades in from a
-    /// 4 pt blur and 6 pt down on the strong ease-out. They never overlap.
-    static var relayHandOver: AnyTransition {
-        .asymmetric(
-            insertion: .modifier(active: RelayArrivingModifier(hidden: true),
-                                 identity: RelayArrivingModifier(hidden: false))
-                .animation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.32).delay(0.1)),
-            removal: .opacity.animation(.easeOut(duration: 0.1)))
+            .blur(radius: moves ? 12 : 0)
+            .scaleEffect(moves ? RelayMotion.hiddenScale : 1)
     }
 }
 
@@ -307,21 +303,5 @@ struct RelayArrivingModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content.opacity(hidden ? 0 : 1).blur(radius: hidden ? 4 : 0).offset(y: hidden ? 6 : 0)
-    }
-}
-
-/// A spinner that only fades in if the wait outlasts a moment, so a quick
-/// answer never flashes it (user, 2026-11-28).
-struct RelayDelayedSpinner: View {
-    @State private var shown = false
-
-    var body: some View {
-        ProgressView()
-            .tint(RelayColor.neutral7)
-            .opacity(shown ? 1 : 0)
-            .task {
-                try? await Task.sleep(for: .milliseconds(350))
-                withAnimation(.easeOut(duration: 0.2)) { shown = true }
-            }
     }
 }

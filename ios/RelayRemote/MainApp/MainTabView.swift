@@ -8,8 +8,6 @@ struct MainTabView: View {
     @State private var selection: MainTab
     /// The tab bar steps aside while the keyboard is up (user, 2026-11-27).
     @State private var keyboardShown = false
-    /// +1 when the new tab is to the right of the old one, -1 to the left.
-    @State private var direction: CGFloat = 0
     /// The tabs' panels and the tab bar share one glass container (RR-552, RR-553).
     @Namespace private var glassMorph
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -37,7 +35,7 @@ struct MainTabView: View {
 
     var body: some View {
         ZStack {
-            // Tabs crossfade with a hint of scale instead of cutting.
+            // Tabs swap as the Mac swaps pages: the old one leaves, then the new one arrives.
             Group {
                 switch selection {
                 case .agents: AgentsTabView(model: model)
@@ -46,7 +44,7 @@ struct MainTabView: View {
                 }
             }
             .id(selection)
-            .transition(.relayTab(direction: direction))
+            .transition(.relayTab)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Content scrolling up passes under black behind the status bar,
@@ -219,15 +217,8 @@ struct MainTabView: View {
     }
     #endif
 
-    /// Sets the slide direction from the tab order before the selection
-    /// changes, so the pages move the same way as the tab bar's pill.
+    /// The selected tab, for the tab bar and the requests that switch tabs.
     private var tabSelection: Binding<MainTab> {
-        Binding(get: { selection }, set: { new in
-            let all = MainTab.allCases
-            let from = all.firstIndex(of: selection) ?? 0
-            let to = all.firstIndex(of: new) ?? 0
-            direction = to == from ? 0 : (to > from ? 1 : -1)
-            selection = new
-        })
+        Binding(get: { selection }, set: { selection = $0 })
     }
 }

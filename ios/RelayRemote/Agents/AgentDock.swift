@@ -101,7 +101,8 @@ struct AgentDock: View {
     private var replayLabel: some View {
         switch replayFace {
         case .cancel: Self.fitting("Cancel message", icon: .x)
-        case .preparing: Self.fitting("Preparing message", icon: .square)
+        // No stop square here: only Stop message carries it (user, 2026-11-28).
+        case .preparing: Self.fitting("Preparing message", icon: nil)
         case .stop: Self.fitting("Stop message", icon: .square)
         case .play:
             // As much of "Play new message" as fits half the row.
@@ -117,7 +118,7 @@ struct AgentDock: View {
 
     /// The full label (user, 2026-11-27), its text shrinking a little where
     /// half the row is narrow.
-    private static func fitting(_ title: String, icon: LucideIcon) -> some View {
+    private static func fitting(_ title: String, icon: LucideIcon?) -> some View {
         RelayButtonLabel(title, icon: icon)
             .lineLimit(1)
             .minimumScaleFactor(0.8)

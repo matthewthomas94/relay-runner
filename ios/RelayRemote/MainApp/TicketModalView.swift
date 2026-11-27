@@ -110,11 +110,10 @@ private struct TicketHeader: View {
     }
 }
 
-/// The scrolling part: loading, the rendered text, or one line and Retry.
-/// One state hands over to the next without overlapping: the old one fades
-/// out quickly, then the new one fades in from a light blur and a few points
-/// down while the panel eases to its height (user, 2026-11-28: the spinner
-/// flashed and the panel jumped).
+/// The scrolling part: a skeleton of the text while it loads, the rendered
+/// text, or one line and Retry. The skeleton's dots scatter out, then the
+/// text fades in from a light blur (user, 2026-11-28: the spinner flashed
+/// and the panel jumped).
 private struct TicketBody: View {
     let state: WorkspaceTicketReading.Body
     let dimmed: Bool
@@ -133,9 +132,13 @@ private struct TicketBody: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            content
-                .id(kind)
-                .transition(reduceMotion ? .opacity : .relayHandOver)
+            if kind == 0 {
+                TicketSkeleton().transition(.relaySkeleton)
+            } else {
+                content
+                    .id(kind)
+                    .transition(reduceMotion ? .opacity : .relayAfterSkeleton)
+            }
         }
         .animation(RelayMotion.enter, value: kind)
         .padding(.top, 4)
@@ -147,7 +150,7 @@ private struct TicketBody: View {
         VStack(alignment: .leading, spacing: 12) {
             switch state {
             case .loading:
-                TicketLoading()
+                EmptyView()
             case .text(let markdown, let truncated):
                 MarkdownView(blocks: MarkdownBlocks.parse(markdown))
                 if truncated {
@@ -166,10 +169,26 @@ private struct TicketBody: View {
     }
 }
 
-/// Room for the text while the Mac answers, with a spinner only if it is slow.
-private struct TicketLoading: View {
+/// The ticket text's skeleton: a heading and a paragraph, then a heading
+/// and a short list, the shape most tickets take.
+private struct TicketSkeleton: View {
     var body: some View {
-        RelayDelayedSpinner().frame(maxWidth: .infinity, minHeight: 96)
+        SkeletonField(label: "Loading the ticket") {
+            VStack(alignment: .leading, spacing: 12) {
+                SkeletonLine(width: 110, height: 14).padding(.top, 8)
+                SkeletonLine(fraction: 1)
+                SkeletonLine(fraction: 0.94)
+                SkeletonLine(fraction: 0.62)
+                SkeletonLine(width: 150, height: 14).padding(.top, 16)
+                ForEach([0.72, 0.56, 0.66], id: \.self) { share in
+                    HStack(spacing: 10) {
+                        SkeletonLine(width: 10)
+                        SkeletonLine(fraction: share)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
 

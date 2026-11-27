@@ -23,24 +23,20 @@ enum RelayModalMetrics {
     static let open = Animation.timingCurve(0.23, 1, 0.32, 1, duration: 0.34)
     /// Closing is quicker than opening: the user is done with it.
     static let close = Animation.timingCurve(0.23, 1, 0.32, 1, duration: 0.2)
-    /// The panel growing or shrinking to new content (the ticket's text
-    /// arriving): iOS's drawer curve, so the height eases out instead of
-    /// jumping (user, 2026-11-28).
-    static let resize = Animation.timingCurve(0.32, 0.72, 0, 1, duration: 0.42)
 }
 
 /// The app's modal: one glass panel over a black scrim that covers the whole
 /// app except the status bar, including the tab bar.
 ///
-/// The panel hugs a short body and is centred; a long body fills the space
-/// and scrolls under the fixed header, fading at its top and bottom edges.
+/// The panel always fills the space (user, 2026-11-28: a panel that resized
+/// to its content jumped as the text arrived); the body scrolls under the
+/// fixed header, fading at its top and bottom edges.
 /// The 44 pt close button is pinned at the panel's top right. It closes from
 /// the button, a tap on the scrim, a drag down (past a third of the panel's
 /// height, or a fast flick, while the body is at its top) and VoiceOver's
 /// escape gesture. Opening, the panel fades in from a light blur and 96%
 /// (`RelayModalMetrics.open`) and the scrim fades; closing is the same,
-/// quicker. When the body's height changes the panel eases to its new size.
-/// With Reduce Motion, fades only and the size changes at once. It is a modal for VoiceOver, and focus moves to the header.
+/// quicker. With Reduce Motion, fades only. It is a modal for VoiceOver, and focus moves to the header.
 ///
 /// Apply `.accessibilityHidden` and `.disabled` to what sits behind it.
 struct RelayModal<Header: View, Content: View>: View {
@@ -54,7 +50,6 @@ struct RelayModal<Header: View, Content: View>: View {
     @State private var drag: CGFloat = 0
     @State private var dragArmed = false
     @State private var panelHeight: CGFloat = 1
-    @State private var contentHeight: CGFloat?
     @State private var fade = EdgeFade.none
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AccessibilityFocusState private var headerFocused: Bool
@@ -86,7 +81,6 @@ struct RelayModal<Header: View, Content: View>: View {
             withTransaction(transaction) {
                 drag = 0
                 dragArmed = false
-                contentHeight = nil
                 fade = .none
             }
         }
@@ -140,21 +134,11 @@ struct RelayModal<Header: View, Content: View>: View {
         ScrollView {
             content
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                    // The first size is the panel's size as it opens; later
-                    // ones (the text arriving) ease the panel to fit.
-                    if contentHeight == nil || reduceMotion {
-                        contentHeight = height
-                    } else if abs((contentHeight ?? 0) - height) > 0.5 {
-                        withAnimation(RelayModalMetrics.resize) { contentHeight = height }
-                    }
-                }
         }
         .scrollIndicators(.hidden)
         .scrollDisabled(dragArmed)
         .modifier(OptionalRefresh(refresh: refresh))
-        // A short body hugs its content; a long one is held to the room left.
-        .frame(maxHeight: contentHeight ?? .infinity)
+        .frame(maxHeight: .infinity)
         .onScrollGeometryChange(for: EdgeFade.self) { geometry in
             let overflow = geometry.contentSize.height - geometry.containerSize.height
             guard overflow > 1 else { return .none }

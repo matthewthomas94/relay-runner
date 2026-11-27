@@ -170,11 +170,25 @@ private struct SettingsContent: View {
     private var speechSpeed: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Speech speed").relayTextStyle(.body).foregroundStyle(RelayColor.neutral10)
-            SpeedSlider(value: Binding(get: { settings.speechSpeed }, set: { settings.dragSpeed(to: $0) }),
-                        range: SettingsViewModel.speedRange,
-                        onCommit: { settings.commitSpeed($0) })
-            .disabled(!settings.isEnabled)
-            .opacity(settings.isEnabled ? 1 : 0.4)
+            // While the Mac's settings load, a skeleton of the slider (user, 2026-11-28).
+            ZStack {
+                if settings.phase == .loading {
+                    SkeletonField(label: "Loading speech speed") {
+                        Color.clear.frame(maxWidth: .infinity).frame(height: RelayMetrics.controlHeight)
+                            .skeletonOutline(radius: 12)
+                            .overlay(alignment: .leading) { SkeletonLine(width: 90, height: 10).padding(.leading, 14) }
+                    }
+                    .transition(.relaySkeleton)
+                } else {
+                    SpeedSlider(value: Binding(get: { settings.speechSpeed }, set: { settings.dragSpeed(to: $0) }),
+                                range: SettingsViewModel.speedRange,
+                                onCommit: { settings.commitSpeed($0) })
+                    .disabled(!settings.isEnabled)
+                    .opacity(settings.isEnabled ? 1 : 0.4)
+                    .transition(.relayAfterSkeleton)
+                }
+            }
+            .animation(RelayMotion.enter, value: settings.phase == .loading)
             if let line = macBackedLine {
                 Text(line).relayTextStyle(.caption).foregroundStyle(RelayColor.neutral7)
             }
@@ -220,17 +234,20 @@ private struct SettingsContent: View {
             SettingsRow {
                 ChoiceRow(title: "Model", options: settings.modelOptions, value: settings.model,
                           label: settings.label(for: settings.model, in: settings.modelOptions),
-                          isEnabled: settings.isEnabled, choose: settings.choose(model:))
+                          isEnabled: settings.isEnabled, loading: settings.phase == .loading,
+                          choose: settings.choose(model:))
             }
             SettingsRow {
                 ChoiceRow(title: "Effort", options: settings.effortOptions, value: settings.effort,
                           label: settings.label(for: settings.effort, in: settings.effortOptions),
-                          isEnabled: settings.isEnabled, choose: settings.choose(effort:))
+                          isEnabled: settings.isEnabled, loading: settings.phase == .loading,
+                          choose: settings.choose(effort:))
             }
             SettingsRow(isLast: true) {
                 ChoiceRow(title: "Sub-agent sizing", options: settings.sizingOptions, value: settings.sizing,
                           label: settings.label(for: settings.sizing, in: settings.sizingOptions),
-                          isEnabled: settings.isEnabled, choose: settings.choose(sizing:))
+                          isEnabled: settings.isEnabled, loading: settings.phase == .loading,
+                          choose: settings.choose(sizing:))
             }
         }
     }
@@ -466,6 +483,8 @@ private struct ChoiceRow: View {
     let value: String?
     let label: String
     let isEnabled: Bool
+    /// While the Mac's settings load, a skeleton of the menu.
+    var loading = false
     let choose: (String) -> Void
 
     var body: some View {
@@ -473,6 +492,23 @@ private struct ChoiceRow: View {
             Text(title).relayTextStyle(.body).foregroundStyle(RelayColor.neutral10)
                 .lineLimit(1).minimumScaleFactor(0.8).layoutPriority(-1)
             Spacer(minLength: 8)
+            ZStack(alignment: .trailing) {
+                if loading {
+                    SkeletonField(label: "Loading \(title)") {
+                        Color.clear.frame(width: 120, height: RelayMetrics.controlHeight)
+                            .skeletonOutline(radius: 12)
+                            .overlay(alignment: .leading) { SkeletonLine(width: 64, height: 10).padding(.leading, 12) }
+                    }
+                    .transition(.relaySkeleton)
+                } else {
+                    menu.transition(.relayAfterSkeleton)
+                }
+            }
+            .animation(RelayMotion.enter, value: loading)
+        }
+    }
+
+    private var menu: some View {
             Menu {
                 ForEach(options, id: \.value) { option in
                     Button {
@@ -497,7 +533,6 @@ private struct ChoiceRow: View {
             }
             .disabled(!isEnabled || options.isEmpty)
             .opacity(isEnabled ? 1 : 0.4)
-        }
     }
 }
 

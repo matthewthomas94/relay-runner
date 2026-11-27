@@ -80,13 +80,16 @@ struct WorkspaceTabView: View {
         // The list runs on under the project tabs, which float in their own
         // glass container 12 pt above the tab bar (Figma Final 26).
         ZStack(alignment: .bottom) {
-            // Loading hands over to the list (or a message) without a cut:
-            // the spinner only shows if the Mac is slow, then the list fades
-            // in from a light blur (user, 2026-11-28).
+            // A skeleton of the list while it loads; its dots scatter out,
+            // then the list fades in from a light blur (user, 2026-11-28).
             ZStack {
-                content(phase, feed: feed)
-                    .id(phase.kind)
-                    .transition(reduceMotion ? .opacity : .relayHandOver)
+                if phase.kind == 0 {
+                    content(phase, feed: feed).transition(.relaySkeleton)
+                } else {
+                    content(phase, feed: feed)
+                        .id(phase.kind)
+                        .transition(reduceMotion ? .opacity : .relayAfterSkeleton)
+                }
             }
             .animation(RelayMotion.enter, value: phase.kind)
             if case .list(let listing) = phase {
@@ -116,7 +119,7 @@ struct WorkspaceTabView: View {
             if feed.isUnreachable {
                 Spacer()
             } else {
-                RelayDelayedSpinner().frame(maxWidth: .infinity, maxHeight: .infinity)
+                WorkspaceSkeleton()
             }
         case .error(let message):
             VStack(spacing: 12) {
@@ -336,6 +339,7 @@ extension WorkspaceFeed {
         case "error":
             return WorkspaceFeed(sample: WorkspaceState(projects: [], tickets: [],
                                                          error: "The Workspace is not available from the phone on this Mac yet."))
+        case "loading": return WorkspaceFeed(sample: nil)
         case "unreachable": return WorkspaceFeed(sample: WorkspaceState(projects: projects, tickets: tickets), isUnreachable: true)
         case "truncated": return WorkspaceFeed(sample: WorkspaceState(projects: projects, tickets: tickets, truncated: true))
         default: return WorkspaceFeed(sample: WorkspaceState(projects: projects, tickets: tickets))
@@ -343,5 +347,39 @@ extension WorkspaceFeed {
         #else
         return nil
         #endif
+    }
+}
+
+/// The list's skeleton: lane headings and ticket cards, each card an outline
+/// with its id, title and owner lines, laid out like the list.
+private struct WorkspaceSkeleton: View {
+    private static let lanes: [(heading: CGFloat, cards: Int)] = [(96, 2), (72, 1), (84, 2)]
+
+    var body: some View {
+        SkeletonField(label: "Loading tickets") {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(Self.lanes.enumerated()), id: \.offset) { _, lane in
+                    SkeletonLine(width: lane.heading, height: 14)
+                    VStack(spacing: 8) {
+                        ForEach(0..<lane.cards, id: \.self) { card in
+                            VStack(alignment: .leading, spacing: 10) {
+                                SkeletonLine(width: 110, height: 8)
+                                SkeletonLine(fraction: card == 0 ? 0.78 : 0.6, height: 12)
+                                SkeletonLine(width: 56, height: 8)
+                            }
+                            .padding(16)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .skeletonOutline(radius: 20)
+                        }
+                    }
+                    .padding(.top, 12)
+                    .padding(.bottom, 28)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, RelayMetrics.screenMargin)
+            .padding(.top, 72)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
     }
 }
