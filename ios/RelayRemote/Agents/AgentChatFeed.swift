@@ -34,8 +34,13 @@ struct AgentChatFeed: View {
                     WaitingReplyPanel(name: name, receivedAt: waiting.receivedAt, onPlay: onPlay,
                                       glassID: Self.morphID(waiting.seq), namespace: replyMorph)
                         .id("waiting")
-                        .transition(.asymmetric(insertion: .relaySurface,
-                                                removal: .opacity.animation(.easeOut(duration: 0.12))))
+                        // It rises in from the bottom of the chat, and on
+                        // Play its glass becomes the reply's bubble.
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .offset(y: 24))
+                                .combined(with: .scale(scale: 0.98, anchor: .bottom))
+                                .animation(RelayMotion.move),
+                            removal: .opacity.animation(.easeOut(duration: 0.12))))
                 }
             }
             .padding(.horizontal, RelayMetrics.screenMargin)
@@ -93,7 +98,8 @@ struct AgentChatFeed: View {
                     .background {
                         RelayGlassBackground(shape: RoundedRectangle(cornerRadius: RelayMetrics.panelRadius,
                                                                      style: .continuous))
-                            .modifier(ReplyMorph(id: message.seq.map(Self.morphID), namespace: replyMorph))
+                            .modifier(ReplyMorph(id: isMorphing(message) ? message.seq.map(Self.morphID) : nil,
+                                                 restingID: message.id.uuidString, namespace: replyMorph))
                     }
                 meta(message.seq != nil && message.seq == speakingSeq
                      ? "\(name) · speaking" : "\(name) · \(Self.time(message.date))")
@@ -120,9 +126,11 @@ struct AgentChatFeed: View {
 
     static func morphID(_ seq: Int) -> String { "reply-\(seq)" }
 
-    /// The reply that was just "New reply", arriving out of its panel.
+    /// The reply that was just "New reply", arriving out of its panel as the
+    /// panel goes. A newer reply taking over the panel leaves the older one to
+    /// rise in as a plain bubble.
     private func isMorphing(_ message: ChatMessage) -> Bool {
-        guard let seq = message.seq, message.role == .agent else { return false }
+        guard waiting == nil, let seq = message.seq, message.role == .agent else { return false }
         return seq == lastWaitingSeq && !arrived.contains(seq)
     }
 
@@ -167,7 +175,7 @@ struct WaitingReplyPanel: View {
         .background {
             RelayGlassBackground(shape: RoundedRectangle(cornerRadius: RelayMetrics.panelRadius,
                                                          style: .continuous))
-                .modifier(ReplyMorph(id: glassID, namespace: namespace))
+                .modifier(ReplyMorph(id: glassID, restingID: "waiting", namespace: namespace))
         }
     }
 
@@ -183,11 +191,14 @@ struct WaitingReplyPanel: View {
 /// into the other; replies without a seq are left alone.
 private struct ReplyMorph: ViewModifier {
     let id: String?
+    /// An id no other view shares, used while not morphing, so the glass keeps
+    /// one identity instead of being rebuilt when the morph ends.
+    let restingID: String
     let namespace: Namespace.ID?
 
     func body(content: Content) -> some View {
-        if let id, let namespace {
-            content.matchedGeometryEffect(id: id, in: namespace)
+        if let namespace {
+            content.matchedGeometryEffect(id: id ?? restingID, in: namespace)
         } else {
             content
         }

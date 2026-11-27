@@ -280,7 +280,8 @@ final class AgentsTests: XCTestCase {
         let waiting = AgentsScreenState(agents: agents, voice: VoiceSnapshot(waitingSeqs: [5, 6, 7]), talkMode: .hold)
         XCTAssertEqual(waiting.waiting?.seq, 7)
         XCTAssertEqual(waiting.waiting?.skipping, [6])
-        XCTAssertEqual(waiting.feed, [], "a waiting reply shows as the New reply panel")
+        XCTAssertEqual(waiting.feed.map(\.text), ["George one"],
+                       "only the newest waiting reply shows as the New reply panel")
         XCTAssertEqual(waiting.orb, .idle)
 
         let playingPuck = AgentsScreenState(agents: agents, voice: VoiceSnapshot(playingSeq: 5), talkMode: .hold)

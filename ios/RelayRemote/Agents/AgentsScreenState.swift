@@ -81,8 +81,11 @@ struct AgentsScreenState: Equatable {
         orb = talking != nil ? .listening : playing == selected ? .playing : .idle
         let chat = agents.chat(selected)
         let mine = voice.waitingSeqs.filter { agents.agent(ofSeq: $0) == selected }
-        // A reply waiting for Play shows as "New reply from <agent>" until it plays.
-        feed = chat.filter { message in message.seq.map { !mine.contains($0) } ?? true }
+        // The newest reply waiting for Play shows as "New reply from <agent>"
+        // until it plays. Older ones (such as the messenger's quick
+        // acknowledgement before the full reply) show as bubbles: Play skips
+        // them anyway, and revealing them only on Play made the chat jump.
+        feed = chat.filter { message in message.seq.map { $0 != mine.last } ?? true }
         speakingSeq = playing == selected ? voice.playingSeq : nil
         if let last = mine.last {
             let date = chat.last(where: { $0.seq == last })?.date ?? agents.now()
