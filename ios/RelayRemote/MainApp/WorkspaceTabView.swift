@@ -317,6 +317,7 @@ struct ProjectTabStrip: View {
         }
         // The tabs scroll to the container's edges, under its padding.
         .contentMargins(.horizontal, Self.padding, for: .scrollContent)
+        .horizontalEdgeFade()
         .padding(.vertical, Self.padding)
         .frame(maxWidth: .infinity)
         .clipShape(shape)
