@@ -78,6 +78,8 @@ swift test
 
 Create `ios/Config/Signing.local.xcconfig` (gitignored) containing `DEVELOPMENT_TEAM = <team id>`, then run the `RelayRemote` scheme on a connected iPhone.
 
+Install only optimised Release builds on a phone (`-configuration Release`, or Product › Build For › Profiling in Xcode). A Debug build is unoptimised and feels slow to the touch; the Debug-only launch arguments are for the simulator.
+
 Physical-device checks, with Remote Login on for the current user and Relay Runner running. Each is something the simulator cannot confirm:
 
 1. Pair: Relay Runner Settings, Relay Remote, Pair a device; scan the code with the in-app camera (not the paste fallback); compare the fingerprint; Allow.
