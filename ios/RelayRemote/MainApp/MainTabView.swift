@@ -15,6 +15,10 @@ struct MainTabView: View {
     @Namespace private var glassMorph
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// The glass ID in `glassMorph` of the panel above the tab bar (the
+    /// Agents dock or the Workspace project tabs): one glass, which goes into
+    /// the tab bar and comes back out of it between tabs.
+    private static let panelGlassID = "panel"
     /// Under the 12 pt gap between a panel and the tab bar, so the two stay
     /// apart at rest and flow together as the panel nears the bar.
     private static let morphSpacing: CGFloat = 8
@@ -58,11 +62,7 @@ struct MainTabView: View {
         // state glow, then the tappable glass (user, 2026-11-27).
         .overlay { AppGlowLayer(model: model) }
         .overlayPreferenceValue(HostedPanelKey.self) { panels in
-            // The liquid leaves the old page's panel the moment another tab
-            // is chosen, rather than riding along as the page slides away.
-            glassLayer(reduceMotion ? panels[selection] : panelTab.flatMap { panels[$0] }.flatMap {
-                $0.tab == selection ? $0 : nil
-            })
+            glassLayer(reduceMotion ? panels[selection] : panelTab.flatMap { panels[$0] })
         }
         .task(id: selection) { await movePanel(to: selection) }
         .animation(RelayMotion.enter, value: keyboardShown)
@@ -117,12 +117,14 @@ struct MainTabView: View {
     private static let panelTabs: Set<MainTab> = [.agents, .workspace]
 
     /// The tabs' panels and the tab bar in one `GlassEffectContainer`
-    /// (RR-552, RR-553). The panel above the tab bar is one liquid glass that
-    /// never leaves (`GooeyPanelGlass`); the tab bar stays put and only that
-    /// glass changes shape: it reshapes between the dock and the project tabs,
-    /// or pours into the tab bar, where the container merges it into the
-    /// bar's glass, and back out of it (`movePanel`). With Reduce Motion the
-    /// panels crossfade instead.
+    /// (RR-552, RR-553). The panel above the tab bar is one glass that never
+    /// leaves; the tab bar stays put and only that glass changes shape: it
+    /// reshapes between the dock and the project tabs, or sinks into the tab
+    /// bar, where the container merges it into the bar's glass, and rises
+    /// back out of it (`movePanel`).
+    /// The panel's contents fade out quickly and the new contents fade in once
+    /// the glass has nearly arrived, so only the glass morphs. With Reduce
+    /// Motion the panels crossfade instead.
     private func glassLayer(_ panel: HostedPanel?) -> some View {
         GeometryReader { proxy in
             let bar = CGRect(x: RelayMetrics.barMargin,
@@ -134,13 +136,12 @@ struct MainTabView: View {
                 ZStack(alignment: .bottom) {
                     if reduceMotion {
                         if let panel, let frame {
-                            panelGlass(panel, frame: frame)
+                            panelGlass(panel, frame: frame, morphs: false)
                                 .id(panel.tab)
                                 .transition(.opacity)
                         }
                     } else if panel != nil || !keyboardShown {
-                        GooeyPanelGlass(panel: panel, target: frame ?? Self.tucked(selection, in: bar), bar: bar,
-                                        radius: Self.panelRadius)
+                        panelGlass(panel, frame: frame ?? Self.tucked(in: bar), morphs: true)
                     }
                     if !keyboardShown {
                         GlassTabBar.MorphGlass(morph: glassMorph)
@@ -164,8 +165,9 @@ struct MainTabView: View {
         .ignoresSafeArea()
     }
 
-    /// With Reduce Motion: the panel's glass at `frame`, crossfading between tabs.
-    private func panelGlass(_ panel: HostedPanel?, frame: CGRect) -> some View {
+    /// The panel's glass at `frame`, with the panel in it when there is one.
+    /// With no panel its fill fades, so inside the tab bar only the bar's shows.
+    private func panelGlass(_ panel: HostedPanel?, frame: CGRect, morphs: Bool) -> some View {
         let shape = RoundedRectangle(cornerRadius: Self.panelRadius, style: .continuous)
         return ZStack {
             if let panel {
@@ -184,6 +186,7 @@ struct MainTabView: View {
         // Sinking into the tab bar with no panel, it is untinted: the bar's
         // tint over its own read as a dark band as the two merged.
         .glassEffect(panel?.glass.liquid ?? RelayGlass.material, in: shape)
+        .modifier(PanelGlassID(id: morphs ? Self.panelGlassID : nil, namespace: glassMorph))
         .position(x: frame.midX, y: frame.midY)
         // When the text box grows or shrinks (talking, the transcript, a
         // draft, a message sent), the place the Agents screen holds jumps to
@@ -191,6 +194,20 @@ struct MainTabView: View {
         // instead. Only then: between tabs the glass follows the page as it
         // moves, and chasing it with an animation made it lurch.
         .animation(RelayMotion.move, value: panel?.textKey ?? "")
+    }
+
+    /// The morphing panel's glass ID, or none while Reduce Motion crossfades.
+    private struct PanelGlassID: ViewModifier {
+        let id: String?
+        let namespace: Namespace.ID
+
+        func body(content: Content) -> some View {
+            if let id {
+                content.glassEffectID(id, in: namespace)
+            } else {
+                content
+            }
+        }
     }
 
     /// Black behind the status bar, fading out over `fade` points below it.
@@ -214,11 +231,9 @@ struct MainTabView: View {
         }
     }
 
-    /// Where the panel's glass waits with no panel showing: a droplet in the
-    /// selected tab's pill, so the panel pours into the tab that was tapped
-    /// and, going back, pours out of it (user, 2026-11-28).
-    private static func tucked(_ tab: MainTab, in bar: CGRect) -> CGRect {
-        GlassTabBar.itemRect(tab, in: bar).insetBy(dx: 14, dy: 8)
+    /// Where the panel's glass waits on a tab with no panel: inside the tab bar.
+    private static func tucked(in bar: CGRect) -> CGRect {
+        bar.insetBy(dx: 12, dy: 8)
     }
 
     #if DEBUG
