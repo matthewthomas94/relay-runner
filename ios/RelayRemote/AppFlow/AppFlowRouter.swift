@@ -35,6 +35,7 @@ struct AppFlowRouter: View {
             }
         }
         .animation(RelayMotion.pageEnter, value: stage)
+        .environment(\.micLevel, model.voice?.micLevel)
         .preferredColorScheme(.dark)
         .onAppear(perform: start)
         // Testing: Settings › Redo onboarding walks it again from the splash.
