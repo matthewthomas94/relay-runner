@@ -150,7 +150,17 @@ private struct WorkspaceSessionTab: View {
                         .font(AppTypography.font(.menuTab))
                         .lineLimit(1)
                         .opacity(tab.isLive ? 1 : 0.5)
+                    // A tab whose agent wants attention carries a white dot
+                    // after its name until it is opened (user, 2026-11-28).
+                    if tab.needsAttention {
+                        Circle()
+                            .fill(Color.white)
+                            .frame(width: 6, height: 6)
+                            .transition(.opacity)
+                            .accessibilityHidden(true)
+                    }
                 }
+                .animation(RelayMotion.hover, value: tab.needsAttention)
                 .padding(.leading, 16)
                 .frame(maxHeight: .infinity)
                 .contentShape(Rectangle())
@@ -183,14 +193,6 @@ private struct WorkspaceSessionTab: View {
                     .background {
                         PanelGlassUnderlay().clipShape(
                             RoundedRectangle(cornerRadius: WorkspaceTerminalLayout.tabCornerRadius, style: .circular)
-                        )
-                    }
-                    .overlay {
-                        // A tab whose agent wants attention shimmers until it is opened.
-                        FluxDotsBackground(
-                            cornerRadius: WorkspaceTerminalLayout.tabCornerRadius,
-                            style: .standard,
-                            isVisible: tab.needsAttention
                         )
                     }
                     .overlay {
