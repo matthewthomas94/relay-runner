@@ -43,6 +43,9 @@ enum RelayGlass {
         switch self {
         case .panel: return RelayColor.neutral2.opacity(0.75)
         case .bar: return RelayColor.neutral2.opacity(0.88)
+        // The user's chat bubbles: a shade lighter than the fill, so they
+        // stand apart from the agent's dark bubbles (user, 2026-11-28).
+        case .raised: return RelayColor.neutral5.opacity(0.65)
         default: return tint
         }
     }

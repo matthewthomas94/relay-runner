@@ -199,13 +199,8 @@ struct HeroChip: View {
         .foregroundStyle(style == .primary ? RelayColor.neutral1 : RelayColor.neutral10)
         .padding(.horizontal, label == nil ? 9 : 14)
         .frame(height: Self.height)
-        .background {
-            if style == .primary {
-                // The talk button's own fill (`DockTalkButton`).
-                RelayGlassBackground(glass: .primary, shape: shape)
-            } else {
-                RelayGlassBackground(glass: .control, shape: shape)
-            }
-        }
+        // The real buttons' own surfaces: solid white like the talk button,
+        // or the secondary buttons' fill and lit rim.
+        .modifier(RelayGlassSurface(glass: style == .primary ? .primary : .control, shape: shape))
     }
 }
