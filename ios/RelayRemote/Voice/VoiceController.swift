@@ -59,6 +59,8 @@ final class VoiceController {
     @ObservationIgnored private let synthesizer = SystemSpeechSynthesizer()
     @ObservationIgnored private let player = AudioQueueSpeechPlayer()
     @ObservationIgnored private let recognizer = SpeechRecognizer()
+    /// What the microphone hears, for the sound wave and the listening dots.
+    @ObservationIgnored let micLevel = MicLevelMeter()
     @ObservationIgnored private let queue: SpeechPlaybackQueue
     @ObservationIgnored private var utteranceOpen = false {
         didSet { syncHold() }
@@ -80,6 +82,7 @@ final class VoiceController {
         queue.onChange = { [weak self] in self?.queueChanged() }
         session.resumeCeiling = { [weak self] in self?.queue.resumeCeiling }
         recognizer.onTranscript = { [weak self] text in self?.transcript = text }
+        recognizer.onVoiceLevel = { [weak self] level in self?.micLevel.update(level) }
         audio.onInterruption = { [weak self] interruption in self?.interrupted(interruption) }
         audio.onRouteLost = { [weak self] in self?.routeLost() }
         Task { await recognizer.prepare(prompting: false) }

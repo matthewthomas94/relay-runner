@@ -22,8 +22,8 @@ final class SpeechRecognizer {
     private(set) var isCapturing = false
     private var isPreparing = false
     private(set) var locale = Locale.current
-    /// Microphone level in dBFS with the buffer's host time in seconds.
-    var onLevel: ((Float, TimeInterval) -> Void)?
+    /// The microphone's loudness and bands, per buffer (`VoiceLevelAnalysis`).
+    var onVoiceLevel: ((VoiceLevel) -> Void)?
     /// The transcript so far: finalized text followed by the volatile tail.
     var onTranscript: ((String) -> Void)?
 
@@ -201,11 +201,10 @@ final class SpeechRecognizer {
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw RecognizerError.noAudioFormat }
         let tap = self.tap
-        input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, time in
-            let level = SpeechRecognizer.level(of: buffer)
-            let seconds = AVAudioTime.seconds(forHostTime: time.hostTime)
+        input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
+            let level = VoiceLevelAnalysis.analyse(buffer)
             tap.feed(buffer)
-            Task { @MainActor [weak self] in self?.onLevel?(level, seconds) }
+            Task { @MainActor [weak self] in self?.onVoiceLevel?(level) }
         }
         engine.prepare()
         try engine.start()
@@ -249,19 +248,6 @@ final class SpeechRecognizer {
             return sameLanguage
         }
         return supported.first(where: { $0.identifier(.bcp47).lowercased() == "en-us" }) ?? supported.first ?? Locale(identifier: "en-US")
-    }
-
-    nonisolated static func level(of buffer: AVAudioPCMBuffer) -> Float {
-        guard let data = buffer.floatChannelData, buffer.frameLength > 0 else { return -120 }
-        let count = Int(buffer.frameLength)
-        var sum: Float = 0
-        let channel = data[0]
-        for index in 0..<count {
-            let sample = channel[index]
-            sum += sample * sample
-        }
-        let rms = (sum / Float(count)).squareRoot()
-        return max(-120, 20 * log10(max(rms, 1e-7)))
     }
 
     enum RecognizerError: Error {

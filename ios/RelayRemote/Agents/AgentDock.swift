@@ -97,8 +97,8 @@ struct AgentDock: View {
     @ViewBuilder
     private var replayLabel: some View {
         switch replayFace {
-        case .cancel: RelayButtonLabel("Cancel", icon: .x)
-        case .stop: RelayButtonLabel("Stop", icon: .square)
+        case .cancel: Self.fitting("Cancel message", icon: .x)
+        case .stop: Self.fitting("Stop message", icon: .square)
         case .play:
             // As much of "Play new message" as fits half the row.
             ViewThatFits(in: .horizontal) {
@@ -107,8 +107,16 @@ struct AgentDock: View {
                 RelayButtonLabel("Play", icon: .play)
             }
             .lineLimit(1)
-        case .replay: RelayButtonLabel("Replay", icon: .rotateCcw)
+        case .replay: Self.fitting("Replay message", icon: .rotateCcw)
         }
+    }
+
+    /// The full label (user, 2026-11-27), its text shrinking a little where
+    /// half the row is narrow.
+    private static func fitting(_ title: String, icon: LucideIcon) -> some View {
+        RelayButtonLabel(title, icon: icon)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
     }
 
     private var replayEnabled: Bool {
@@ -298,26 +306,37 @@ struct DockTalkButton: View {
     }
 }
 
-/// Lucide's `audio-lines`, its six bars rising and falling out of step while
-/// the user talks. Reduce Motion holds the icon still.
+/// Lucide's `audio-lines`, its six bars moving with the user's voice
+/// (`MicLevelMeter`), as libraries.dev's Voice maps its bands: the middle
+/// pair follows the lows, the next pair the mids and the outer pair the
+/// highs. A slight shimmer keeps the bars apart; silence leaves them low.
+/// Reduce Motion, or no microphone, holds the icon still.
 struct TalkingWave: View {
     let size: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.micLevel) private var meter
+    /// Quick to rise and fall, so the bars keep up with syllables.
+    @State private var envelope = VoiceEnvelope(attack: 0.05, release: 0.18)
 
     /// Each bar's resting height in Lucide's 24 pt grid, centred on y = 12.
     private static let bars: [CGFloat] = [3, 11, 18, 7, 13, 3]
-    private static let period: TimeInterval = 0.9
+    /// Which band each bar follows: highs, mids, lows, lows, mids, highs.
+    private static let bandOfBar = [2, 1, 0, 0, 1, 2]
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: reduceMotion)) { timeline in
+        let still = reduceMotion || meter == nil
+        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: still)) { timeline in
+            let time = timeline.date.timeIntervalSinceReferenceDate
+            let voice = still ? nil : envelope.follow(meter?.current ?? .silent, at: time)
             Canvas { context, canvas in
                 let scale = canvas.width / 24
-                let time = timeline.date.timeIntervalSinceReferenceDate
                 for (index, rest) in Self.bars.enumerated() {
-                    // Each bar breathes between 45% and 100% of a full 18 pt
-                    // bar, a sixth of a cycle behind the one before it.
-                    let wave = reduceMotion ? 0 : (sin((time / Self.period + Double(index) / 6) * 2 * .pi) + 1) / 2
-                    let height = reduceMotion ? rest : max(3, 18 * (0.45 + 0.55 * wave))
+                    var height = rest
+                    if let voice {
+                        let band = CGFloat(voice.bands[Self.bandOfBar[index]])
+                        let shimmer = 0.85 + 0.15 * CGFloat(sin(time * 9 + Double(index) * 1.7))
+                        height = 3 + 17 * band * shimmer
+                    }
                     let x = (2 + CGFloat(index) * 4) * scale
                     var path = Path()
                     path.move(to: CGPoint(x: x, y: (12 - height / 2) * scale))
