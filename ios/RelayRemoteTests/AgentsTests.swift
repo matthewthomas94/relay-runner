@@ -332,7 +332,7 @@ final class AgentsTests: XCTestCase {
 
     func testTheTutorialSpeaksInTheTalkSetting() {
         XCTAssertEqual(TutorialStep.releaseToSend.hero(talkMode: .hold), "Now release to send")
-        XCTAssertEqual(TutorialStep.releaseToSend.hero(talkMode: .toggle), "Now tap to send")
+        XCTAssertNotEqual(TutorialStep.releaseToSend.hero(talkMode: .toggle), "Now release to send")
         XCTAssertNotEqual(TutorialStep.holdToTalk.hero(talkMode: .hold), TutorialStep.holdToTalk.hero(talkMode: .toggle))
     }
 

@@ -189,7 +189,8 @@ struct HeroChip: View {
         .frame(height: Self.height)
         .background {
             if style == .primary {
-                shape.fill(RelayColor.primaryPressed)
+                // The talk button's own fill (`DockTalkButton`).
+                RelayGlassBackground(glass: .primary, shape: shape)
             } else {
                 RelayGlassBackground(glass: .control, shape: shape)
             }

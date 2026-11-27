@@ -17,6 +17,9 @@ struct RelayBackdrop: View {
                 .init(color: .black.opacity(0.7), location: 1),
             ], startPoint: .top, endPoint: .bottom)
         }
+        // Fade as one image: faded layer by layer, the dark gradient thins
+        // over the bright wash and the screen flashes as the app arrives.
+        .compositingGroup()
         .ignoresSafeArea()
         .allowsHitTesting(false)
         .accessibilityHidden(true)

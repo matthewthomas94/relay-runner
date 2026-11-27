@@ -161,6 +161,9 @@ private struct ReplyRow: View {
     let speaking: Bool
     let onPlay: () -> Void
 
+    /// How long the card's contents take to leave before the reply arrives.
+    static let swapOut: TimeInterval = 0.16
+
     private var isWaiting: Bool {
         if case .waiting = content { return true }
         return false
@@ -172,7 +175,11 @@ private struct ReplyRow: View {
                 switch content {
                 case .waiting(let waiting):
                     WaitingReplyContent(name: name, receivedAt: waiting.receivedAt, onPlay: onPlay)
-                        .transition(.asymmetric(insertion: .opacity, removal: .identity))
+                        // The desktop's swap, which never overlaps: the card's
+                        // contents blur out first, then the reply blurs in.
+                        .transition(.asymmetric(
+                            insertion: .relaySurface.animation(RelayMotion.enter),
+                            removal: .relaySurface.animation(.easeIn(duration: Self.swapOut))))
                 case .reply(let message):
                     Text(message.text)
                         .relayTextStyle(.body)
@@ -181,8 +188,7 @@ private struct ReplyRow: View {
                         .padding(.vertical, 10)
                         // Only seen when Play turns the panel into this bubble.
                         .transition(.asymmetric(
-                            insertion: .modifier(active: TextArrival(hidden: true), identity: TextArrival(hidden: false))
-                                .animation(RelayMotion.enter.delay(0.08)),
+                            insertion: .relaySurface.animation(RelayMotion.enter.delay(Self.swapOut)),
                             removal: .identity))
                 }
             }
@@ -197,18 +203,6 @@ private struct ReplyRow: View {
         }
         .padding(.trailing, isWaiting ? 0 : 51)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-/// Text fading in from a 4 pt blur; Reduce Motion keeps only the fade.
-private struct TextArrival: ViewModifier {
-    let hidden: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    func body(content: Content) -> some View {
-        content
-            .opacity(hidden ? 0 : 1)
-            .blur(radius: hidden && !reduceMotion ? 4 : 0)
     }
 }
 

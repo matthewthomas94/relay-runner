@@ -44,17 +44,21 @@ extension TutorialStep {
         switch self {
         case .basics:
             return "Now let’s learn the basics"
+        // Each chip is drawn like the control it names: the white talk
+        // button in the text box, Play on the New reply card, labelled Stop.
         case .holdToTalk:
-            let label = talkMode == .hold ? "Hold to talk" : "Tap to talk"
-            return HeroText(lines: [[.chip(icon: .mic, label: label, style: .primary), .text(" & say hi")]])
+            return HeroText(lines: [[.text(talkMode == .hold ? "Hold " : "Tap "),
+                                     .chip(icon: .mic, label: nil, style: .primary), .text(" & say hi")]])
         case .releaseToSend:
-            return talkMode == .hold ? "Now release to send" : "Now tap to send"
+            guard talkMode == .toggle else { return "Now release to send" }
+            return HeroText(lines: [[.text("Tap "), .chip(icon: .audioLines, label: nil, style: .primary),
+                                     .text(" to send")]])
         case .playReply:
             return HeroText(lines: [[.text("Wait for a reply,")],
                                     [.text("then tap "), .chip(icon: .play, label: "Play", style: .secondary)]])
         case .stopPlayback:
-            return HeroText(lines: [[.text("Tap "), .chip(icon: .square, label: nil, style: .secondary),
-                                     .text(" to stop playback")]])
+            return HeroText(lines: [[.text("Tap "), .chip(icon: .square, label: "Stop", style: .secondary)],
+                                    [.text("to stop playback")]])
         case .allDone:
             return "You’re all done"
         }

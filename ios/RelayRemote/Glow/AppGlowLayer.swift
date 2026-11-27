@@ -30,9 +30,9 @@ enum AppGlowState: Equatable {
 /// leaves (340 ms, ease-in), while carrying the desktop's surface transform
 /// from `ParticleFieldRenderer` under `VoiceOverlayMotion`: fading, blurring
 /// by 12 pt and scaling to 96% about the field's own centre at the base of
-/// the screen. Switching between listening and playback crossfades
-/// the two fields over 450 ms on the change curve. Reduce Motion keeps only
-/// the fades.
+/// the screen. Switching between listening and playback sinks the old field
+/// and then raises the new one; Reduce Motion crossfades them instead and
+/// keeps only the fades.
 struct AppGlowLayer: View {
     let model: AppModel
 
@@ -61,6 +61,8 @@ struct StateGlowLayer: View {
     @State private var arrival = 1.0
     /// How far up the field has risen: 0 sunk into the bottom edge, 1 full.
     @State private var reveal = 0.0
+    /// The newest target, so a swap that finishes late knows it still applies.
+    @State private var wanted = AppGlowState.none
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The desktop's surface motion (fade, blur, 96% scale) over its
@@ -120,6 +122,7 @@ struct StateGlowLayer: View {
     }
 
     private func transition(to new: AppGlowState) {
+        wanted = new
         if new == .none {
             guard current != .none else { return }
             withAnimation(reduceMotion ? nil : Self.sink) { reveal = 0 }
@@ -148,11 +151,26 @@ struct StateGlowLayer: View {
             withAnimation(Self.rise) { reveal = 1 }
             return
         }
-        // Listening <-> playback: crossfade the fields.
-        previous = current
-        current = new
-        arrival = 0
-        withAnimation(Self.crossfade) { arrival = 1 }
-        withAnimation(Self.enter) { departure = 0 }
+        guard !reduceMotion else {
+            // Listening <-> playback: crossfade the fields.
+            previous = current
+            current = new
+            arrival = 0
+            withAnimation(Self.crossfade) { arrival = 1 }
+            withAnimation(Self.enter) { departure = 0 }
+            return
+        }
+        // Listening <-> playback: as on the desktop, nothing overlaps. The
+        // old field sinks away, then the new one rises from the bottom edge.
+        withAnimation(Self.sink) { reveal = 0 }
+        withAnimation(Self.exit) { departure = 1 } completion: {
+            guard wanted == new else { return }
+            previous = .none
+            current = new
+            arrival = 1
+            reveal = 0
+            withAnimation(Self.enter) { departure = 0 }
+            withAnimation(Self.rise) { reveal = 1 }
+        }
     }
 }
