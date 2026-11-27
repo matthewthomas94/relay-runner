@@ -263,13 +263,15 @@ extension AnyTransition {
     /// A tab's page replacing another, as the Mac replaces whole pages
     /// (`relayReplacing(.surface)`, user 2026-11-28): the old page contracts
     /// to 96%, blurs to 12 pt and fades out in 160 ms, accelerating away;
-    /// after a 75 ms beat the new one expands from 96% and sharpens in on a
-    /// 0.2 s spring with a little bounce. They never share the screen.
+    /// after a 75 ms beat the new one expands from 96% and sharpens in on the
+    /// strong ease-out (`enter`), with no rebound: the panels above the tab
+    /// bar follow the page, and a bounce made them overshoot and settle back
+    /// (user, 2026-11-28). They never share the screen.
     /// Reduce Motion keeps the crossfade.
     static var relayTab: AnyTransition {
         .asymmetric(
             insertion: .modifier(active: RelayTabEffect(hidden: true), identity: RelayTabEffect(hidden: false))
-                .animation(.spring(duration: 0.2, bounce: 0.2).delay(RelayMotion.tabExitDuration + RelayMotion.tabGap)),
+                .animation(RelayMotion.enter.delay(RelayMotion.tabExitDuration + RelayMotion.tabGap)),
             removal: .modifier(active: RelayTabEffect(hidden: true), identity: RelayTabEffect(hidden: false))
                 .animation(.timingCurve(0.4, 0, 1, 1, duration: RelayMotion.tabExitDuration))
         )

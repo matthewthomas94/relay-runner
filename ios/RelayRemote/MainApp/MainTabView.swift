@@ -8,13 +8,16 @@ struct MainTabView: View {
     @State private var selection: MainTab
     /// The tab bar steps aside while the keyboard is up (user, 2026-11-27).
     @State private var keyboardShown = false
+    /// The tab whose panel glass is out above the tab bar; none while the
+    /// glass is in the bar between tabs (user, 2026-11-27).
+    @State private var panelTab: MainTab?
     /// The tabs' panels and the tab bar share one glass container (RR-552, RR-553).
     @Namespace private var glassMorph
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The glass ID in `glassMorph` of the panel above the tab bar (the
-    /// Agents dock or the Workspace project tabs): one glass, so moving
-    /// between those tabs reshapes it rather than swapping two.
+    /// Agents dock or the Workspace project tabs): one glass, which goes into
+    /// the tab bar and comes back out of it between tabs.
     private static let panelGlassID = "panel"
     /// Under the 12 pt gap between a panel and the tab bar, so the two stay
     /// apart at rest and flow together as the panel nears the bar.
@@ -31,6 +34,7 @@ struct MainTabView: View {
         self.workspaceSample = workspaceSample
         self.ticketSample = TicketSample.debugSample(ticketSample, unreachable: workspaceSample == "unreachable")
         _selection = State(initialValue: initialTab)
+        _panelTab = State(initialValue: initialTab)
     }
 
     var body: some View {
@@ -57,7 +61,10 @@ struct MainTabView: View {
         // Layering on every tab, back to front: the scrolling content, the
         // state glow, then the tappable glass (user, 2026-11-27).
         .overlay { AppGlowLayer(model: model) }
-        .overlayPreferenceValue(HostedPanelKey.self) { panels in glassLayer(panels[selection]) }
+        .overlayPreferenceValue(HostedPanelKey.self) { panels in
+            glassLayer(reduceMotion ? panels[selection] : panelTab.flatMap { panels[$0] })
+        }
+        .task(id: selection) { await movePanel(to: selection) }
         .animation(RelayMotion.enter, value: keyboardShown)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             keyboardShown = true
@@ -82,14 +89,25 @@ struct MainTabView: View {
         #endif
     }
 
+    /// Between tabs, the leaving tab's panel goes into the tab bar and the
+    /// arriving tab's panel comes out of it, as its page arrives: one rule for
+    /// every tab (user, 2026-11-27). A tab with no panel leaves the glass in
+    /// the bar. A quicker switch cancels the wait, so the glass heads for the
+    /// latest tab.
+    private func movePanel(to tab: MainTab) async {
+        guard panelTab != tab else { return }
+        if reduceMotion { panelTab = tab; return }
+        withAnimation(RelayMotion.move) { panelTab = nil }
+        try? await Task.sleep(for: .seconds(RelayMotion.tabExitDuration + RelayMotion.tabGap))
+        guard !Task.isCancelled else { return }
+        withAnimation(RelayMotion.move) { panelTab = tab }
+    }
+
     /// The tabs' panels and the tab bar in one `GlassEffectContainer`
     /// (RR-552, RR-553). The panel above the tab bar is one glass that never
-    /// leaves; the tab bar stays put and only that glass changes shape:
-    /// - Agents to Workspace: the dock reshapes straight into the project tabs
-    ///   container, never touching the tab bar, and back the other way.
-    /// - Agents or Workspace to Settings: the panel sinks into the tab bar,
-    ///   where the container merges it into the bar's glass, and rises back
-    ///   out of it on the way back.
+    /// leaves; the tab bar stays put and only that glass changes shape: it
+    /// sinks into the tab bar, where the container merges it into the bar's
+    /// glass, and rises back out of it (`movePanel`).
     /// The panel's contents fade out quickly and the new contents fade in once
     /// the glass has nearly arrived, so only the glass morphs. With Reduce
     /// Motion the panels crossfade instead.
