@@ -136,6 +136,8 @@ struct HostedDock {
     let anchor: Anchor<CGRect>
     /// The dock, without its glass.
     let content: AnyView
+    /// Talking or not: the one change that resizes the dock in place.
+    var isTalking = false
 }
 
 struct HostedDockKey: PreferenceKey {

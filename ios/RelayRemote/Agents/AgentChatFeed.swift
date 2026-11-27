@@ -263,7 +263,7 @@ private struct FeedGlass: ViewModifier {
         let shape = RoundedRectangle(cornerRadius: RelayMetrics.panelRadius, style: .continuous)
         content
             .background(shape.fill(glass.tint))
-            .glassEffect(.regular, in: shape)
+            .glassEffect(RelayGlass.material, in: shape)
             .environment(\.colorScheme, .dark)
     }
 }

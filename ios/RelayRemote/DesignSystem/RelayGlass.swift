@@ -20,6 +20,12 @@ enum RelayGlass {
     /// The primary button pressed or active: the pressed grey at 85%.
     case primaryPressed
 
+    /// The glass under every tint: iOS's clear Liquid Glass, as the desktop's
+    /// shell glass is a blur with the material's own fill and tone removed.
+    /// The regular glass frosts and darkens the backdrop on its own, so under
+    /// these tints little of what is behind showed through.
+    static let material = Glass.clear
+
     var tint: Color {
         switch self {
         case .panel: return RelayColor.neutral2.opacity(0.5)
@@ -54,7 +60,7 @@ struct RelayGlassBackground<S: InsettableShape>: View {
                 }
             } else {
                 Color.clear
-                    .glassEffect(.regular, in: shape)
+                    .glassEffect(RelayGlass.material, in: shape)
                     .overlay(shape.fill(glass.tint))
             }
         }

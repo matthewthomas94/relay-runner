@@ -45,6 +45,9 @@ struct MainTabView: View {
             .transition(.relayTab(direction: direction))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Content scrolling up passes under black behind the status bar,
+        // which fades out just below it, so the clock never sits on text.
+        .overlay(alignment: .top) { StatusBarScrim() }
         .environment(\.hostsDock, true)
         // The content ends at the tab bar's top; with the keyboard up the bar
         // steps aside and the content sits on the keyboard.
@@ -127,12 +130,35 @@ struct MainTabView: View {
         // text box after talking) its buttons stay put inside the glass.
         .frame(width: frame.width, height: frame.height, alignment: .bottom)
         .background(shape.fill(RelayGlass.panel.tint).opacity(filled ? 1 : 0))
-        .glassEffect(.regular, in: shape)
+        .glassEffect(RelayGlass.material, in: shape)
         .glassEffectID(Self.dockGlassID, in: glassMorph)
         .position(x: frame.midX, y: frame.midY)
-        // The place the Agents screen holds jumps to its new size at once;
-        // move the glass with the dock's own animation instead.
-        .animation(RelayMotion.move, value: frame)
+        // When talking starts or stops, the place the Agents screen holds
+        // jumps to its new size at once; move the glass with the dock's own
+        // animation instead. Only then: between tabs the glass follows the
+        // page as it moves, and chasing it with an animation made it lurch.
+        .animation(RelayMotion.move, value: dock?.isTalking ?? false)
+    }
+
+    /// Black behind the status bar, fading out over `fade` points below it.
+    private struct StatusBarScrim: View {
+        static let fade: CGFloat = 20
+
+        var body: some View {
+            GeometryReader { proxy in
+                let inset = proxy.safeAreaInsets.top
+                let height = inset + Self.fade
+                LinearGradient(stops: [.init(color: RelayColor.neutral1, location: 0),
+                                       .init(color: RelayColor.neutral1, location: inset / max(height, 1)),
+                                       .init(color: RelayColor.neutral1.opacity(0), location: 1)],
+                               startPoint: .top, endPoint: .bottom)
+                    .frame(height: height)
+                    .offset(y: -inset)
+            }
+            .frame(height: 0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
     }
 
     /// Where the dock's glass waits away from Agents: inside the tab bar.

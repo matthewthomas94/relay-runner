@@ -207,7 +207,7 @@ private struct TicketRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(RelayColor.neutral3))
+        .relayGlass(.control, cornerRadius: 20)
         .accessibilityElement(children: .combine)
     }
 }

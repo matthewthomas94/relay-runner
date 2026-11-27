@@ -100,7 +100,7 @@ private struct BarGlass: ViewModifier {
             content
                 .background(shape.fill(RelayGlass.bar.tint))
                 .overlay(shape.strokeBorder(.white.opacity(0.06), lineWidth: 1))
-                .glassEffect(.regular, in: shape)
+                .glassEffect(RelayGlass.material, in: shape)
                 .glassEffectID(GlassTabBar.morphID, in: morph)
                 .glassEffectTransition(.materialize)
                 .environment(\.relayGlassFlat, true)

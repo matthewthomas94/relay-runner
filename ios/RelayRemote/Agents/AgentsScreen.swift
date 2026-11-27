@@ -90,7 +90,7 @@ struct AgentsScreen: View {
             dock.hidden()
                 .accessibilityHidden(true)
                 .anchorPreference(key: HostedDockKey.self, value: .bounds) {
-                    HostedDock(anchor: $0, content: AnyView(dock))
+                    HostedDock(anchor: $0, content: AnyView(dock), isTalking: state.isTalking)
                 }
         } else {
             dock
