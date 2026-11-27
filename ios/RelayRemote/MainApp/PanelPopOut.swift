@@ -1,44 +1,49 @@
 import SwiftUI
 
-/// The panels above the tab bar (the Agents dock, the Workspace project tabs)
-/// push out of the tab bar the way the desktop's session wheel pushes its
-/// submenus out of the disc (user, 2026-11-28; `SessionWheelSubmenuMotion.swift`
-/// in the Mac app): each panel has its own spring, so one sinks back into the
-/// bar while the next pushes out; it starts wholly inside the bar and pulls
-/// out of it, blurring most halfway, its controls fading in once it is 30%
-/// out; its glass and the bar's merge as one until it pulls clear, and its
-/// controls emerge from behind the bar rather than over it. Its width never
-/// changes (user, 2026-11-28).
-struct PanelPopProgress: VectorArithmetic {
-    var agents = 0.0
-    var workspace = 0.0
+/// To or from Settings, which has no panel, the panel above the tab bar (the
+/// Agents dock or the Workspace project tabs) pushes out of the tab bar the
+/// way the desktop's session wheel pushes its submenus out of the disc, and
+/// sinks back into it (user, 2026-11-28; `SessionWheelSubmenuMotion.swift`
+/// in the Mac app): it starts wholly inside the bar and pulls out of it on the
+/// wheel's spring, blurring most halfway, its controls fading in once it is
+/// 30% out; its glass and the bar's merge as one until it pulls clear. Its
+/// width never changes (user, 2026-11-28). Between Agents and Workspace the
+/// panel stays out and morphs from one tab's panel into the other's.
+struct PanelPop: ViewModifier, Animatable {
+    /// 0 inside the bar, 1 in place.
+    var progress: Double
+    let place: CGRect
+    let bar: CGRect
+    let glass: Glass
+    let radius: CGFloat
 
-    init(agents: Double = 0, workspace: Double = 0) {
-        self.agents = agents
-        self.workspace = workspace
+    var animatableData: Double {
+        get { progress }
+        set { progress = newValue }
     }
-
-    /// Fully out for `tab`'s panel, in for every other.
-    init(showing tab: MainTab) {
-        self.init(agents: tab == .agents ? 1 : 0, workspace: tab == .workspace ? 1 : 0)
-    }
-
-    subscript(tab: MainTab) -> Double {
-        switch tab {
-        case .agents: return agents
-        case .workspace: return workspace
-        case .settings: return 0
-        }
-    }
-
-    static var zero: Self { .init() }
-    var magnitudeSquared: Double { agents * agents + workspace * workspace }
-    static func + (lhs: Self, rhs: Self) -> Self { .init(agents: lhs.agents + rhs.agents, workspace: lhs.workspace + rhs.workspace) }
-    static func - (lhs: Self, rhs: Self) -> Self { .init(agents: lhs.agents - rhs.agents, workspace: lhs.workspace - rhs.workspace) }
-    mutating func scale(by rhs: Double) { agents *= rhs; workspace *= rhs }
 
     /// The desktop wheel's submenu spring (`SessionWheelSubmenuPresentation.animation`).
     static let animation = Animation.spring(response: 0.2 + RelayMotion.tabGap, dampingFraction: 0.9)
+
+    func body(content: Content) -> some View {
+        let look = PanelPopPresentation(progress)
+        let visible = look.visible(place: place, bar: bar)
+        let shape = RoundedRectangle(cornerRadius: min(radius, visible.height / 2), style: .continuous)
+        ZStack(alignment: .top) {
+            // Bottom-anchored, so while the dock's own height animates (the
+            // text box after talking) its buttons stay put inside the glass.
+            content
+                .frame(width: place.width, height: place.height, alignment: .bottom)
+                .opacity(look.controlsOpacity)
+                .blur(radius: look.blur)
+        }
+        .frame(width: visible.width, height: visible.height, alignment: .top)
+        // The controls emerge from behind the bar, inside the glass.
+        .clipShape(shape)
+        .glassEffect(glass, in: shape)
+        .opacity(look.progress > 0.001 ? 1 : 0)
+        .position(x: visible.midX, y: visible.midY)
+    }
 }
 
 /// One panel's look at `progress` (0 inside the bar, 1 in place), as the
@@ -49,7 +54,7 @@ struct PanelPopPresentation {
     init(_ progress: Double) { self.progress = min(max(progress, 0), 1) }
 
     /// The blur peaks halfway out, 6 pt, and is gone at either end.
-    var blur: CGFloat { 6 * sin(.pi * progress) }
+    var blur: CGFloat { progress > 0.999 ? 0 : 6 * sin(.pi * progress) }
     /// The controls fade in from 30% out, on a smoothstep.
     var controlsOpacity: Double {
         let reveal = min(max((progress - 0.3) / 0.65, 0), 1)
@@ -71,22 +76,10 @@ struct PanelPopPresentation {
     }
 }
 
-/// Retargets the springs from where they are when tabs change quickly.
-struct PanelPopAnimation<Content: View>: View, Animatable {
-    var progress: PanelPopProgress
-    @ViewBuilder var content: (PanelPopProgress) -> Content
-
-    var animatableData: PanelPopProgress {
-        get { progress }
-        set { progress = newValue }
-    }
-
-    var body: some View { content(progress) }
-}
-
-/// Each panel's last place and contents, so a panel can sink back into the
-/// bar after its page has gone. A class: the tab view writes it while it
-/// draws, without redrawing.
+/// The last panel each tab handed up and where it was, so a panel can sink
+/// back into the bar after its page has gone. Only for that: while its page
+/// is on screen the panel is always drawn from the page's live copy. A class:
+/// the tab view writes it while it draws, without redrawing.
 final class PanelPopCache {
     struct Entry {
         var panel: HostedPanel
