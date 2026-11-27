@@ -631,6 +631,14 @@ impl Server {
             for missed in &resume.frames {
                 session.send_locked(&mut state, missed);
             }
+            // A phone that has seen further than this bridge (Relay Runner
+            // restarted) has been told to start again by the welcome above;
+            // carry on numbering above what it saw, so a new reply never
+            // reuses the seq of one already in its chat.
+            if let Some(after) = hello.resume_after_seq.filter(|&after| after > state.seq.last) {
+                state.seq.last = after;
+                state.replay.server_seq = after;
+            }
             state.device_name = hello.device_name.clone();
         }
         // A phone built before the switch existed always drove the turn.
@@ -1152,6 +1160,24 @@ mod tests {
         assert_eq!(
             again.line(),
             "{\"action\":\"stop\",\"reason\":\"superseded\",\"seq\":2,\"type\":\"speech_control\"}\n"
+        );
+    }
+
+    #[test]
+    fn a_phone_ahead_of_a_restarted_bridge_keeps_its_numbering() {
+        let harness = Harness::new(true);
+        let mut device = harness.connect();
+        device.send(&HELLO.replace("\"protocol\"", "\"resume_after_seq\":81,\"protocol\""));
+        // The welcome still tells the phone the bridge started again...
+        assert_eq!(
+            device.line(),
+            "{\"dropped\":true,\"protocol\":1,\"resumed_from\":81,\"server_seq\":0,\"session_state\":\"running\",\"type\":\"welcome\"}\n"
+        );
+        // ...but the next reply does not reuse a seq already in its chat.
+        let session = harness.server.session("D1").unwrap();
+        assert_eq!(
+            session.speech("final", "orchestrator", "one", None, Some("phone"), None, None),
+            Ok(82)
         );
     }
 
