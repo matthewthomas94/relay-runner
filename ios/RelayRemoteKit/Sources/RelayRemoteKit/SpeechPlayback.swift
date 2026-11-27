@@ -345,8 +345,12 @@ public final class SpeechPlaybackQueue {
     }
 
     /// Resolve queued speech below `seq` as unplayed and stop a current one.
+    /// In `.onDemand` mode a reply still waiting for Play is kept: talking,
+    /// Stop and the Mac's superseding stop silence what is playing, but every
+    /// agent's unplayed reply keeps waiting until it is played or skipped.
     private func discardPending(before seq: Int) {
-        for index in entries.indices where entries[index].seq < seq && entries[index].state == .waiting {
+        for index in entries.indices where entries[index].seq < seq && entries[index].state == .waiting
+            && !awaitsPlay(entries[index]) {
             entries[index].state = .resolved(played: false)
         }
         if let current = currentSeq, current < seq {
@@ -371,6 +375,10 @@ public final class SpeechPlaybackQueue {
         case .player: player?.stop()
         case .pending, nil: break
         }
+    }
+
+    private func awaitsPlay(_ entry: Entry) -> Bool {
+        mode == .onDemand && !entry.released && entry.text != nil
     }
 
     private func isPlayable(_ entry: Entry) -> Bool {

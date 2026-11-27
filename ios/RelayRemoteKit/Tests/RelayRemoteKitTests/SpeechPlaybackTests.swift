@@ -167,6 +167,30 @@ final class SpeechPlaybackTests: XCTestCase {
         XCTAssertFalse(queue.isSpeaking)
     }
 
+    /// In Queue mode, talking or Stop (local `stopAll`) and the Mac's
+    /// superseding stop silence the reply playing but keep every unplayed
+    /// reply waiting for Play, whichever agent it came from.
+    func testStopsInQueueModeKeepUnplayedRepliesWaiting() {
+        queue.mode = .onDemand
+        queue.receive(speech(1, "George's reply."))
+        queue.receive(speech(2, "Puck's reply."))
+        queue.play(seq: 2)
+        XCTAssertEqual(synthesizer.spoken, ["Puck's reply."])
+
+        queue.stopAll()
+        XCTAssertFalse(queue.isSpeaking)
+        XCTAssertEqual(queue.waitingSeqs, [1], "Stop ends Puck's reply but George's keeps waiting")
+
+        queue.receive(.speechControl(SpeechControl(seq: 3, action: .stop, reason: "superseded")))
+        XCTAssertEqual(queue.waitingSeqs, [1], "a superseding stop from the Mac keeps it waiting too")
+        XCTAssertTrue(acks.isEmpty, "the waiting reply holds later acks until it resolves")
+
+        queue.play(seq: 1)
+        XCTAssertEqual(synthesizer.spoken, ["Puck's reply.", "George's reply."])
+        synthesizer.finishCurrent()
+        XCTAssertEqual(acks, [Ack(seq: 1, played: true), Ack(seq: 2, played: false), Ack(seq: 3, played: false)])
+    }
+
     func testReplayAfterBargeInStopPlaysTheReplayedReply() {
         queue.receive(speech(45, "A long reply"))
         queue.stopAll()

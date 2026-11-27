@@ -343,12 +343,12 @@ final class SpeechAudioPlaybackTests: XCTestCase {
         XCTAssertEqual(queue.waitingReply, "Next", "only the replayed reply skips the Play control")
     }
 
-    func testStopAndCancelDiscardTheWaitingReplyInOnDemandMode() {
+    func testStopAndCancelKeepTheWaitingReplyInOnDemandMode() {
         queue = makeQueue(mode: .onDemand)
         queue.receive(voiced(46))
         queue.stopAll()
-        XCTAssertEqual(acks, [Ack(seq: 46, played: false)])
-        XCTAssertNil(queue.waitingReply)
+        XCTAssertTrue(acks.isEmpty, "an unplayed reply keeps waiting for Play")
+        XCTAssertEqual(queue.waitingReply, "Reply")
     }
 
     // MARK: - Stop, skip and interrupt
