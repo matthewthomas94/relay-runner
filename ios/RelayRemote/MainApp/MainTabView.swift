@@ -33,7 +33,7 @@ struct MainTabView: View {
                 }
             }
             .id(selection)
-            .transition(.relayPage(direction: direction))
+            .transition(.relayTab(direction: direction))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .glassTabBar(hidden: keyboardShown) { GlassTabBar(selection: tabSelection) }

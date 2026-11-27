@@ -182,7 +182,9 @@ struct TalkButton: View {
         .background(shape.fill(active ? RelayColor.primaryPressed : RelayColor.neutral10)
             .animation(RelayMotion.press, value: active))
         .contentShape(shape)
-        .relayPressed(touching)
+        .scaleEffect(touching ? RelayMotion.pressedScale : 1)
+        .animation(RelayMotion.press, value: touching)
+        .sensoryFeedback(trigger: touching) { _, down in down ? .impact(weight: .medium) : .impact(weight: .light) }
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { _ in

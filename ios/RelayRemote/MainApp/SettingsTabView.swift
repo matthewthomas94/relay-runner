@@ -68,6 +68,7 @@ private struct SettingsContent: View {
     @State private var notificationsDenied = false
     @State private var confirmingStop = false
     @State private var confirmingForget = false
+    @State private var confirmingRedo = false
 
     init(model: AppModel, session: RemoteSession, mac: PairedMac, preview: SettingsState? = nil) {
         self.model = model
@@ -85,6 +86,7 @@ private struct SettingsContent: View {
                 orchestrator
                 macSection
                 pairing
+                testing
             }
             .padding(.horizontal, RelayMetrics.screenMargin)
             .padding(.top, 16)
@@ -105,6 +107,11 @@ private struct SettingsContent: View {
             Button("Forget this Mac", role: .destructive) { model.forget() }
         } message: {
             Text("You will pair this iPhone again to use it.")
+        }
+        .confirmationDialog("Redo onboarding?", isPresented: $confirmingRedo, titleVisibility: .visible) {
+            Button("Redo onboarding") { model.redoOnboarding() }
+        } message: {
+            Text("Every step shows again. Your Mac stays paired.")
         }
     }
 
@@ -279,10 +286,32 @@ private struct SettingsContent: View {
                         Text("Forget this Mac").relayTextStyle(.body).foregroundStyle(RelayColor.error)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.relayPlain)
                 }
             }
             Text("Also unpair it on your Mac.")
+                .relayTextStyle(.caption).foregroundStyle(RelayColor.neutral7)
+                .padding(.leading, 4)
+        }
+    }
+
+    // MARK: Testing
+
+    /// For testing the app: walk onboarding again. iOS does not let an app
+    /// revoke its own permissions, so to see the real system prompts again,
+    /// delete the app and reinstall it.
+    private var testing: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SettingsSection("Testing") {
+                SettingsRow(isLast: true) {
+                    Button { confirmingRedo = true } label: {
+                        Text("Redo onboarding").relayTextStyle(.body).foregroundStyle(RelayColor.neutral10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.relayPlain)
+                }
+            }
+            Text("iOS keeps granted permissions until the app is deleted.")
                 .relayTextStyle(.caption).foregroundStyle(RelayColor.neutral7)
                 .padding(.leading, 4)
         }
@@ -477,6 +506,8 @@ private struct SpeedSlider: View {
                 .onEnded { drag in onCommit(position(drag.location.x, travel: travel, knob: knob)) })
         }
         .frame(height: 32)
+        // A selection tick at each 0.1x step while dragging.
+        .sensoryFeedback(.selection, trigger: (value * 10).rounded())
         .accessibilityElement()
         .accessibilityLabel("Speech speed")
         .accessibilityValue(String(format: "%.1fx", value))

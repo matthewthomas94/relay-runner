@@ -47,8 +47,9 @@ struct AgentsScreen: View {
                         if let waiting = state.waiting { actions.play(waiting) }
                     }
                     .id(state.selected)
-                    // Switching agents crossfades the chats.
-                    .transition(.opacity)
+                    // Switching agents crossfades the chats, quickly.
+                    .transition(.asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.18)),
+                                            removal: .opacity.animation(.easeOut(duration: 0.1))))
                 }
             }
             .animation(RelayMotion.enter, value: state.notRunning)

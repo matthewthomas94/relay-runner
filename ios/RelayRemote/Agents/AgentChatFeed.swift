@@ -18,6 +18,9 @@ struct AgentChatFeed: View {
 
     var body: some View {
         ScrollView {
+            // One container renders every bubble's glass together, which is
+            // much cheaper than a separate glass pass per bubble.
+            GlassEffectContainer(spacing: 0) {
             LazyVStack(spacing: 20) {
                 ForEach(messages) { message in
                     row(message)
@@ -36,6 +39,7 @@ struct AgentChatFeed: View {
             .animation(RelayMotion.move, value: waiting)
             .animation(RelayMotion.enter, value: messages.count)
             .animation(RelayMotion.enter, value: speakingSeq)
+            }
         }
         .scrollIndicators(.hidden)
         .defaultScrollAnchor(.bottom)

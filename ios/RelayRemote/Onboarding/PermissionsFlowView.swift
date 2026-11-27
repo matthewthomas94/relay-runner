@@ -24,7 +24,10 @@ struct PermissionsFlowView: View {
                 Color.clear
             }
         }
-        .task { await model.load(startingAt: LaunchOptions.current.permissionStep) }
+        .task {
+            await model.load(startingAt: LaunchOptions.current.permissionStep,
+                             everyStep: OnboardingProgress().isReplaying)
+        }
         .onChange(of: model.isLoaded && model.current == nil) { _, finished in
             if finished { onFinished() }
         }

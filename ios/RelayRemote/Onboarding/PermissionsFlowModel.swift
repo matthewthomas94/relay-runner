@@ -47,9 +47,16 @@ final class PermissionsFlowModel {
         self.notifications = notifications
     }
 
-    /// Drops the steps whose permission was already decided.
-    func load(startingAt forced: PermissionStep? = nil) async {
+    /// Drops the steps whose permission was already decided, unless
+    /// `everyStep` (Redo onboarding) asks to show them all.
+    func load(startingAt forced: PermissionStep? = nil, everyStep: Bool = false) async {
         guard !isLoaded else { return }
+        if everyStep {
+            pending = PermissionStep.allCases
+            current = pending.first
+            isLoaded = true
+            return
+        }
         if let forced {
             pending = Array(PermissionStep.allCases.drop { $0 != forced })
             current = forced

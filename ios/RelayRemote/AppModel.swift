@@ -40,6 +40,8 @@ final class AppModel {
     /// RR-545: counts the asks to show the Agents tab, as a tapped reply
     /// notification makes; the tab view switches on each change.
     private(set) var agentsTabRequests = 0
+    /// Testing: counts the asks to walk onboarding again (Settings › Testing).
+    private(set) var onboardingReplayRequests = 0
     /// RR-545: reply and lost-connection notifications in the background.
     @ObservationIgnored let notifier: ReplyNotifier
     /// Counts the asks for the open ticket's text; each one sends a `get`.
@@ -86,6 +88,16 @@ final class AppModel {
         notifier.holdAudio = { [weak self] on in
             self?.voice?.setKeepAlive(on, for: .replyNotifications) ?? false
         }
+    }
+
+    /// Testing: walk onboarding again from the splash, showing every
+    /// permission step. iOS keeps the permissions already granted (an app
+    /// cannot revoke its own), so those steps move on without a system prompt.
+    func redoOnboarding() {
+        let progress = OnboardingProgress()
+        progress.isFinished = false
+        progress.isReplaying = true
+        onboardingReplayRequests += 1
     }
 
     /// RR-545: a tapped reply notification opens that agent's chat on the Agents tab.

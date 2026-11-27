@@ -30,6 +30,8 @@ struct AppFlowRouter: View {
         .animation(RelayMotion.pageEnter, value: stage)
         .preferredColorScheme(.dark)
         .onAppear(perform: start)
+        // Testing: Settings › Redo onboarding walks it again from the splash.
+        .onChange(of: model.onboardingReplayRequests) { stage = .splash }
         .onChange(of: model.paired != nil) { wasPaired, isPaired in
             // Forget this Mac: the app can do nothing until it pairs again.
             if wasPaired, !isPaired, stage == .app { stage = .pairing }
@@ -69,7 +71,13 @@ struct AppFlowRouter: View {
 
     private func advance() {
         guard let current = stage else { return }
-        if current == .tutorial { progress.isFinished = true }
-        stage = AppFlow.stage(after: current, onboardingFinished: progress.isFinished)
+        if current == .tutorial {
+            progress.isFinished = true
+            progress.isReplaying = false
+        }
+        var next = AppFlow.stage(after: current, onboardingFinished: progress.isFinished)
+        // A replay keeps the pairing, so it goes from permissions to the tutorial.
+        if next == .pairing, progress.isReplaying, model.paired != nil { next = .tutorial }
+        stage = next
     }
 }

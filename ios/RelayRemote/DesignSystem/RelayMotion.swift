@@ -93,11 +93,13 @@ struct RelaySwap<Value: Equatable, Content: View>: View {
 
 extension View {
     /// Press feedback for anything tappable: shrinks to 97% while pressed and
-    /// springs back on release. Scale only, so Reduce Motion keeps it (it is
-    /// feedback, not movement across the screen).
+    /// springs back on release, with a light haptic tap the moment the finger
+    /// lands. Scale only, so Reduce Motion keeps it (it is feedback, not
+    /// movement across the screen).
     func relayPressed(_ pressed: Bool) -> some View {
         scaleEffect(pressed ? RelayMotion.pressedScale : 1)
             .animation(RelayMotion.press, value: pressed)
+            .sensoryFeedback(.impact(weight: .light), trigger: pressed) { _, isPressed in isPressed }
     }
 }
 
@@ -189,6 +191,23 @@ extension AnyTransition {
             removal: .modifier(active: RelayPageEffect(hidden: true, travel: -travel),
                                identity: RelayPageEffect(hidden: false, travel: 0))
                 .animation(RelayMotion.pageExit)
+        )
+    }
+}
+
+// MARK: - Tab switches
+
+extension AnyTransition {
+    /// Switching tabs happens tens of times a day, so it must feel instant
+    /// (Emil Kowalski: frequent actions get little or no motion). The pages
+    /// cross over at once, with no gap and no blur: the new page fades in
+    /// over 200 ms on the strong ease-out while drifting 8 pt from the side it
+    /// came from; the old one is gone in 120 ms.
+    static func relayTab(direction: CGFloat) -> AnyTransition {
+        .asymmetric(
+            insertion: .opacity.combined(with: .offset(x: 8 * direction))
+                .animation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.2)),
+            removal: .opacity.animation(.easeOut(duration: 0.12))
         )
     }
 }

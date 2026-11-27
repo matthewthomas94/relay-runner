@@ -99,7 +99,7 @@ struct OnboardingHeroLayout<Accessory: View, Secondary: View>: View {
                         .padding(.vertical, 4)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.relayPlain)
                 .accessibilityLabel("Skip")
                 .padding(.top, 1)
                 .padding(.trailing, 20)
