@@ -14,8 +14,6 @@ struct HostedPanel {
     let content: AnyView
     /// The fill over the glass.
     var glass: RelayGlass = .panel
-    /// The white hairline round the glass (the tab bar's is 6%).
-    var stroke: Double = 0
     /// Talking or not: the one change that resizes the dock in place.
     var isTalking = false
 }
@@ -40,13 +38,13 @@ extension View {
     /// hands the panel up to be drawn in the tab bar's glass container.
     /// Elsewhere: the panel as it is.
     @ViewBuilder
-    func hostedPanel(_ tab: MainTab, hosted: Bool, glass: RelayGlass = .panel, stroke: Double = 0,
+    func hostedPanel(_ tab: MainTab, hosted: Bool, glass: RelayGlass = .panel,
                      isTalking: Bool = false) -> some View {
         if hosted {
             hidden()
                 .accessibilityHidden(true)
                 .anchorPreference(key: HostedPanelKey.self, value: .bounds) {
-                    [tab: HostedPanel(tab: tab, anchor: $0, content: AnyView(self), glass: glass, stroke: stroke,
+                    [tab: HostedPanel(tab: tab, anchor: $0, content: AnyView(self), glass: glass,
                                       isTalking: isTalking)]
                 }
         } else {

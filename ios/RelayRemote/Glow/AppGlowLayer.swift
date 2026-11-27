@@ -25,14 +25,12 @@ enum AppGlowState: Equatable {
 /// playback field while a reply plays (`DotField`). One view at the app root,
 /// driven by the voice state.
 ///
-/// A field rises from the bottom edge to its full height as it arrives
-/// (500 ms, strong ease-out) and sinks back into the bottom edge as it
-/// leaves (340 ms, ease-in), while carrying the desktop's surface transform
-/// from `ParticleFieldRenderer` under `VoiceOverlayMotion`: fading, blurring
-/// by 12 pt and scaling to 96% about the field's own centre at the base of
-/// the screen. Switching between listening and playback sinks the old field
-/// and then raises the new one; Reduce Motion crossfades them instead and
-/// keeps only the fades.
+/// A field pushes up from below the bottom edge to its full height as it
+/// arrives (550 ms, strong ease-out) and pushes back down off the screen as
+/// it leaves (340 ms, ease-in), fading out as it goes (user, 2026-11-27).
+/// Switching between listening and playback pushes the old field down and
+/// then the new one up; Reduce Motion crossfades them instead and keeps only
+/// the fades.
 struct AppGlowLayer: View {
     let model: AppModel
     /// Debug only: the glow `--sample-glow` shows (`LaunchOptions`).
@@ -101,14 +99,9 @@ struct StateGlowLayer: View {
     /// And pulls back down into the bottom edge as it leaves.
     static let sink = Animation.timingCurve(0.4, 0, 1, 1, duration: 0.34)
     static let crossfade = Animation.timingCurve(0.16, 1, 0.3, 1, duration: 0.45)
-    /// The height of the rising field's soft top edge.
+    /// Extra travel past the field's height, so its soft top edge clears the
+    /// screen's bottom edge too.
     static let edge: CGFloat = 120
-
-    /// The centre of the field showing, which the desktop scales about.
-    private var anchor: UnitPoint {
-        let coverage = (current.style ?? previous.style)?.coverage ?? DotFieldStyle.playback.coverage
-        return UnitPoint(x: 0.5, y: 1 - coverage / 2)
-    }
 
     /// The tallest field showing, so a crossfade never clips the taller one.
     private var coverage: CGFloat {
@@ -124,23 +117,15 @@ struct StateGlowLayer: View {
                 DotField(style: style).opacity(arrival)
             }
         }
-        // The field rises from the bottom edge behind a soft-topped mask.
-        // Only the mask's offset animates, on the GPU, so the dots keep
-        // their own frame rate and the edge moves at the display's.
-        .mask {
-            GeometryReader { geo in
-                let height = geo.size.height
-                VStack(spacing: 0) {
-                    LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
-                        .frame(height: Self.edge)
-                    Color.black.frame(height: height)
-                }
-                .offset(y: height - (height * coverage + Self.edge) * reveal)
-            }
+        // The field pushes up from below the screen's bottom edge as it
+        // arrives and pushes back down off it as it leaves (user,
+        // 2026-11-27): the whole field moves, rather than a mask wiping it.
+        // Only the offset animates, on the GPU, so the dots keep their own
+        // frame rate.
+        .visualEffect { [reveal, coverage] content, proxy in
+            content.offset(y: (1 - reveal) * (proxy.size.height * coverage + Self.edge))
         }
         .opacity(1 - departure)
-        .scaleEffect(reduceMotion ? 1 : 1 - (1 - RelayMotion.hiddenScale) * departure, anchor: anchor)
-        .blur(radius: reduceMotion ? 0 : RelayMotion.pageBlur * departure)
         .ignoresSafeArea()
         .allowsHitTesting(false)
         .onAppear { transition(to: target) }

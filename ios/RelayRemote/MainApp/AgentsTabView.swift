@@ -44,7 +44,8 @@ private struct LiveAgentsScreen: View {
                                      playingSeq: voice.isSpeaking ? voice.currentSeq : nil,
                                      waitingSeqs: voice.waitingSeqs)
         AgentsScreen(state: AgentsScreenState(agents: agents, voice: snapshot, talkMode: talkMode),
-                     actions: actions(playing: agents.agent(ofSeq: snapshot.playingSeq)))
+                     actions: actions(playing: agents.agent(ofSeq: snapshot.playingSeq)
+                                        ?? agents.activities.first { $0.value == .playing }?.key))
             .onChange(of: MacSessionStatus(session), initial: true) { _, status in agents.update(status) }
     }
 

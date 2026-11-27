@@ -1,10 +1,11 @@
 import SwiftUI
 
 /// The glass surfaces in the final Figma screens: each is Figma's Glass effect
-/// (refraction 0.8, depth 20, light from the top left) under a translucent
-/// neutral fill. On the phone that is iOS's own Liquid Glass with the same
-/// fill laid over it, so the backdrop refracts and the rim catches the light
-/// the way the designs show, instead of a flat blur.
+/// (light from the top left) under a translucent neutral fill. On the phone
+/// that is the Figma fill with a lit rim (`RelayGlassRim`) and no frosting of
+/// its own, so the dot fields and the backdrop show through as clearly as in
+/// the designs (user, 2026-11-27). iOS's Liquid Glass darkened and frosted
+/// the backdrop on a device until the dots behind it all but vanished.
 enum RelayGlass {
     /// Panels, the dock and chat bubbles: #0c0f13 at 30% (Figma Final,
     /// clearer glass, user 2026-11-27).
@@ -27,11 +28,21 @@ enum RelayGlass {
     /// The primary button pressed or active: the pressed grey at 85%.
     case primaryPressed
 
-    /// The glass under every tint: iOS's clear Liquid Glass, as the desktop's
-    /// shell glass is a blur with the material's own fill and tone removed.
-    /// The regular glass frosts and darkens the backdrop on its own, so under
-    /// these tints little of what is behind showed through.
-    static let material = Glass.clear
+    /// The glass under every tint: none of iOS's own (`identity`), so nothing
+    /// frosts or darkens the backdrop. Surfaces keep their `glassEffect` and
+    /// glass IDs, so the shapes still move as one where they morph.
+    static let material = Glass.identity
+
+    /// How bright the lit rim is: panels and bars carry Figma's 0.8 light,
+    /// controls its 0.5, filled pills a little.
+    var rimLight: Double {
+        switch self {
+        case .panel, .bar: return 0.8
+        case .control, .selected: return 0.5
+        case .card, .raised: return 0.35
+        case .primary, .primaryPressed: return 0
+        }
+    }
 
     var tint: Color {
         switch self {
@@ -68,9 +79,9 @@ struct RelayGlassBackground<S: InsettableShape>: View {
                 default: shape.fill(glass.tint)
                 }
             } else {
-                Color.clear
-                    .glassEffect(RelayGlass.material, in: shape)
+                RelayFrost(shape: shape)
                     .overlay(shape.fill(glass.tint))
+                    .overlay(RelayGlassRim(shape: shape, light: glass.rimLight))
             }
         }
         .overlay {
@@ -81,11 +92,10 @@ struct RelayGlassBackground<S: InsettableShape>: View {
     }
 }
 
-/// A control's surface (buttons, the talk button): the Figma fill only.
-/// The Figma's controls carry a light 8 pt glass that barely shows on the
-/// panels beneath them; iOS's Liquid Glass reads far stronger, so controls
-/// draw the fill alone.
-struct RelayGlassSurface<S: Shape>: ViewModifier {
+/// A control's surface (buttons, the talk button): the Figma fill, with the
+/// control glass's lit rim on secondary and danger buttons. The primary
+/// button is solid white, as in Figma.
+struct RelayGlassSurface<S: InsettableShape>: ViewModifier {
     let glass: RelayGlass
     let shape: S
 
@@ -100,8 +110,44 @@ struct RelayGlassSurface<S: Shape>: ViewModifier {
         switch glass {
         case .primary: shape.fill(RelayColor.neutral10)
         case .primaryPressed: shape.fill(RelayColor.primaryPressed)
-        default: shape.fill(glass.tint)
+        // Secondary and danger buttons: the Figma control glass's lit edge.
+        default: shape.fill(glass.tint).overlay(RelayGlassRim(shape: shape, light: glass.rimLight))
         }
+    }
+}
+
+/// Figma's Glass light on a surface's edge: a 1 pt rim, brightest at the
+/// top-left corner where the light falls, fading across the surface and
+/// catching again faintly at the bottom-right, as a glass slab does. `light`
+/// is Figma's light intensity.
+struct RelayGlassRim<S: InsettableShape>: View {
+    let shape: S
+    var light: Double = 0.8
+
+    var body: some View {
+        shape.strokeBorder(
+            LinearGradient(stops: [.init(color: .white.opacity(0.32 * light), location: 0),
+                                   .init(color: .white.opacity(0.06 * light), location: 0.4),
+                                   .init(color: .white.opacity(0.04 * light), location: 0.6),
+                                   .init(color: .white.opacity(0.16 * light), location: 1)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing),
+            lineWidth: 1)
+        .allowsHitTesting(false)
+    }
+}
+
+/// Figma's glass frost: a light blur of what is behind, so text passing
+/// under a bar softens while the dot fields still glow through. iOS's
+/// thinnest material, in the dark appearance.
+struct RelayFrost<S: Shape>: View {
+    let shape: S
+
+    var body: some View {
+        // Half strength: the material alone frosts the 3 pt dots to a grey haze.
+        shape.fill(.ultraThinMaterial)
+            .opacity(0.5)
+            .environment(\.colorScheme, .dark)
+            .allowsHitTesting(false)
     }
 }
 

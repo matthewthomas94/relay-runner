@@ -74,7 +74,7 @@ struct WorkspaceTabView: View {
             if case .list(let listing) = phase {
                 ProjectTabStrip(tabs: listing.tabs, selection: Bindable(model).workspaceProject,
                                 drawsGlass: !hostsPanels)
-                    .hostedPanel(.workspace, hosted: hostsPanels, glass: .bar, stroke: ProjectTabStrip.stroke)
+                    .hostedPanel(.workspace, hosted: hostsPanels, glass: .bar)
                     .padding(.horizontal, RelayMetrics.screenMargin)
                     .padding(.bottom, ProjectTabStrip.bottomGap)
             }
@@ -190,6 +190,9 @@ private struct WorkspaceList: View {
                     .frame(height: AgentChatFeed.topFade)
                 Rectangle().fill(.black)
             }
+            // The mask reaches under the bars, so the list shows through
+            // their glass instead of stopping at their edge.
+            .ignoresSafeArea(edges: .bottom)
         }
         .opacity(dimmed ? 0.3 : 1)
         .animation(RelayMotion.enter, value: dimmed)
@@ -242,10 +245,9 @@ struct ProjectTabStrip: View {
     var drawsGlass = true
     @Namespace private var pill
 
-    static let padding: CGFloat = 4
+    /// The dock's padding around the agent tabs (user, 2026-11-27).
+    static let padding: CGFloat = AgentDock.padding
     static let cornerRadius: CGFloat = 20
-    /// The tab bar's hairline.
-    static let stroke = 0.06
     /// How far the container sits above the tab bar.
     static let bottomGap: CGFloat = 12
     /// The room the container takes at the bottom of the list, and a little
@@ -288,7 +290,7 @@ struct ProjectTabStrip: View {
         .frame(maxWidth: .infinity)
         .clipShape(shape)
         .background {
-            if drawsGlass { RelayGlassBackground(glass: .bar, shape: shape, stroke: Self.stroke) }
+            if drawsGlass { RelayGlassBackground(glass: .bar, shape: shape) }
         }
     }
 }

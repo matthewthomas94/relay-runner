@@ -58,14 +58,17 @@ struct AgentsScreen: View {
             .animation(RelayMotion.enter, value: state.notRunning)
             .animation(RelayMotion.enter, value: state.selected)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.bottom, 10)
             // Tapping the chat puts the keyboard away; buttons in it still work.
             .contentShape(Rectangle())
             .onTapGesture { dismissKeyboard() }
             .modifier(Dimmed(isDimmed: isOffline))
-            dock
-                .padding(.horizontal, AgentDock.sideInset)
-                .padding(.bottom, Self.dockBottomGap)
+            // The chat scrolls on under the dock's glass, its newest message
+            // resting 10 pt above it (user, 2026-11-27).
+            .safeAreaInset(edge: .bottom, spacing: 10) {
+                dock
+                    .padding(.horizontal, AgentDock.sideInset)
+                    .padding(.bottom, Self.dockBottomGap)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.clear)

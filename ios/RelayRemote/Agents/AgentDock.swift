@@ -12,7 +12,7 @@ enum DockControl: Hashable, CaseIterable {
 /// message panel holding the agent tabs, a text box whose Send button is the
 /// old secondary up arrow, then a row of two buttons sharing its width. On
 /// the left one playback control: Play while the selected agent has a reply
-/// not played yet (RR-554, shimmering with the desktop's attention dots),
+/// not played yet (RR-554),
 /// Stop while a reply plays, otherwise Replay, and Cancel while the user
 /// talks. On the right the white talk button: Hold to talk, then Release to
 /// send while talking (Tap to talk and Tap to send in Toggle mode). The
@@ -76,15 +76,6 @@ struct AgentDock: View {
                 }
                 .disabled(!replayEnabled)
                 .buttonStyle(RelayButtonStyle(role: .secondary, fullWidth: true))
-                .background {
-                    // A reply waiting to be played shimmers, as an agent
-                    // wanting attention does on the Mac.
-                    if replayFace == .play {
-                        FluxDots()
-                            .clipShape(RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius, style: .continuous))
-                            .transition(.opacity)
-                    }
-                }
                 .animation(RelayMotion.enter, value: replayFace)
                 .opacity(dimmed.contains(.replay) ? 0.3 : 1)
                 .allowsHitTesting(!inert.contains(.replay))
@@ -108,7 +99,14 @@ struct AgentDock: View {
         switch replayFace {
         case .cancel: RelayButtonLabel("Cancel", icon: .x)
         case .stop: RelayButtonLabel("Stop", icon: .square)
-        case .play: RelayButtonLabel("Play", icon: .play)
+        case .play:
+            // As much of "Play new message" as fits half the row.
+            ViewThatFits(in: .horizontal) {
+                RelayButtonLabel("Play new message", icon: .play)
+                RelayButtonLabel("Play message", icon: .play)
+                RelayButtonLabel("Play", icon: .play)
+            }
+            .lineLimit(1)
         case .replay: RelayButtonLabel("Replay", icon: .rotateCcw)
         }
     }
@@ -212,11 +210,15 @@ struct DockTalkButton: View {
     let isTalking: Bool
     let onCommand: (TalkGesture.Command) -> Void
     @State private var touching = false
+    /// What the tap just asked for, shown at once instead of waiting for the
+    /// voice layer to open or close the microphone (user, 2026-11-27: the
+    /// button was slow to respond). Cleared when the voice layer catches up.
+    @State private var expected: Bool?
 
     private enum Face { case talk, send }
 
     private var face: Face {
-        isTalking || (mode == .hold && touching) ? .send : .talk
+        (expected ?? isTalking) || (mode == .hold && touching) ? .send : .talk
     }
 
     var body: some View {
@@ -251,9 +253,12 @@ struct DockTalkButton: View {
                     .onEnded { _ in
                         RelayHaptics.release()
                         touching = false
-                        onCommand(TalkGesture.touchUp(mode: mode, isTalking: isTalking))
+                        let command = TalkGesture.touchUp(mode: mode, isTalking: isTalking)
+                        if command != .none { expect(command == .start) }
+                        onCommand(command)
                     }
             )
+            .onChange(of: isTalking) { expected = nil }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(title)
             .accessibilityAddTraits(.isButton)
@@ -261,8 +266,28 @@ struct DockTalkButton: View {
             .accessibilityAction { onCommand(isTalking ? .send : .start) }
     }
 
+    /// Shows `talking` until the voice layer agrees, or for a second and a
+    /// half if it never does (the microphone refused, say).
+    private func expect(_ talking: Bool) {
+        expected = talking
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            if expected == talking { expected = nil }
+        }
+    }
+
+    @ViewBuilder
     private var label: some View {
-        RelayButtonLabel(title, icon: face == .send ? .audioLines : .mic)
+        if face == .send {
+            // The sound wave moves while the user talks.
+            HStack(spacing: 8) {
+                TalkingWave(size: 20)
+                Text(title)
+            }
+            .accessibilityElement(children: .combine)
+        } else {
+            RelayButtonLabel(title, icon: .mic)
+        }
     }
 
     private var title: String {
@@ -270,5 +295,39 @@ struct DockTalkButton: View {
         case .send: return mode == .hold ? "Release to send" : "Tap to send"
         case .talk: return mode == .hold ? "Hold to talk" : "Tap to talk"
         }
+    }
+}
+
+/// Lucide's `audio-lines`, its six bars rising and falling out of step while
+/// the user talks. Reduce Motion holds the icon still.
+struct TalkingWave: View {
+    let size: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Each bar's resting height in Lucide's 24 pt grid, centred on y = 12.
+    private static let bars: [CGFloat] = [3, 11, 18, 7, 13, 3]
+    private static let period: TimeInterval = 0.9
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: reduceMotion)) { timeline in
+            Canvas { context, canvas in
+                let scale = canvas.width / 24
+                let time = timeline.date.timeIntervalSinceReferenceDate
+                for (index, rest) in Self.bars.enumerated() {
+                    // Each bar breathes between 45% and 100% of a full 18 pt
+                    // bar, a sixth of a cycle behind the one before it.
+                    let wave = reduceMotion ? 0 : (sin((time / Self.period + Double(index) / 6) * 2 * .pi) + 1) / 2
+                    let height = reduceMotion ? rest : max(3, 18 * (0.45 + 0.55 * wave))
+                    let x = (2 + CGFloat(index) * 4) * scale
+                    var path = Path()
+                    path.move(to: CGPoint(x: x, y: (12 - height / 2) * scale))
+                    path.addLine(to: CGPoint(x: x, y: (12 + height / 2) * scale))
+                    context.stroke(path, with: .foreground,
+                                   style: StrokeStyle(lineWidth: 2 * scale, lineCap: .round))
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
     }
 }

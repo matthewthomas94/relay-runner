@@ -99,13 +99,14 @@ private struct BarGlass: ViewModifier {
         if let morph {
             content
                 .background(shape.fill(RelayGlass.bar.tint))
-                .overlay(shape.strokeBorder(.white.opacity(0.06), lineWidth: 1))
+                .background(RelayFrost(shape: shape))
+                .overlay(RelayGlassRim(shape: shape, light: RelayGlass.bar.rimLight))
                 .glassEffect(RelayGlass.material, in: shape)
                 .glassEffectID(GlassTabBar.morphID, in: morph)
                 .glassEffectTransition(.materialize)
                 .environment(\.relayGlassFlat, true)
         } else {
-            content.background(RelayGlassBackground(glass: .bar, shape: shape, stroke: 0.06))
+            content.background(RelayGlassBackground(glass: .bar, shape: shape))
         }
     }
 }

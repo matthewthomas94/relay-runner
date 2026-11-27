@@ -110,6 +110,9 @@ private struct SettingsContent: View {
                     .frame(height: AgentChatFeed.topFade)
                 Rectangle().fill(.black)
             }
+            // The mask reaches under the bars, so the list shows through
+            // their glass instead of stopping at their edge.
+            .ignoresSafeArea(edges: .bottom)
         }
         .defaultScrollAnchor(LaunchOptions.current.scrollsToBottom ? .bottom : .top)
         .task {

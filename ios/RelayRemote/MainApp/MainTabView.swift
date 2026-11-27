@@ -144,7 +144,8 @@ struct MainTabView: View {
         // Contents leaving a glass that is shrinking stay inside it.
         .clipShape(shape)
         .background(shape.fill((panel?.glass ?? .panel).tint).opacity(panel == nil ? 0 : 1))
-        .overlay(shape.strokeBorder(.white.opacity(panel?.stroke ?? 0), lineWidth: 1))
+        .background(RelayFrost(shape: shape).opacity(panel == nil ? 0 : 1))
+        .overlay(RelayGlassRim(shape: shape, light: (panel?.glass ?? .panel).rimLight).opacity(panel == nil ? 0 : 1))
         .glassEffect(RelayGlass.material, in: shape)
         .modifier(PanelGlassID(id: morphs ? Self.panelGlassID : nil, namespace: glassMorph))
         .position(x: frame.midX, y: frame.midY)

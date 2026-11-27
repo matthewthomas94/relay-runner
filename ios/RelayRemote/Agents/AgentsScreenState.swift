@@ -58,7 +58,8 @@ struct AgentsScreenState: Equatable {
     var feed: [ChatMessage]
     /// The reply in the feed that is playing now.
     var speakingSeq: Int?
-    /// A reply is playing on the phone, any agent's: the dock's control reads Stop.
+    /// A reply is playing, any agent's, on the phone or on the Mac (a Replay
+    /// plays on the Mac when Remote mode is off): the dock's control reads Stop.
     var isPlaying: Bool
     var waiting: WaitingReply?
     /// The Mac reports the selected agent stopped (screen 24).
@@ -88,7 +89,7 @@ struct AgentsScreenState: Equatable {
         // as the messenger's quick acknowledgement before the full reply).
         feed = chat
         speakingSeq = playing == selected ? voice.playingSeq : nil
-        isPlaying = voice.playingSeq != nil
+        isPlaying = voice.playingSeq != nil || agents.activities.values.contains(.playing)
         waiting = mine.last.map { WaitingReply(seq: $0, skipping: Set(mine.dropLast())) }
         notRunning = agents.isStopped(selected) && !voice.isTalking
         reachability = agents.reachability
