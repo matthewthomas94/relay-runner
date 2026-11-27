@@ -32,13 +32,10 @@ private struct RelayButtonBody: View {
             .foregroundStyle(foreground)
             .padding(.horizontal, 16)
             .frame(minWidth: height, maxWidth: fullWidth ? .infinity : nil, minHeight: height)
-            .background {
-                if role == .primary {
-                    RelayGlassBackground(glass: configuration.isPressed ? .primaryPressed : .primary, shape: shape)
-                } else {
-                    RelayGlassBackground(glass: configuration.isPressed ? .selected : .control, shape: shape)
-                }
-            }
+            .modifier(RelayGlassSurface(glass: role == .primary
+                                            ? (configuration.isPressed ? .primaryPressed : .primary)
+                                            : (configuration.isPressed ? .selected : .control),
+                                        shape: shape))
             .contentShape(shape)
             .opacity(isEnabled ? 1 : 0.4)
             .animation(RelayMotion.press, value: configuration.isPressed)

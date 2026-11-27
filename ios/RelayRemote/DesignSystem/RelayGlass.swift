@@ -72,6 +72,38 @@ struct RelayGlassBackground<S: InsettableShape>: View {
     }
 }
 
+/// The glass surface applied to the content itself, so the content draws on
+/// top of the glass. A glass background view beside the content can draw
+/// over it inside a `GlassEffectContainer`, as in the dock (RR-552).
+struct RelayGlassSurface<S: Shape>: ViewModifier {
+    let glass: RelayGlass
+    let shape: S
+    @Environment(\.relayGlassFlat) private var flat
+
+    func body(content: Content) -> some View {
+        Group {
+            if flat {
+                content.background(flatFill)
+            } else {
+                content
+                    .background(shape.fill(glass.tint))
+                    .glassEffect(RelayGlass.material, in: shape)
+            }
+        }
+        .environment(\.colorScheme, .dark)
+        .animation(RelayMotion.press, value: glass)
+    }
+
+    @ViewBuilder
+    private var flatFill: some View {
+        switch glass {
+        case .primary: shape.fill(RelayColor.neutral10)
+        case .primaryPressed: shape.fill(RelayColor.primaryPressed)
+        default: shape.fill(glass.tint)
+        }
+    }
+}
+
 extension EnvironmentValues {
     /// True inside a `GlassEffectContainer` whose surfaces carry the glass
     /// (the dock and the tab bar, RR-552). There a separate glass background

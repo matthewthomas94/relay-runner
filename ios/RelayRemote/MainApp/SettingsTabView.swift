@@ -98,8 +98,19 @@ private struct SettingsContent: View {
             .padding(.horizontal, RelayMetrics.screenMargin)
             .padding(.top, 16)
             .padding(.bottom, 24)
+            .padding(.bottom, AgentChatFeed.bottomFade)
         }
         .scrollIndicators(.hidden)
+        // The panel fades out at the list's edges, as the Agents chat does.
+        .mask {
+            VStack(spacing: 0) {
+                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                    .frame(height: AgentChatFeed.topFade)
+                Rectangle().fill(.black)
+                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                    .frame(height: AgentChatFeed.bottomFade)
+            }
+        }
         .defaultScrollAnchor(LaunchOptions.current.scrollsToBottom ? .bottom : .top)
         .task {
             settings.start()
@@ -437,7 +448,7 @@ private struct SegmentedRow<Value: Hashable>: View {
                 }
             }
             .padding(2)
-            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(RelayColor.neutral1))
+            .modifier(RelayGlassSurface(glass: .control, shape: RoundedRectangle(cornerRadius: 12, style: .continuous)))
         }
     }
 }
@@ -476,8 +487,9 @@ private struct ChoiceRow: View {
                 }
                 .padding(.horizontal, 12)
                 .frame(minHeight: RelayMetrics.controlHeight)
-                .background(RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius, style: .continuous)
-                    .fill(RelayColor.neutral1))
+                .modifier(RelayGlassSurface(glass: .control,
+                                            shape: RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius,
+                                                                    style: .continuous)))
             }
             .disabled(!isEnabled || options.isEmpty)
             .opacity(isEnabled ? 1 : 0.4)

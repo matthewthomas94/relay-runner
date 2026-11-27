@@ -173,6 +173,16 @@ private struct WorkspaceList: View {
             }
         }
         .refreshable { await refresh() }
+        // The list fades out at its edges, as the Agents chat does.
+        .mask {
+            VStack(spacing: 0) {
+                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                    .frame(height: AgentChatFeed.topFade)
+                Rectangle().fill(.black)
+                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                    .frame(height: AgentChatFeed.bottomFade)
+            }
+        }
         .opacity(dimmed ? 0.3 : 1)
         .animation(RelayMotion.enter, value: dimmed)
         .accessibilityElement(children: .contain)
@@ -234,10 +244,10 @@ private struct ProjectTabStrip: View {
                             .frame(height: AgentTabStrip.height)
                             .background {
                                 if selected {
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                        .fill(RelayColor.neutral3)
-                                        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                            .stroke(RelayColor.neutral5, lineWidth: 1))
+                                    // The agent tabs' glass pill (`AgentTabStrip`).
+                                    RelayGlassBackground(glass: .panel,
+                                                         shape: RoundedRectangle(cornerRadius: 12, style: .continuous),
+                                                         stroke: 0.08)
                                         .matchedGeometryEffect(id: "pill", in: pill)
                                 }
                             }
