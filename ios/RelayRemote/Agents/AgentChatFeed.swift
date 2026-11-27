@@ -13,20 +13,19 @@ struct AgentChatFeed: View {
     static let topFade: CGFloat = 32
     static let bottomFade: CGFloat = 24
 
-    /// A row of the feed. An agent's reply keeps one identity, `reply-<seq>`,
-    /// from the moment it waits as "New reply" to after it plays, so pressing
-    /// Play reshapes that one piece of glass into the bubble instead of
-    /// swapping one view for another.
+    /// A row of the feed. An agent's reply keeps one identity, its chat
+    /// message's id, from the moment it waits as "New reply" to after it
+    /// plays, so pressing Play reshapes that one piece of glass into the
+    /// bubble instead of swapping one view for another. Not its seq: the
+    /// Mac's numbering starts again when it restarts.
     private enum Item: Identifiable {
         case message(ChatMessage)
         case waiting(AgentsScreenState.WaitingReply)
 
         var id: String {
             switch self {
-            case .waiting(let waiting): return AgentChatFeed.replyID(waiting.seq)
-            case .message(let message):
-                if message.role == .agent, let seq = message.seq { return AgentChatFeed.replyID(seq) }
-                return message.id.uuidString
+            case .waiting(let waiting): return waiting.messageID?.uuidString ?? "waiting-\(waiting.seq)"
+            case .message(let message): return message.id.uuidString
             }
         }
 
@@ -46,13 +45,16 @@ struct AgentChatFeed: View {
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 20) {
+                // Only the newest reply with the playing seq: an older one may
+                // share it from before the Mac restarted.
+                let speakingID = speakingSeq.flatMap { seq in messages.last(where: { $0.seq == seq })?.id }
                 ForEach(items) { item in
                     Group {
                         // One branch for every agent reply, so a reply keeps
                         // its view (and its glass) when it changes state.
                         if let reply = item.reply {
                             ReplyRow(content: reply, name: name,
-                                     speaking: reply.seq != nil && reply.seq == speakingSeq, onPlay: onPlay)
+                                     speaking: item.id == speakingID?.uuidString, onPlay: onPlay)
                         } else if case .message(let message) = item {
                             row(message)
                         }
@@ -118,8 +120,6 @@ struct AgentChatFeed: View {
             .relayTextStyle(.caption)
             .foregroundStyle(RelayColor.neutral7)
     }
-
-    static func replyID(_ seq: Int) -> String { "reply-\(seq)" }
 
     static func time(_ date: Date) -> String {
         date.formatted(.dateTime.hour(.defaultDigits(amPM: .omitted)).minute())

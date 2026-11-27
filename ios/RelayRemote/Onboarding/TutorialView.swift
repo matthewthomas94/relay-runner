@@ -258,7 +258,7 @@ enum TutorialSample: String, CaseIterable {
     var transcript: String { self == .release ? "Hi" : "" }
 
     var waiting: AgentsScreenState.WaitingReply? {
-        self == .play ? .init(seq: 1, skipping: [], receivedAt: .now.addingTimeInterval(-2)) : nil
+        self == .play ? .init(seq: 1, messageID: nil, skipping: [], receivedAt: .now.addingTimeInterval(-2)) : nil
     }
 
     var glow: DotFieldStyle? {

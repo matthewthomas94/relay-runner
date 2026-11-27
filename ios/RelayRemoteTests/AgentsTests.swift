@@ -302,6 +302,19 @@ final class AgentsTests: XCTestCase {
         XCTAssertEqual(talking.transcript, "Hi")
     }
 
+    func testAReplyReusingAnOldSeqAfterAMacRestartWaitsAsItself() {
+        let agents = model()
+        agents.select("george")
+        agents.receive(speech(6, "Old George reply", agent: "george"))
+        // The Mac restarted and its numbering began again.
+        agents.receive(speech(6, "New George reply", agent: "george"))
+
+        let state = AgentsScreenState(agents: agents, voice: VoiceSnapshot(waitingSeqs: [6]), talkMode: .hold)
+        XCTAssertEqual(state.feed.map(\.text), ["Old George reply"], "the older reply stays in the chat")
+        XCTAssertEqual(state.waiting?.messageID, agents.chat("george").last?.id,
+                       "the New reply panel is the new message, not the old one with the same seq")
+    }
+
     func testTalkModes() {
         // Hold: touching starts, letting go sends.
         XCTAssertEqual(TalkGesture.touchDown(mode: .hold, isTalking: false), .start)

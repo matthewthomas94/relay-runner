@@ -46,6 +46,9 @@ struct AgentsScreenState: Equatable {
     /// The selected agent's newest reply waiting for Play in Queue mode.
     struct WaitingReply: Equatable {
         let seq: Int
+        /// The chat message holding this reply. Seqs start again when the
+        /// Mac restarts, so the feed keys rows by this, not by `seq`.
+        let messageID: UUID?
         /// That agent's older waiting replies, skipped when this one plays.
         let skipping: Set<Int>
         let receivedAt: Date
@@ -85,11 +88,12 @@ struct AgentsScreenState: Equatable {
         // until it plays. Older ones (such as the messenger's quick
         // acknowledgement before the full reply) show as bubbles: Play skips
         // them anyway, and revealing them only on Play made the chat jump.
-        feed = chat.filter { message in message.seq.map { $0 != mine.last } ?? true }
+        let waitingMessage = mine.last.flatMap { last in chat.last(where: { $0.seq == last }) }
+        feed = chat.filter { $0.id != waitingMessage?.id }
         speakingSeq = playing == selected ? voice.playingSeq : nil
         if let last = mine.last {
-            let date = chat.last(where: { $0.seq == last })?.date ?? agents.now()
-            waiting = WaitingReply(seq: last, skipping: Set(mine.dropLast()), receivedAt: date)
+            waiting = WaitingReply(seq: last, messageID: waitingMessage?.id, skipping: Set(mine.dropLast()),
+                                   receivedAt: waitingMessage?.date ?? agents.now())
         } else {
             waiting = nil
         }
