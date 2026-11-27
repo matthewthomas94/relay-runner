@@ -8,17 +8,13 @@ struct MainTabView: View {
     @State private var selection: MainTab
     /// The tab bar steps aside while the keyboard is up (user, 2026-11-27).
     @State private var keyboardShown = false
-    /// The tab whose panel glass is out above the tab bar; none while the
-    /// glass is in the bar between tabs (user, 2026-11-27).
-    @State private var panelTab: MainTab?
+    /// How far each panel is out of the tab bar (`PanelPopProgress`).
+    @State private var pop: PanelPopProgress
+    @State private var popCache = PanelPopCache()
     /// The tabs' panels and the tab bar share one glass container (RR-552, RR-553).
     @Namespace private var glassMorph
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// The glass ID in `glassMorph` of the panel above the tab bar (the
-    /// Agents dock or the Workspace project tabs): one glass, which goes into
-    /// the tab bar and comes back out of it between tabs.
-    private static let panelGlassID = "panel"
     /// Under the 12 pt gap between a panel and the tab bar, so the two stay
     /// apart at rest and flow together as the panel nears the bar.
     private static let morphSpacing: CGFloat = 8
@@ -34,7 +30,7 @@ struct MainTabView: View {
         self.workspaceSample = workspaceSample
         self.ticketSample = TicketSample.debugSample(ticketSample, unreachable: workspaceSample == "unreachable")
         _selection = State(initialValue: initialTab)
-        _panelTab = State(initialValue: initialTab)
+        _pop = State(initialValue: PanelPopProgress(showing: initialTab))
     }
 
     var body: some View {
@@ -62,9 +58,12 @@ struct MainTabView: View {
         // state glow, then the tappable glass (user, 2026-11-27).
         .overlay { AppGlowLayer(model: model) }
         .overlayPreferenceValue(HostedPanelKey.self) { panels in
-            glassLayer(reduceMotion ? panels[selection] : panelTab.flatMap { panels[$0] })
+            glassLayer(panels)
         }
-        .task(id: selection) { await movePanel(to: selection) }
+        // The chosen tab's panel pushes out of the bar as the others sink back in.
+        .onChange(of: selection) { _, tab in
+            withAnimation(PanelPopProgress.animation) { pop = PanelPopProgress(showing: tab) }
+        }
         .animation(RelayMotion.enter, value: keyboardShown)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             keyboardShown = true
@@ -89,59 +88,34 @@ struct MainTabView: View {
         #endif
     }
 
-    /// Between Agents and Workspace the dock morphs straight into the project
-    /// tabs and back. To or from Settings, which has no panel, the panel melts
-    /// into the tab bar, or rises out of it as the page arrives (user,
-    /// 2026-11-28). A quicker switch cancels the wait, so the glass heads for
-    /// the latest tab.
-    private func movePanel(to tab: MainTab) async {
-        guard panelTab != tab else { return }
-        if reduceMotion { panelTab = tab; return }
-        if let from = panelTab, Self.panelTabs.contains(from), Self.panelTabs.contains(tab) {
-            withAnimation(Self.rise) { panelTab = tab }
-            return
-        }
-        withAnimation(Self.sink) { panelTab = nil }
-        try? await Task.sleep(for: .seconds(RelayMotion.tabExitDuration + RelayMotion.tabGap))
-        guard !Task.isCancelled else { return }
-        withAnimation(Self.rise) { panelTab = tab }
-    }
-
-    /// The panel's glass sinking into the tab bar, and rising out of it: no
-    /// bounce, unhurried enough to read as liquid (user, 2026-11-28). The
-    /// rise starts as the sink is ending, with the new page, so the two read
-    /// as one gesture.
-    private static let sink = Animation.spring(duration: 0.34, bounce: 0)
-    private static let rise = Animation.spring(duration: 0.44, bounce: 0)
-    /// The tabs with a panel above the tab bar.
-    private static let panelTabs: Set<MainTab> = [.agents, .workspace]
-
     /// The tabs' panels and the tab bar in one `GlassEffectContainer`
-    /// (RR-552, RR-553). The panel above the tab bar is one glass that never
-    /// leaves; the tab bar stays put and only that glass changes shape: it
-    /// reshapes between the dock and the project tabs, or sinks into the tab
-    /// bar, where the container merges it into the bar's glass, and rises
-    /// back out of it (`movePanel`).
-    /// The panel's contents fade out quickly and the new contents fade in once
-    /// the glass has nearly arrived, so only the glass morphs. With Reduce
-    /// Motion the panels crossfade instead.
-    private func glassLayer(_ panel: HostedPanel?) -> some View {
+    /// (RR-552, RR-553), so a panel's glass and the bar's merge as the panel
+    /// pushes out of the bar or sinks back into it (`PanelPopProgress`). With
+    /// Reduce Motion the selected tab's panel crossfades instead.
+    private func glassLayer(_ panels: [MainTab: HostedPanel]) -> some View {
         GeometryReader { proxy in
             let bar = CGRect(x: RelayMetrics.barMargin,
                              y: proxy.size.height - GlassTabBar.bottomOffset - GlassTabBar.height,
                              width: proxy.size.width - 2 * RelayMetrics.barMargin,
                              height: GlassTabBar.height)
-            let frame = panel.map { proxy[$0.anchor] }
+            let _ = panels.values.forEach { popCache.remember($0, at: proxy[$0.anchor]) }
             GlassEffectContainer(spacing: Self.morphSpacing) {
                 ZStack(alignment: .bottom) {
                     if reduceMotion {
-                        if let panel, let frame {
-                            panelGlass(panel, frame: frame, morphs: false)
+                        if let panel = panels[selection] {
+                            panelGlass(panel, frame: proxy[panel.anchor])
                                 .id(panel.tab)
                                 .transition(.opacity)
                         }
-                    } else if panel != nil || !keyboardShown {
-                        panelGlass(panel, frame: frame ?? Self.tucked(in: bar), morphs: true)
+                    } else {
+                        PanelPopAnimation(progress: pop) { pop in
+                            ForEach([MainTab.agents, .workspace], id: \.self) { tab in
+                                if let entry = popCache.entries[tab], pop[tab] > 0.001 {
+                                    poppingPanel(entry.panel, place: entry.frame, bar: bar, progress: pop[tab],
+                                                 interactive: tab == selection && pop[tab] > 0.95)
+                                }
+                            }
+                        }
                     }
                     if !keyboardShown {
                         GlassTabBar.MorphGlass(morph: glassMorph)
@@ -165,9 +139,34 @@ struct MainTabView: View {
         .ignoresSafeArea()
     }
 
-    /// The panel's glass at `frame`, with the panel in it when there is one.
-    /// With no panel its fill fades, so inside the tab bar only the bar's shows.
-    private func panelGlass(_ panel: HostedPanel?, frame: CGRect, morphs: Bool) -> some View {
+    /// A panel `progress` of the way out of the bar: the glass over the part
+    /// that is out (and a sliver inside, merging with the bar's), and the
+    /// panel's contents laid out in place, clipped to it, blurring and fading
+    /// as `PanelPopPresentation` says.
+    private func poppingPanel(_ panel: HostedPanel, place: CGRect, bar: CGRect, progress: Double,
+                              interactive: Bool) -> some View {
+        let look = PanelPopPresentation(progress)
+        let visible = look.visible(place: place, bar: bar)
+        let shape = RoundedRectangle(cornerRadius: min(Self.panelRadius, visible.height / 2), style: .continuous)
+        return ZStack(alignment: .top) {
+            panel.content
+                .frame(width: place.width, height: place.height, alignment: .bottom)
+                .opacity(look.controlsOpacity)
+                .blur(radius: look.blur)
+        }
+        .frame(width: visible.width, height: visible.height, alignment: .top)
+        .clipShape(shape)
+        .glassEffect(panel.glass.liquid, in: shape)
+        .position(x: visible.midX, y: visible.midY)
+        .allowsHitTesting(interactive)
+        // When the text box grows or shrinks (talking, the transcript, a
+        // draft, a message sent), the place the Agents screen holds jumps to
+        // its new size at once; move the glass with the dock's own animation.
+        .animation(RelayMotion.move, value: panel.textKey)
+    }
+
+    /// With Reduce Motion: the selected tab's panel glass at `frame`.
+    private func panelGlass(_ panel: HostedPanel?, frame: CGRect) -> some View {
         let shape = RoundedRectangle(cornerRadius: Self.panelRadius, style: .continuous)
         return ZStack {
             if let panel {
@@ -186,7 +185,6 @@ struct MainTabView: View {
         // Sinking into the tab bar with no panel, it is untinted: the bar's
         // tint over its own read as a dark band as the two merged.
         .glassEffect(panel?.glass.liquid ?? RelayGlass.material, in: shape)
-        .modifier(PanelGlassID(id: morphs ? Self.panelGlassID : nil, namespace: glassMorph))
         .position(x: frame.midX, y: frame.midY)
         // When the text box grows or shrinks (talking, the transcript, a
         // draft, a message sent), the place the Agents screen holds jumps to
@@ -194,20 +192,6 @@ struct MainTabView: View {
         // instead. Only then: between tabs the glass follows the page as it
         // moves, and chasing it with an animation made it lurch.
         .animation(RelayMotion.move, value: panel?.textKey ?? "")
-    }
-
-    /// The morphing panel's glass ID, or none while Reduce Motion crossfades.
-    private struct PanelGlassID: ViewModifier {
-        let id: String?
-        let namespace: Namespace.ID
-
-        func body(content: Content) -> some View {
-            if let id {
-                content.glassEffectID(id, in: namespace)
-            } else {
-                content
-            }
-        }
     }
 
     /// Black behind the status bar, fading out over `fade` points below it.
@@ -229,11 +213,6 @@ struct MainTabView: View {
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }
-    }
-
-    /// Where the panel's glass waits on a tab with no panel: inside the tab bar.
-    private static func tucked(in bar: CGRect) -> CGRect {
-        bar.insetBy(dx: 12, dy: 8)
     }
 
     #if DEBUG
