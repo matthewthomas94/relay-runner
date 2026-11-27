@@ -31,7 +31,13 @@ struct GlassTabBar: View {
     @Binding var selection: MainTab
     /// Tabs drawn at 30%, as the tutorial dims controls it is not teaching.
     var dimmed = false
+    /// Set by `MainTabView`, which puts the bar and the Agents dock in one
+    /// `GlassEffectContainer`: the bar then carries its glass itself, with this
+    /// glass ID, so the dock's glass can melt into it (RR-552).
+    var morph: Namespace.ID?
     @Namespace private var pill
+
+    static let morphID = "tabBar"
 
     static let height: CGFloat = 66
     static let bottomOffset: CGFloat = 30
@@ -56,9 +62,7 @@ struct GlassTabBar: View {
         }
         .padding(Self.inset)
         .frame(height: Self.height)
-        .background(RelayGlassBackground(glass: .bar,
-                                         shape: RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous),
-                                         stroke: 0.06))
+        .modifier(BarGlass(morph: morph))
         .opacity(dimmed ? 0.3 : 1)
         .animation(RelayMotion.enter, value: dimmed)
         .padding(.horizontal, RelayMetrics.screenMargin)
@@ -82,6 +86,27 @@ struct GlassTabBar: View {
             }
         }
         .contentShape(Rectangle())
+    }
+}
+
+/// The bar's glass: behind it, or, in a `GlassEffectContainer`, on the bar
+/// itself with a glass ID, so another surface can morph into it.
+private struct BarGlass: ViewModifier {
+    let morph: Namespace.ID?
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: GlassTabBar.cornerRadius, style: .continuous)
+        if let morph {
+            content
+                .background(shape.fill(RelayGlass.bar.tint))
+                .overlay(shape.strokeBorder(.white.opacity(0.06), lineWidth: 1))
+                .glassEffect(.regular, in: shape)
+                .glassEffectID(GlassTabBar.morphID, in: morph)
+                .glassEffectTransition(.materialize)
+                .environment(\.relayGlassFlat, true)
+        } else {
+            content.background(RelayGlassBackground(glass: .bar, shape: shape, stroke: 0.06))
+        }
     }
 }
 

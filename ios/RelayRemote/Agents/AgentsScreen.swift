@@ -23,6 +23,7 @@ struct AgentsScreen: View {
     let state: AgentsScreenState
     var actions = AgentsScreenActions()
     @State private var draft: String
+    @Environment(\.hostsDock) private var hostsDock
 
     /// How far the dock sits above the tab bar.
     static let dockBottomGap: CGFloat = 13
@@ -63,12 +64,8 @@ struct AgentsScreen: View {
             AgentTabStrip(tabs: state.tabs, selected: state.selected, onSelect: actions.select)
                 .modifier(Dimmed(isDimmed: isOffline))
                 .padding(.bottom, 10)
-            AgentDock(text: $draft, placeholder: "Message \(state.name)", talkMode: state.talkMode,
-                      isTalking: state.isTalking, transcript: state.transcript,
-                      canReplay: !state.notRunning, canStop: !state.notRunning,
-                      onSend: send, onTalk: actions.talk, onCancel: actions.cancelTalk,
-                      onReplay: actions.replay, onStop: actions.stop)
-                .modifier(Dimmed(isDimmed: isOffline))
+            dock
+                .padding(.horizontal, AgentDock.sideInset)
                 .padding(.bottom, Self.dockBottomGap)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -77,6 +74,28 @@ struct AgentsScreen: View {
     }
 
     private var isOffline: Bool { state.reachability != .reachable }
+
+    /// Under `MainTabView` the dock is drawn by the tab view, in the tab bar's
+    /// glass container (`HostedDock`); here a hidden copy holds its place.
+    @ViewBuilder
+    private var dock: some View {
+        let dock = AgentDock(text: $draft, placeholder: "Message \(state.name)", talkMode: state.talkMode,
+                             isTalking: state.isTalking, transcript: state.transcript,
+                             canReplay: !state.notRunning, canStop: !state.notRunning,
+                             drawsGlass: !hostsDock,
+                             onSend: send, onTalk: actions.talk, onCancel: actions.cancelTalk,
+                             onReplay: actions.replay, onStop: actions.stop)
+            .modifier(Dimmed(isDimmed: isOffline))
+        if hostsDock {
+            dock.hidden()
+                .accessibilityHidden(true)
+                .anchorPreference(key: HostedDockKey.self, value: .bounds) {
+                    HostedDock(anchor: $0, content: AnyView(dock))
+                }
+        } else {
+            dock
+        }
+    }
 
     private var header: some View {
         VStack(spacing: 10) {

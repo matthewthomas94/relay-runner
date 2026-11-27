@@ -81,6 +81,8 @@ private struct SettingsContent: View {
 
     var body: some View {
         ScrollView {
+            // Every section in one glass panel, like the desktop Settings
+            // detail panel (RR-552, Figma 27).
             VStack(alignment: .leading, spacing: 24) {
                 voice
                 orchestrator
@@ -88,6 +90,11 @@ private struct SettingsContent: View {
                 pairing
                 testing
             }
+            .padding(.top, 18)
+            .padding(.bottom, 22)
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .relayGlass(.panel)
             .padding(.horizontal, RelayMetrics.screenMargin)
             .padding(.top, 16)
             .padding(.bottom, 24)
@@ -291,7 +298,6 @@ private struct SettingsContent: View {
             }
             Text("Also unpair it on your Mac.")
                 .relayTextStyle(.caption).foregroundStyle(RelayColor.neutral7)
-                .padding(.leading, 4)
         }
     }
 
@@ -313,7 +319,6 @@ private struct SettingsContent: View {
             }
             Text("iOS keeps granted permissions until the app is deleted.")
                 .relayTextStyle(.caption).foregroundStyle(RelayColor.neutral7)
-                .padding(.leading, 4)
         }
     }
 
@@ -327,6 +332,7 @@ private struct SettingsContent: View {
 
 // MARK: - Pieces
 
+/// A heading and its rows, inside the one Settings panel.
 private struct SettingsSection<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content
@@ -339,11 +345,8 @@ private struct SettingsSection<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).relayTextStyle(.cardTitle).foregroundStyle(RelayColor.neutral10)
-                .padding(.leading, 4)
             VStack(spacing: 0) { content }
-                .padding(.horizontal, 16)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .relayGlass(.panel)
         }
     }
 }

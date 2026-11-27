@@ -115,6 +115,7 @@ struct TutorialScreen: View {
                             .transition(.relaySurface)
                     }
                     dock
+                        .padding(.horizontal, AgentDock.sideInset)
                         .padding(.bottom, AgentsScreen.dockBottomGap)
                         .transition(.relaySurface)
                 }

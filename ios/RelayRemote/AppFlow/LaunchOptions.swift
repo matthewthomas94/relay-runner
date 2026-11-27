@@ -18,6 +18,7 @@ import Foundation
 /// - `--ticket-sample=<short|long|loading|error|truncated|unsupported|done>` opens the Workspace
 ///   tab's ticket modal on sample data (add `--workspace-sample=unreachable` for the banner),
 /// - `--sample-settings` fills the Settings tab with sample data, unpaired,
+/// - `--cycle-tabs=<seconds>` switches between the tabs on its own (RR-552, recording the dock morph),
 /// - `--scroll-bottom` opens scrolling screens at their end,
 /// - `--reset-onboarding` forgets that onboarding finished, as a fresh install,
 /// - `--scripted-mac=<seconds>` connects to a scripted Mac inside the app that
@@ -40,6 +41,7 @@ struct LaunchOptions: Equatable {
     var scrollsToBottom = false
     var scriptedMacReplyEvery: Double?
     var scriptedMacDropAfter: Double?
+    var cycleTabsEvery: Double?
 
     init(arguments: [String]) {
         for argument in arguments {
@@ -61,6 +63,7 @@ struct LaunchOptions: Equatable {
             if let value = Self.value(of: "--tutorial-step", in: argument) { tutorialSample = value }
             if let value = Self.value(of: "--scripted-mac", in: argument) { scriptedMacReplyEvery = Double(value) }
             if let value = Self.value(of: "--scripted-mac-drop", in: argument) { scriptedMacDropAfter = Double(value) }
+            if let value = Self.value(of: "--cycle-tabs", in: argument) { cycleTabsEvery = Double(value) }
         }
     }
 

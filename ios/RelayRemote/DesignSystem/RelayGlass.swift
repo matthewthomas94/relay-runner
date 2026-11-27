@@ -39,17 +39,38 @@ struct RelayGlassBackground<S: InsettableShape>: View {
     var glass: RelayGlass = .panel
     let shape: S
     var stroke: Double = 0
+    @Environment(\.relayGlassFlat) private var flat
 
     var body: some View {
-        Color.clear
-            .glassEffect(.regular, in: shape)
-            .overlay(shape.fill(glass.tint))
-            .overlay {
-                if stroke > 0 { shape.strokeBorder(.white.opacity(stroke), lineWidth: 1) }
+        Group {
+            if flat {
+                // Inside a glass surface that draws its own glass: the fill
+                // only. The primary button is solid there, as in the Figma
+                // dock, since no glass of its own lightens it.
+                switch glass {
+                case .primary: shape.fill(RelayColor.neutral10)
+                case .primaryPressed: shape.fill(RelayColor.primaryPressed)
+                default: shape.fill(glass.tint)
+                }
+            } else {
+                Color.clear
+                    .glassEffect(.regular, in: shape)
+                    .overlay(shape.fill(glass.tint))
             }
-            .environment(\.colorScheme, .dark)
-            .animation(RelayMotion.press, value: glass)
+        }
+        .overlay {
+            if stroke > 0 { shape.strokeBorder(.white.opacity(stroke), lineWidth: 1) }
+        }
+        .environment(\.colorScheme, .dark)
+        .animation(RelayMotion.press, value: glass)
     }
+}
+
+extension EnvironmentValues {
+    /// True inside a `GlassEffectContainer` whose surfaces carry the glass
+    /// (the dock and the tab bar, RR-552). There a separate glass background
+    /// view can draw over the text beside it, so controls draw their fill only.
+    @Entry var relayGlassFlat = false
 }
 
 extension View {
