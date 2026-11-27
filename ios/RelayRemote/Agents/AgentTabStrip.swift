@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The horizontally scrollable agent tabs above the dock, styled like the
-/// desktop terminal tabs: the name, then the agent's status glyph. The
+/// The horizontally scrollable agent tabs, the top row of the dock's message
+/// panel (RR-553), styled like the desktop terminal tabs: the name, then the agent's status glyph. The
 /// selected tab sits on a glass panel. No blob or glow inside the tabs.
 struct AgentTabStrip: View {
     let tabs: [AgentsScreenState.Tab]
@@ -30,7 +30,6 @@ struct AgentTabStrip: View {
                             .accessibilityAddTraits(tab.slug == selected ? [.isButton, .isSelected] : .isButton)
                     }
                 }
-                .padding(.horizontal, 12)
             }
             .onChange(of: selected) { _, slug in
                 withAnimation(RelayMotion.move) { proxy.scrollTo(slug, anchor: .center) }

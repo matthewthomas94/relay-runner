@@ -167,14 +167,9 @@ private struct SettingsContent: View {
     private var speechSpeed: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Speech speed").relayTextStyle(.body).foregroundStyle(RelayColor.neutral10)
-            HStack(spacing: 16) {
-                SpeedSlider(value: Binding(get: { settings.speechSpeed }, set: { settings.dragSpeed(to: $0) }),
-                            range: SettingsViewModel.speedRange,
-                            onCommit: { settings.commitSpeed($0) })
-                Text(String(format: "%.1fx", settings.speechSpeed))
-                    .relayTextStyle(.body).foregroundStyle(RelayColor.neutral10)
-                    .monospacedDigit()
-            }
+            SpeedSlider(value: Binding(get: { settings.speechSpeed }, set: { settings.dragSpeed(to: $0) }),
+                        range: SettingsViewModel.speedRange,
+                        onCommit: { settings.commitSpeed($0) })
             .disabled(!settings.isEnabled)
             .opacity(settings.isEnabled ? 1 : 0.4)
             if let line = macBackedLine {
@@ -437,7 +432,7 @@ private struct SegmentedRow<Value: Hashable>: View {
                             .background {
                                 // One pill that slides to the selected option.
                                 if selected {
-                                    RoundedRectangle(cornerRadius: 9, style: .continuous).fill(RelayColor.neutral4)
+                                    RoundedRectangle(cornerRadius: 9, style: .continuous).fill(RelayGlass.raised.tint)
                                         .matchedGeometryEffect(id: "pill", in: pill)
                                 }
                             }
@@ -496,43 +491,63 @@ private struct ChoiceRow: View {
     }
 }
 
-/// The Figma's fields (select, segmented control, text box): black with a
-/// hairline of #212529 at 50%, radius 12.
+/// The Figma's fields (select, segmented control, text box): black at 50%
+/// with a hairline of #212529 at 50%, radius 12.
 struct FieldSurface: ViewModifier {
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius, style: .continuous)
-        content.background(shape.fill(RelayColor.neutral1)
+        content.background(shape.fill(RelayColor.neutral1.opacity(0.5))
             .overlay(shape.strokeBorder(RelayColor.neutral4.opacity(0.5), lineWidth: 1)))
     }
 }
 
-/// A slider in the styles' look that reports the final value on release.
+/// The speech speed slider, a copy of the Mac's `SettingsSlider` (Figma 27,
+/// RR-553): a 44 pt rounded track, a white value fill up to an upright thumb
+/// held 8 pt in from the ends, and the value as a caption inside the track,
+/// grey beside the fill and dark on it once past halfway. It reports the
+/// final value on release.
 private struct SpeedSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     let onCommit: (Double) -> Void
 
+    /// Keeps the thumb clear of the rounded ends.
+    static let thumbInset: CGFloat = 8
+    /// The value fill: white at 72%.
+    static let fill = RelayColor.neutral10.opacity(0.72)
+
+    private var fraction: Double {
+        min(max((value - range.lowerBound) / (range.upperBound - range.lowerBound), 0), 1)
+    }
+
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius, style: .continuous)
         GeometryReader { proxy in
-            // Figma 27: a 4 pt rail of white at 12%, the fill white at 85%,
-            // and a 22 pt white knob with a soft shadow.
-            let knob: CGFloat = 22
-            let travel = max(proxy.size.width - knob, 1)
-            let fraction = (value - range.lowerBound) / (range.upperBound - range.lowerBound)
-            ZStack(alignment: .leading) {
-                Capsule().fill(RelayColor.neutral10.opacity(0.12)).frame(height: 4)
-                Capsule().fill(RelayColor.neutral10.opacity(0.85)).frame(width: travel * fraction + knob / 2, height: 4)
-                Circle().fill(RelayColor.neutral10).frame(width: knob, height: knob)
-                    .shadow(color: .black.opacity(0.3), radius: 3, y: 1)
-                    .offset(x: travel * fraction)
+            let width = proxy.size.width
+            let height = proxy.size.height
+            let thumb = Self.thumbInset + (width - Self.thumbInset * 2) * fraction
+            ZStack {
+                shape.fill(RelayGlass.control.tint)
+                shape.fill(Self.fill)
+                    .mask(alignment: .leading) { Rectangle().frame(width: fraction >= 1 ? width : thumb) }
+                Capsule()
+                    .fill(RelayColor.neutral10)
+                    .shadow(color: .black.opacity(0.35), radius: 1.5, y: 1)
+                    .frame(width: 2.5, height: height - 14)
+                    .position(x: thumb, y: height / 2)
+                Text(String(format: "%.1fx", value))
+                    .relayTextStyle(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(fraction >= 0.5 ? RelayColor.neutral1 : RelayColor.neutral7)
+                    .fixedSize()
+                    .position(x: fraction >= 0.5 ? thumb / 2 : (thumb + width) / 2, y: height / 2)
             }
-            .frame(height: proxy.size.height)
-            .contentShape(Rectangle())
+            .contentShape(shape)
             .gesture(DragGesture(minimumDistance: 0)
-                .onChanged { drag in value = position(drag.location.x, travel: travel, knob: knob) }
-                .onEnded { drag in onCommit(position(drag.location.x, travel: travel, knob: knob)) })
+                .onChanged { drag in value = position(drag.location.x, width: width) }
+                .onEnded { drag in onCommit(position(drag.location.x, width: width)) })
         }
-        .frame(height: 32)
+        .frame(height: RelayMetrics.controlHeight)
         // A selection tick at each 0.1x step while dragging.
         .sensoryFeedback(.selection, trigger: (value * 10).rounded())
         .accessibilityElement()
@@ -546,8 +561,9 @@ private struct SpeedSlider: View {
         }
     }
 
-    private func position(_ x: CGFloat, travel: CGFloat, knob: CGFloat) -> Double {
-        let fraction = min(max((x - knob / 2) / travel, 0), 1)
+    /// The value under a finger at `x` in a track `width` wide.
+    private func position(_ x: CGFloat, width: CGFloat) -> Double {
+        let fraction = min(max((x - Self.thumbInset) / max(1, width - Self.thumbInset * 2), 0), 1)
         return range.lowerBound + Double(fraction) * (range.upperBound - range.lowerBound)
     }
 }
