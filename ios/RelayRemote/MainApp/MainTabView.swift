@@ -89,14 +89,18 @@ struct MainTabView: View {
         #endif
     }
 
-    /// Between tabs, the leaving tab's panel goes into the tab bar and the
-    /// arriving tab's panel comes out of it, as its page arrives: one rule for
-    /// every tab (user, 2026-11-27). A tab with no panel leaves the glass in
-    /// the bar. A quicker switch cancels the wait, so the glass heads for the
-    /// latest tab.
+    /// Between Agents and Workspace the dock morphs straight into the project
+    /// tabs and back. To or from Settings, which has no panel, the panel melts
+    /// into the tab bar, or rises out of it as the page arrives (user,
+    /// 2026-11-28). A quicker switch cancels the wait, so the glass heads for
+    /// the latest tab.
     private func movePanel(to tab: MainTab) async {
         guard panelTab != tab else { return }
         if reduceMotion { panelTab = tab; return }
+        if let from = panelTab, Self.panelTabs.contains(from), Self.panelTabs.contains(tab) {
+            withAnimation(Self.rise) { panelTab = tab }
+            return
+        }
         withAnimation(Self.sink) { panelTab = nil }
         try? await Task.sleep(for: .seconds(RelayMotion.tabExitDuration + RelayMotion.tabGap))
         guard !Task.isCancelled else { return }
@@ -109,12 +113,15 @@ struct MainTabView: View {
     /// as one gesture.
     private static let sink = Animation.spring(duration: 0.34, bounce: 0)
     private static let rise = Animation.spring(duration: 0.44, bounce: 0)
+    /// The tabs with a panel above the tab bar.
+    private static let panelTabs: Set<MainTab> = [.agents, .workspace]
 
     /// The tabs' panels and the tab bar in one `GlassEffectContainer`
     /// (RR-552, RR-553). The panel above the tab bar is one glass that never
     /// leaves; the tab bar stays put and only that glass changes shape: it
-    /// sinks into the tab bar, where the container merges it into the bar's
-    /// glass, and rises back out of it (`movePanel`).
+    /// reshapes between the dock and the project tabs, or sinks into the tab
+    /// bar, where the container merges it into the bar's glass, and rises
+    /// back out of it (`movePanel`).
     /// The panel's contents fade out quickly and the new contents fade in once
     /// the glass has nearly arrived, so only the glass morphs. With Reduce
     /// Motion the panels crossfade instead.
