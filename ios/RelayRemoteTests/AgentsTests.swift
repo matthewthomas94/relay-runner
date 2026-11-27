@@ -217,6 +217,46 @@ final class AgentsTests: XCTestCase {
         XCTAssertEqual(agents.reachability, .appNotRunning)
     }
 
+    /// The header's work style switch (user, 2026-11-28): it shows the Mac's
+    /// style, sends a change, shows the choice at once and settles on the Mac's.
+    func testTheWorkStyleSwitchSendsTheChangeAndShowsItAtOnce() async throws {
+        let agents = model()
+        var clock = Date(timeIntervalSince1970: 1000)
+        agents.now = { clock }
+        let (session, mac) = try await connect(agents)
+        func report(_ georgeStyle: String) async {
+            mac.deliver(.sessionState(SessionState(appRunning: true, session: .ready, agents: [
+                AgentStatus(agent: "puck", running: true, state: .ready, workStyle: "auto"),
+                AgentStatus(agent: "george", running: true, state: .ready, workStyle: georgeStyle),
+            ])))
+            await eventually { session.agents.first { $0.agent == "george" }?.workStyle == georgeStyle }
+            agents.update(MacSessionStatus(session))
+        }
+        await report("auto")
+        XCTAssertEqual(agents.workStyle("george"), "auto")
+        XCTAssertNil(agents.workStyle("sky"), "no switch for an agent the Mac gives no style")
+
+        agents.setWorkStyle("direct", for: "george")
+        await eventually { mac.sentFrames.contains { if case .settingsCommand = $0 { return true } else { return false } } }
+        let set = mac.sentFrames.compactMap { frame -> SettingsCommand? in
+            if case .settingsCommand(let command) = frame { return command } else { return nil }
+        }
+        XCTAssertEqual(set.map(\.agent), ["george"])
+        XCTAssertEqual(set.map(\.workStyle), ["direct"])
+        XCTAssertEqual(set.first?.action, .set)
+        XCTAssertEqual(agents.workStyle("george"), "direct", "the choice shows before the Mac answers")
+
+        await report("auto")
+        XCTAssertEqual(agents.workStyle("george"), "direct", "an older report does not undo it")
+        await report("direct")
+        XCTAssertEqual(agents.workStyle("george"), "direct")
+
+        agents.setWorkStyle("orchestrated", for: "george")
+        clock.addTimeInterval(AgentsModel.workStyleWait + 1)
+        await report("direct")
+        XCTAssertEqual(agents.workStyle("george"), "direct", "a change the Mac never takes falls back to its style")
+    }
+
     func testRunningAgentsFromAMacWithoutPerAgentState() {
         func activity(_ slug: String, _ phase: SessionPhase, running: [String]?, active: String?) -> AgentActivity {
             AgentsModel.activity(of: slug, in: MacSessionStatus(
@@ -363,6 +403,21 @@ final class AgentsTests: XCTestCase {
         XCTAssertEqual(status(.ready), "Ready")
         XCTAssertEqual(status(.ready, waiting: true), "New reply")
         XCTAssertEqual(status(.off, "Old work"), "Not running")
+    }
+
+    func testAnAgentStartingUpSaysSoUntilItIsReady() {
+        let agents = model()
+        agents.setSample(activities: ["puck": .starting, "isabella": .ready, "george": .off, "sky": .working],
+                         marked: [], reachability: .reachable, chats: [:])
+        func status(_ slug: String, _ voice: VoiceSnapshot = VoiceSnapshot()) -> String {
+            agents.select(slug)
+            return AgentsScreenState(agents: agents, voice: voice, talkMode: .hold).status
+        }
+        XCTAssertEqual(status("puck"), "Starting up", "a starting agent can't take a message yet")
+        XCTAssertEqual(status("puck", VoiceSnapshot(isTalking: true)), "Listening", "talking still wins")
+        XCTAssertEqual(status("isabella"), "Ready")
+        XCTAssertEqual(status("sky"), "Working", "a turn in progress is not starting up")
+        XCTAssertEqual(status("george"), "Not running")
     }
 
     func testAReplayedReplyPlaysWithoutBeingFiledAgain() {

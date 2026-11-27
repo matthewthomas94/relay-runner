@@ -187,7 +187,7 @@ final class RelaySessionControl {
             result.runningAgents = SessionAgent.allCases.filter(running.contains).map(\.slug)
         }
         result.agents = RelayRemoteAgents.states(snapshot, sessionReady: bridgeAccepting && !stopRequested,
-                                                 stopping: stopRequested)
+                                                 stopping: stopRequested, agents: host.config().agents)
         if let error { result.error = error }
         if includingProjects {
             result.projects = host.projects().map {

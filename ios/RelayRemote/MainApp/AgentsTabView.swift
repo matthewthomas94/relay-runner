@@ -58,6 +58,7 @@ private struct LiveAgentsScreen: View {
     private func actions(playing: String?) -> AgentsScreenActions {
         AgentsScreenActions(
             select: { agents.select($0) },
+            setWorkStyle: { agents.setWorkStyle($0, for: agents.selected) },
             send: { agents.send($0) },
             talk: { command in
                 switch command {

@@ -333,6 +333,29 @@ final class RelaySessionControlTests: XCTestCase {
         XCTAssertEqual(savedConfigs.count, 0)
     }
 
+    /// The phone's work style switcher (user, 2026-11-28): `agent` and
+    /// `work_style` save as the agent card's picker does, and the agent's
+    /// `session_state` entry reports the new style.
+    func testSettingsSetChangesAnAgentsWorkStyleAndStateReportsIt() throws {
+        let control = settingsControl(AppConfig())
+        XCTAssertEqual(control.state().agents?.first { $0.agent == "george" }?.workStyle, "auto")
+        let state = try settingsReply(control, SettingsCommand(clientId: UUID().uuidString, action: .set,
+                                                               agent: "george", workStyle: "direct"))
+        XCTAssertNil(state.error)
+        XCTAssertEqual(liveConfig.agents.george.work_style, .direct)
+        XCTAssertNil(liveConfig.agents.puck.work_style, "only the named agent changes")
+        XCTAssertEqual(control.state().agents?.first { $0.agent == "george" }?.workStyle, "direct")
+
+        for command in [
+            SettingsCommand(clientId: UUID().uuidString, action: .set, agent: "george", workStyle: "chaotic"),
+            SettingsCommand(clientId: UUID().uuidString, action: .set, agent: "nobody", workStyle: "auto"),
+            SettingsCommand(clientId: UUID().uuidString, action: .set, workStyle: "auto"),
+        ] {
+            XCTAssertNotNil(try settingsReply(control, command).error, "\(command)")
+        }
+        XCTAssertEqual(savedConfigs.count, 1, "a refused work style saves nothing")
+    }
+
     /// RR-536: a change made on the Mac is pushed once, after the baseline.
     func testSettingsChangeOnTheMacIsPushed() throws {
         let control = settingsControl(AppConfig())

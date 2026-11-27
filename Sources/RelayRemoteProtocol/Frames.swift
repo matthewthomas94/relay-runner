@@ -13,6 +13,9 @@ public enum RelayRemoteProtocol {
     /// The codecs accept any string so a later agent does not break an older
     /// peer; the Mac refuses or ignores a slug it does not know.
     public static let agents = ["puck", "isabella", "george", "sky"]
+    /// The work styles an agent can have (`ProjectWorkStyle` on the Mac). A
+    /// string on the wire, like the agent slugs.
+    public static let workStyles = ["auto", "direct", "orchestrated"]
 }
 
 /// Same values as `SPEECH_KINDS` in services/speech_coordinator.py.
@@ -363,12 +366,18 @@ public struct AgentStatus: Codable, Equatable, Sendable {
     public var state: AgentActivity
     /// A short line about the agent's current work, when it has one.
     public var workingOn: String?
+    /// How the agent routes change requests, as its Mac agent card sets it:
+    /// one of `RelayRemoteProtocol.workStyles`. A phone can change it with
+    /// `settings_command` (`agent` and `work_style`).
+    public var workStyle: String?
 
-    public init(agent: String, running: Bool, state: AgentActivity, workingOn: String? = nil) {
+    public init(agent: String, running: Bool, state: AgentActivity, workingOn: String? = nil,
+                workStyle: String? = nil) {
         self.agent = agent
         self.running = running
         self.state = state
         self.workingOn = workingOn
+        self.workStyle = workStyle
     }
 }
 
@@ -515,15 +524,23 @@ public struct SettingsCommand: Codable, Equatable, Sendable {
     public var effort: String?
     /// One of `settings_state.sizing_options`.
     public var sizing: String?
+    /// With `work_style`: the agent whose work style changes, one of
+    /// `RelayRemoteProtocol.agents`. The new style shows in that agent's
+    /// `session_state.agents` entry.
+    public var agent: String?
+    /// One of `RelayRemoteProtocol.workStyles`; needs `agent`.
+    public var workStyle: String?
 
     public init(clientId: String, action: SettingsAction, speechSpeedPercent: Int? = nil, model: String? = nil,
-                effort: String? = nil, sizing: String? = nil) {
+                effort: String? = nil, sizing: String? = nil, agent: String? = nil, workStyle: String? = nil) {
         self.clientId = clientId
         self.action = action
         self.speechSpeedPercent = speechSpeedPercent
         self.model = model
         self.effort = effort
         self.sizing = sizing
+        self.agent = agent
+        self.workStyle = workStyle
     }
 }
 

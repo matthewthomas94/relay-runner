@@ -59,6 +59,9 @@ struct AgentsScreenState: Equatable {
     var orb: AgentOrbState
     /// The line under the name: what the agent is doing right now.
     var status: String
+    /// The selected agent's work style, for the header's switch; nil hides it
+    /// (a Mac that does not report one).
+    var workStyle: String?
     var feed: [ChatMessage]
     /// The reply in the feed that is playing now.
     var speakingSeq: Int?
@@ -91,7 +94,9 @@ struct AgentsScreenState: Equatable {
         orb = talking != nil ? .listening : playing == selected ? .playing : .idle
         status = Self.status(glyph: agents.glyph(for: selected, talking: talking, playing: playing),
                              workingOn: agents.workingOn[selected],
-                             replyWaiting: waitingAgents.contains(selected))
+                             replyWaiting: waitingAgents.contains(selected),
+                             starting: agents.isStarting(selected))
+        workStyle = agents.workStyle(selected)
         let chat = agents.chat(selected)
         let mine = voice.waitingSeqs.filter { agents.agent(ofSeq: $0) == selected }
         // Every reply shows as a bubble at once (RR-554). The dock's Play
@@ -109,14 +114,17 @@ struct AgentsScreenState: Equatable {
         self.talkMode = talkMode
     }
 
-    /// Talking and playback first, then what the Mac's agent card says it is
-    /// working on, then its state.
-    static func status(glyph: StatusGlyphState, workingOn: String?, replyWaiting: Bool) -> String {
+    /// Talking and playback first, then an agent still starting up (it can't
+    /// take a message until it says Ready, user 2026-11-28), then what the
+    /// Mac's agent card says it is working on, then its state.
+    static func status(glyph: StatusGlyphState, workingOn: String?, replyWaiting: Bool,
+                       starting: Bool = false) -> String {
         switch glyph {
         case .listening: return "Listening"
         case .playing: return "Playing reply"
         case .off: return "Not running"
         case .working, .ready:
+            if starting { return "Starting up" }
             if let workingOn, !workingOn.isEmpty { return workingOn }
             if replyWaiting { return "New reply" }
             return glyph == .working ? "Working" : "Ready"

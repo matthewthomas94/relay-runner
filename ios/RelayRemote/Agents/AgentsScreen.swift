@@ -3,6 +3,8 @@ import SwiftUI
 /// What the Agents screen's controls do.
 struct AgentsScreenActions {
     var select: (String) -> Void = { _ in }
+    /// Changes the selected agent's work style.
+    var setWorkStyle: (String) -> Void = { _ in }
     /// Sends the text box; false leaves the text in place.
     var send: (String) -> Bool = { _ in false }
     var talk: (TalkGesture.Command) -> Void = { _ in }
@@ -19,8 +21,8 @@ struct AgentsScreenActions {
 /// and the header: the agent's orb beside its name and what it is doing
 /// (Figma Final 21, 2026-11-28). The tab bar below
 /// belongs to `MainTabView`. While the Mac is unreachable a banner floats over
-/// the screen and the chat and controls dim and take no input; the orb is
-/// never dimmed.
+/// the screen in the header's place, and the chat and controls dim and take
+/// no input.
 struct AgentsScreen: View {
     let state: AgentsScreenState
     var actions = AgentsScreenActions()
@@ -85,7 +87,19 @@ struct AgentsScreen: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.clear)
-        .relayBanner(banner)
+        .modifier(BannerPlacement(banner: banner, hosted: hostsPanels))
+    }
+
+    /// Under `MainTabView` the banner is handed to the tab view, which draws
+    /// it above the status bar's black scrim; drawn here it sat under the
+    /// scrim and its top was cut off (user, 2026-11-28).
+    private struct BannerPlacement: ViewModifier {
+        let banner: RelayBanner?
+        let hosted: Bool
+
+        func body(content: Content) -> some View {
+            if hosted { content.floatingBanner(banner) } else { content.relayBanner(banner) }
+        }
     }
 
     /// What the dock's text box shows: the transcript from the moment talking
@@ -145,6 +159,7 @@ struct AgentsScreen: View {
                     Text(state.name)
                         .relayTextStyle(.cardTitle)
                         .foregroundStyle(RelayColor.neutral10)
+                        .accessibilityAddTraits(.isHeader)
                     Text(state.status)
                         .relayTextStyle(.subtitle)
                         .foregroundStyle(RelayColor.neutral7)
@@ -156,14 +171,22 @@ struct AgentsScreen: View {
                 .transition(.relayControlSwap)
             }
             .animation(RelayMotion.enter, value: state.name)
+            Spacer(minLength: 8)
+            if let style = state.workStyle {
+                WorkStyleMenu(style: style, agentName: state.name, choose: actions.setWorkStyle)
+                    .transition(.opacity)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)
         .padding(.top, 2)
+        // The banner takes the header's place, as in Figma Final 25; the
+        // header peeking out below it looked broken (user, 2026-11-28).
+        .opacity(banner == nil ? 1 : 0)
+        .animation(RelayMotion.enter, value: banner == nil)
         .contentShape(Rectangle())
         .onTapGesture { dismissKeyboard() }
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isHeader)
+        .accessibilityElement(children: .contain)
     }
 
     private var notRunning: some View {
@@ -218,5 +241,61 @@ private struct Dimmed: ViewModifier {
             .opacity(isDimmed ? AgentsScreen.dimmedOpacity : 1)
             .disabled(isDimmed)
             .animation(RelayMotion.enter, value: isDimmed)
+    }
+}
+
+/// The header's work style switch (user, 2026-11-28): the agent's style on a
+/// small pill; tapping it lists the three, as the Mac's agent card does. The
+/// change is saved on the Mac and applies from the agent's next request.
+struct WorkStyleMenu: View {
+    let style: String
+    let agentName: String
+    let choose: (String) -> Void
+
+    /// Each style's name and what it does, as on the Mac (`ProjectWorkStyle`).
+    static let styles: [(value: String, title: String, detail: String)] = [
+        ("auto", "Auto", "Decides per request, and asks when unsure"),
+        ("direct", "Direct", "Makes changes now, without tickets"),
+        ("orchestrated", "Orchestrated", "Turns changes into tickets for workers"),
+    ]
+
+    static func title(_ style: String) -> String {
+        styles.first { $0.value == style }?.title ?? style.capitalized
+    }
+
+    var body: some View {
+        Menu {
+            Section("\(agentName)’s work style") {
+                ForEach(Self.styles, id: \.value) { option in
+                    Button {
+                        RelayHaptics.tap()
+                        choose(option.value)
+                    } label: {
+                        if option.value == style {
+                            Label(option.title, systemImage: "checkmark")
+                        } else {
+                            Text(option.title)
+                        }
+                        Text(option.detail)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(Self.title(style))
+                    .relayTextStyle(.caption)
+                    .foregroundStyle(RelayColor.neutral10)
+                    .contentTransition(.opacity)
+                    .animation(RelayMotion.enter, value: style)
+                LucideImage(.chevronDown, size: 14)
+                    .foregroundStyle(RelayColor.neutral7)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 32)
+            .modifier(FieldSurface())
+            .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Work style")
+        .accessibilityValue(Self.title(style))
     }
 }

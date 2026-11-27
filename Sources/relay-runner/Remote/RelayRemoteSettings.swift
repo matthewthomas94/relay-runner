@@ -8,7 +8,10 @@ import RelayRemoteProtocol
 /// saved through `RelayAppSettings.applying` and `AppState.saveConfig`, the path
 /// Relay App's `set_settings` uses, so the Settings window and running sessions
 /// react as they do to a change made on the Mac. Only speech speed, model,
-/// effort and sizing are accepted; the provider is read-only.
+/// effort, sizing and an agent's work style are accepted; the provider is
+/// read-only. A work style is saved as the agent card's picker saves it
+/// (`AppState.setWorkStyle`), so the agent routes its next request by it, and
+/// shows in the agent's `session_state` entry.
 enum RelayRemoteSettings {
     static let unsupported = "Settings cannot be changed from the phone on this Mac yet."
 
@@ -16,8 +19,10 @@ enum RelayRemoteSettings {
         let current = host.config()
         guard command.action == .set else { return state(current) }
         do {
-            guard let patch = try patch(for: command, current: current.general) else { return state(current) }
-            let (next, _) = try RelayAppSettings.applying(patch, to: current)
+            var next = try workStyleApplied(command, to: current)
+            if let patch = try patch(for: command, current: current.general) {
+                next = try RelayAppSettings.applying(patch, to: next).config
+            }
             if next != current { host.saveConfig(next) }
             return state(host.config())
         } catch let error as RelayAppCommandError {
@@ -27,7 +32,24 @@ enum RelayRemoteSettings {
         }
     }
 
-    private static let acceptedKeys: Set<String> = ["type", "client_id", "action", "speech_speed_percent", "model", "effort", "sizing"]
+    private static let acceptedKeys: Set<String> = ["type", "client_id", "action", "speech_speed_percent", "model", "effort",
+                                                    "sizing", "agent", "work_style"]
+
+    /// `config` with the command's agent set to its work style; unchanged when
+    /// the command names none. Throws, with nothing saved, for an unknown
+    /// agent or style, or one without the other.
+    private static func workStyleApplied(_ command: SettingsCommand, to config: AppConfig) throws -> AppConfig {
+        guard command.agent != nil || command.workStyle != nil else { return config }
+        guard let slug = command.agent, let agent = SessionAgent(choice: slug) else {
+            throw RelayAppCommandError("A work style needs an agent: puck, isabella, george or sky.")
+        }
+        guard let raw = command.workStyle, let style = ProjectWorkStyle(rawValue: raw) else {
+            throw RelayAppCommandError("Work style must be auto, direct or orchestrated.")
+        }
+        var next = config
+        next.agents[agent].work_style = style
+        return next
+    }
 
     /// A refusal, with the unchanged values, when a command names a key the
     /// phone may not use (the provider, or anything else); nil otherwise.
@@ -35,7 +57,7 @@ enum RelayRemoteSettings {
         let extra = Set(object.keys).subtracting(acceptedKeys).sorted()
         guard !extra.isEmpty else { return nil }
         return state(host.config(), error: "The phone cannot set \(extra.joined(separator: ", ")). "
-            + "Only speech speed, model, effort and sizing can be changed.")
+            + "Only speech speed, model, effort, sizing and an agent's work style can be changed.")
     }
 
     /// The state the phone sees for `config`.

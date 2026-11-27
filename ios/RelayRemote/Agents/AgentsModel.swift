@@ -29,6 +29,12 @@ final class AgentsModel {
     private(set) var activities: [String: AgentActivity] = [:]
     /// Each running agent's "Currently working on", as its Mac agent card shows it.
     private(set) var workingOn: [String: String] = [:]
+    /// Each agent's work style as the Mac reports it (`auto`, `direct` or
+    /// `orchestrated`); none from a Mac that does not send it.
+    private(set) var workStyles: [String: String] = [:]
+    /// A work style the phone just chose, shown until the Mac reports it, so
+    /// the switch answers at once; dropped after a few seconds if it never does.
+    private(set) var requestedWorkStyles: [String: (style: String, at: Date)] = [:]
     /// Agents the phone asked to start, until the Mac reports them running.
     private(set) var starting: Set<String> = []
     private(set) var reachability = Reachability.reachable
@@ -144,6 +150,22 @@ final class AgentsModel {
         return true
     }
 
+    static let workStyleWait: TimeInterval = 5
+
+    /// The work style the header shows for `slug`: the one just chosen, else the Mac's.
+    func workStyle(_ slug: String) -> String? {
+        if let request = requestedWorkStyles[slug], now().timeIntervalSince(request.at) < Self.workStyleWait {
+            return request.style
+        }
+        return workStyles[slug]
+    }
+
+    /// Changes `agent`'s work style on the Mac; it applies from its next request.
+    func setWorkStyle(_ style: String, for agent: String) {
+        guard workStyle(agent) != style, let session, session.updateWorkStyle(style, agent: agent) else { return }
+        requestedWorkStyles[agent] = (style, now())
+    }
+
     /// Starts `agent` on the Mac with no project (its general-tasks project).
     func start(_ agent: String) {
         guard let session, session.send(sessionCommand: .start, agent: agent) else { return }
@@ -173,6 +195,12 @@ final class AgentsModel {
         workingOn = Dictionary(uniqueKeysWithValues: Self.slugs.compactMap { slug in
             status.agent(slug)?.workingOn.map { (slug, $0) }
         })
+        workStyles = Dictionary(uniqueKeysWithValues: Self.slugs.compactMap { slug in
+            status.agent(slug)?.workStyle.map { (slug, $0) }
+        })
+        requestedWorkStyles = requestedWorkStyles.filter { slug, request in
+            workStyles[slug] != request.style && now().timeIntervalSince(request.at) < Self.workStyleWait
+        }
         // A start the phone asked for ends once the Mac reports the agent, or refuses.
         let refused = status.phase == .failed || status.error != nil
         starting = starting.filter { !refused && next[$0] == .off }
@@ -197,6 +225,12 @@ final class AgentsModel {
         default:
             return .off
         }
+    }
+
+    /// The phone asked to start `slug`, or the Mac reports it starting: not
+    /// ready for a message yet.
+    func isStarting(_ slug: String) -> Bool {
+        starting.contains(slug) || activities[slug] == .starting
     }
 
     /// The Mac reports `slug` stopped and the phone has not asked to start it.
@@ -236,6 +270,7 @@ final class AgentsModel {
         self.activities = activities
         self.marked = marked
         self.reachability = reachability
+        workStyles = ["puck": "direct", "isabella": "auto", "george": "auto", "sky": "orchestrated"]
         for (slug, chat) in chats {
             self.chats[slug] = chat
             for message in chat { if let seq = message.seq { seqOwners[seq] = slug } }

@@ -302,6 +302,15 @@ public final class RemoteSession {
                                               sizing: sizing))
     }
 
+    /// Changes one agent's work style (`RelayRemoteProtocol.workStyles`). The
+    /// agent routes its next request by it, and its `session_state` entry
+    /// reports it. False when no channel is up.
+    @discardableResult
+    public func updateWorkStyle(_ style: String, agent: String) -> Bool {
+        send(settingsCommand: SettingsCommand(clientId: UUID().uuidString.lowercased(), action: .set,
+                                              agent: agent, workStyle: style))
+    }
+
     private func send(settingsCommand command: SettingsCommand) -> Bool {
         guard let connection, core.isEstablished else { return false }
         core.settingsCommandSent()
