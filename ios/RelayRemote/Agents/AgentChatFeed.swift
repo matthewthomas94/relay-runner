@@ -9,6 +9,10 @@ struct AgentChatFeed: View {
     var speakingSeq: Int?
 
     static let topFade: CGFloat = 32
+    /// The chat's own top fade: long and eased into the black behind, so
+    /// messages dissolve under the header instead of looking cropped (user,
+    /// 2026-11-28).
+    static let headerFade: CGFloat = 170
     static let bottomFade: CGFloat = 24
 
     var body: some View {
@@ -44,8 +48,16 @@ struct AgentChatFeed: View {
         // under the dock's glass (user, 2026-11-27).
         .mask {
             VStack(spacing: 0) {
-                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
-                    .frame(height: Self.topFade)
+                LinearGradient(stops: [
+                    .init(color: .black.opacity(0), location: 0),
+                    .init(color: .black.opacity(0.04), location: 0.12),
+                    .init(color: .black.opacity(0.2), location: 0.3),
+                    .init(color: .black.opacity(0.5), location: 0.5),
+                    .init(color: .black.opacity(0.78), location: 0.7),
+                    .init(color: .black.opacity(0.94), location: 0.86),
+                    .init(color: .black, location: 1),
+                ], startPoint: .top, endPoint: .bottom)
+                    .frame(height: Self.headerFade)
                 Rectangle().fill(.black)
             }
             // The mask reaches under the bars, so the list shows through

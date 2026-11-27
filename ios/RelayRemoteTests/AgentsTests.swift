@@ -351,6 +351,20 @@ final class AgentsTests: XCTestCase {
         XCTAssertEqual(face(VoiceSnapshot()), .replay, "auto-play leaves nothing waiting")
     }
 
+    func testTheHeaderStatusSaysWhatTheAgentIsDoing() {
+        func status(_ glyph: StatusGlyphState, _ workingOn: String? = nil, waiting: Bool = false) -> String {
+            AgentsScreenState.status(glyph: glyph, workingOn: workingOn, replyWaiting: waiting)
+        }
+        XCTAssertEqual(status(.listening, "Replay states"), "Listening", "talking wins")
+        XCTAssertEqual(status(.playing, "Replay states"), "Playing reply")
+        XCTAssertEqual(status(.working, "Replay states"), "Replay states", "the agent card's work while working")
+        XCTAssertEqual(status(.ready, "Replay states"), "Replay states", "and while it waits on the user")
+        XCTAssertEqual(status(.working), "Working")
+        XCTAssertEqual(status(.ready), "Ready")
+        XCTAssertEqual(status(.ready, waiting: true), "New reply")
+        XCTAssertEqual(status(.off, "Old work"), "Not running")
+    }
+
     func testAReplayedReplyPlaysWithoutBeingFiledAgain() {
         let agents = model()
         agents.select("george")

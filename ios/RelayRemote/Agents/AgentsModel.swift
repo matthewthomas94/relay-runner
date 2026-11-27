@@ -27,6 +27,8 @@ final class AgentsModel {
     private(set) var marked: Set<String> = []
     /// What the Mac last reported for each agent while it was reachable.
     private(set) var activities: [String: AgentActivity] = [:]
+    /// Each running agent's "Currently working on", as its Mac agent card shows it.
+    private(set) var workingOn: [String: String] = [:]
     /// Agents the phone asked to start, until the Mac reports them running.
     private(set) var starting: Set<String> = []
     private(set) var reachability = Reachability.reachable
@@ -168,6 +170,9 @@ final class AgentsModel {
         var next: [String: AgentActivity] = [:]
         for slug in Self.slugs { next[slug] = Self.activity(of: slug, in: status) }
         activities = next
+        workingOn = Dictionary(uniqueKeysWithValues: Self.slugs.compactMap { slug in
+            status.agent(slug)?.workingOn.map { (slug, $0) }
+        })
         // A start the phone asked for ends once the Mac reports the agent, or refuses.
         let refused = status.phase == .failed || status.error != nil
         starting = starting.filter { !refused && next[$0] == .off }

@@ -16,7 +16,8 @@ struct AgentsScreenActions {
 
 /// Agents (21–25), bottom to top: the dock (one glass message panel holding
 /// the agent tabs, the text box and Replay and Stop, RR-553), the chat feed
-/// and the header with the agent's orb over its name. The tab bar below
+/// and the header: the agent's orb beside its name and what it is doing
+/// (Figma Final 21, 2026-11-28). The tab bar below
 /// belongs to `MainTabView`. While the Mac is unreachable a banner floats over
 /// the screen and the chat and controls dim and take no input; the orb is
 /// never dimmed.
@@ -95,18 +96,31 @@ struct AgentsScreen: View {
     }
 
     private var header: some View {
-        VStack(spacing: 10) {
+        HStack(spacing: 10) {
+            // The orb at half size, in a 60 x 56 frame around its dots.
             AgentOrb(state: state.orb)
-            // The name swaps with the chat, the old name gone first.
-            ZStack {
-                Text(state.name)
-                    .relayTextStyle(.cardTitle)
-                    .foregroundStyle(RelayColor.neutral10)
-                    .id(state.name)
-                    .transition(.relayControlSwap)
+                .scaleEffect(0.5)
+                .frame(width: 60, height: 56)
+            // The name and status swap with the chat, the old ones gone first.
+            ZStack(alignment: .leading) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(state.name)
+                        .relayTextStyle(.cardTitle)
+                        .foregroundStyle(RelayColor.neutral10)
+                    Text(state.status)
+                        .relayTextStyle(.subtitle)
+                        .foregroundStyle(RelayColor.neutral7)
+                        .lineLimit(1)
+                        .contentTransition(.opacity)
+                        .animation(RelayMotion.enter, value: state.status)
+                }
+                .id(state.name)
+                .transition(.relayControlSwap)
             }
             .animation(RelayMotion.enter, value: state.name)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
         .padding(.top, 2)
         .contentShape(Rectangle())
         .onTapGesture { dismissKeyboard() }

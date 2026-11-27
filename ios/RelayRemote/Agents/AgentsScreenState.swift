@@ -57,6 +57,8 @@ struct AgentsScreenState: Equatable {
     var selected: String
     var name: String
     var orb: AgentOrbState
+    /// The line under the name: what the agent is doing right now.
+    var status: String
     var feed: [ChatMessage]
     /// The reply in the feed that is playing now.
     var speakingSeq: Int?
@@ -87,6 +89,9 @@ struct AgentsScreenState: Equatable {
         self.selected = selected
         name = AgentsModel.name(selected)
         orb = talking != nil ? .listening : playing == selected ? .playing : .idle
+        status = Self.status(glyph: agents.glyph(for: selected, talking: talking, playing: playing),
+                             workingOn: agents.workingOn[selected],
+                             replyWaiting: waitingAgents.contains(selected))
         let chat = agents.chat(selected)
         let mine = voice.waitingSeqs.filter { agents.agent(ofSeq: $0) == selected }
         // Every reply shows as a bubble at once (RR-554). The dock's Play
@@ -102,5 +107,19 @@ struct AgentsScreenState: Equatable {
         isTalking = voice.isTalking
         transcript = voice.transcript
         self.talkMode = talkMode
+    }
+
+    /// Talking and playback first, then what the Mac's agent card says it is
+    /// working on, then its state.
+    static func status(glyph: StatusGlyphState, workingOn: String?, replyWaiting: Bool) -> String {
+        switch glyph {
+        case .listening: return "Listening"
+        case .playing: return "Playing reply"
+        case .off: return "Not running"
+        case .working, .ready:
+            if let workingOn, !workingOn.isEmpty { return workingOn }
+            if replyWaiting { return "New reply" }
+            return glyph == .working ? "Working" : "Ready"
+        }
     }
 }
