@@ -30,6 +30,12 @@ final class SpeechRecognizer {
     private let engine = AVAudioEngine()
     private let tap = TapState()
     private var analyzer: SpeechAnalyzer?
+    /// The analyzer for the next utterance, its model already loaded, so a
+    /// press starts transcribing at once instead of loading it first.
+    private var prepared: (analyzer: SpeechAnalyzer, transcriber: SpeechTranscriber)?
+    private var warming: Task<Void, Never>?
+    /// The analyzer's audio format, looked up once.
+    private var analyzerFormat: AVAudioFormat?
     private var resultsTask: Task<Void, Never>?
     private var finalText = ""
     private var volatileText = ""
@@ -61,6 +67,7 @@ final class SpeechRecognizer {
             readiness = .unsupported
         case .installed:
             readiness = .ready
+            warmUp()
         case .supported, .downloading:
             do {
                 if let request = try await AssetInventory.assetInstallationRequest(supporting: [probe]) {
@@ -73,6 +80,7 @@ final class SpeechRecognizer {
                     try await request.downloadAndInstall()
                 }
                 readiness = .ready
+                warmUp()
             } catch {
                 readiness = .failed("model")
             }
@@ -84,14 +92,25 @@ final class SpeechRecognizer {
     /// Starts the microphone if needed and a fresh analyzer for one utterance.
     func startUtterance() async throws {
         try startEngineIfNeeded()
-        let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
-        let analyzer = SpeechAnalyzer(modules: [transcriber])
-        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]),
+        // A warm-up still loading the model finishes first; it is the same work.
+        await warming?.value
+        let next: (analyzer: SpeechAnalyzer, transcriber: SpeechTranscriber)
+        if let prepared {
+            next = prepared
+            self.prepared = nil
+        } else {
+            let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
+            next = (SpeechAnalyzer(modules: [transcriber]), transcriber)
+        }
+        let (analyzer, transcriber) = next
+        guard let format = await format(for: transcriber),
               let converter = AVAudioConverter(from: engine.inputNode.outputFormat(forBus: 0), to: format) else {
             throw RecognizerError.noAudioFormat
         }
         finalText = ""
         volatileText = ""
+        // Audio queues in the stream from here, so nothing said while the
+        // analyzer starts is lost.
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
         tap.begin(continuation: continuation, converter: converter, format: format)
         self.analyzer = analyzer
@@ -116,6 +135,7 @@ final class SpeechRecognizer {
         self.analyzer = nil
         try? await analyzer.finalizeAndFinishThroughEndOfInput()
         await awaitResults(timeout: 2)
+        warmUp()
         return Self.join(finalText, volatileText)
     }
 
@@ -129,6 +149,7 @@ final class SpeechRecognizer {
         resultsTask = nil
         finalText = ""
         volatileText = ""
+        warmUp()
     }
 
     /// Keep the microphone open but stop feeding the analyzer, for example
@@ -151,6 +172,28 @@ final class SpeechRecognizer {
     }
 
     // MARK: - Internals
+
+    /// Loads the next utterance's analyzer and model ahead of the press.
+    private func warmUp() {
+        guard readiness == .ready, prepared == nil, warming == nil else { return }
+        warming = Task { [weak self] in
+            guard let self else { return }
+            let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
+            let analyzer = SpeechAnalyzer(modules: [transcriber])
+            if let format = await format(for: transcriber) {
+                try? await analyzer.prepareToAnalyze(in: format)
+            }
+            prepared = (analyzer, transcriber)
+            warming = nil
+        }
+    }
+
+    private func format(for transcriber: SpeechTranscriber) async -> AVAudioFormat? {
+        if let analyzerFormat { return analyzerFormat }
+        let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber])
+        analyzerFormat = format
+        return format
+    }
 
     private func startEngineIfNeeded() throws {
         guard !isCapturing else { return }
