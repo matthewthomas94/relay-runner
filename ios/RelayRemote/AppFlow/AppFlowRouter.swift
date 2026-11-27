@@ -13,6 +13,9 @@ struct AppFlowRouter: View {
     var body: some View {
         ZStack {
             RelayColor.neutral1.ignoresSafeArea()
+            if stage == .app {
+                RelayBackdrop().transition(.opacity.animation(RelayMotion.change))
+            }
             AppGlowLayer(model: model)
             if launch.showsGallery {
                 galleryOrApp

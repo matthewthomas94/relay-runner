@@ -154,6 +154,7 @@ private struct WorkspaceList: View {
                                     TicketRow(ticket: ticket, project: listing.projectName(of: ticket))
                                 }
                                 .buttonStyle(TicketRowButtonStyle())
+                                .transition(.relayRise)
                             }
                         }
                         .padding(.top, 12)
@@ -167,10 +168,13 @@ private struct WorkspaceList: View {
                 }
                 .padding(.horizontal, RelayMetrics.screenMargin)
                 .padding(.top, 72)
+                // Tickets arriving, leaving or moving lanes animate instead of jumping.
+                .animation(RelayMotion.move, value: listing.groups.map { $0.tickets.map(\.id) })
             }
         }
         .refreshable { await refresh() }
         .opacity(dimmed ? 0.3 : 1)
+        .animation(RelayMotion.enter, value: dimmed)
         .accessibilityElement(children: .contain)
     }
 }
@@ -178,7 +182,10 @@ private struct WorkspaceList: View {
 /// A row that can be tapped: plain, and a little dimmer while pressed.
 private struct TicketRowButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.opacity(configuration.isPressed ? 0.7 : 1).contentShape(Rectangle())
+        configuration.label
+            .opacity(configuration.isPressed ? 0.85 : 1)
+            .contentShape(Rectangle())
+            .relayPressed(configuration.isPressed)
     }
 }
 
@@ -210,13 +217,14 @@ private struct TicketRow: View {
 private struct ProjectTabStrip: View {
     let tabs: [WorkspaceListing.ProjectTab]
     @Binding var selection: String?
+    @Namespace private var pill
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(tabs, id: \.id) { tab in
                     let selected = tab.id == selection
-                    Button { selection = tab.id } label: {
+                    Button { withAnimation(RelayMotion.move) { selection = tab.id } } label: {
                         (Text(tab.name).foregroundStyle(selected ? RelayColor.neutral10 : RelayColor.neutral7)
                             + Text("  \(tab.count)").foregroundStyle(RelayColor.neutral7))
                             .font(RelayTextStyle.control.font)
@@ -229,10 +237,12 @@ private struct ProjectTabStrip: View {
                                         .fill(RelayColor.neutral3)
                                         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
                                             .stroke(RelayColor.neutral5, lineWidth: 1))
+                                        .matchedGeometryEffect(id: "pill", in: pill)
                                 }
                             }
+                            .animation(RelayMotion.enter, value: selected)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.relayPlain)
                     .accessibilityAddTraits(selected ? [.isSelected, .isButton] : .isButton)
                 }
             }

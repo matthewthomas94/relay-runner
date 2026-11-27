@@ -29,7 +29,8 @@ struct AgentDock: View {
     var onReplay: () -> Void = {}
     var onStop: () -> Void = {}
 
-    static let maxLines = 6
+    /// The text box grows to three lines, then scrolls (user, 2026-11-27).
+    static let maxLines = 3
 
     var body: some View {
         VStack(spacing: 8) {
@@ -42,13 +43,16 @@ struct AgentDock: View {
                         Button(action: onCancel) { LucideImage(.x, size: 20) }
                             .buttonStyle(DockSquareButtonStyle())
                             .accessibilityLabel("Cancel")
+                            .transition(.relayControlSwap)
                     } else {
                         Button(action: onReplay) { LucideImage(.rotateCcw, size: 20) }
                             .buttonStyle(DockSquareButtonStyle())
                             .disabled(!canReplay)
                             .accessibilityLabel("Replay")
+                            .transition(.relayControlSwap)
                     }
                 }
+                .animation(RelayMotion.enter, value: isTalking)
                 .opacity(dimmed.contains(.replay) ? 0.3 : 1)
                 .allowsHitTesting(!inert.contains(.replay))
                 TalkButton(mode: talkMode, isTalking: isTalking, onCommand: onTalk)
@@ -64,8 +68,9 @@ struct AgentDock: View {
         }
         .padding(10)
         .background(RelayGlassBackground(glass: .panel,
-                                         shape: RoundedRectangle(cornerRadius: 22, style: .continuous)))
+                                         shape: RoundedRectangle(cornerRadius: 20, style: .continuous)))
         .padding(.horizontal, 12)
+        .animation(RelayMotion.enter, value: dimmed)
     }
 
     private var canSend: Bool {
@@ -73,13 +78,19 @@ struct AgentDock: View {
     }
 
     private var textBox: some View {
-        HStack(alignment: .center, spacing: 8) {
+        // Send stays in the bottom-right corner as the text box grows.
+        HStack(alignment: .bottom, spacing: 8) {
             Group {
                 if isTalking {
+                    // The newest words stay in view: the transcript keeps its
+                    // last three lines.
                     Text(transcript.isEmpty ? placeholder : transcript)
                         .foregroundStyle(transcript.isEmpty ? RelayColor.neutral7 : RelayColor.neutral10)
                         .lineLimit(Self.maxLines)
+                        .truncationMode(.head)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentTransition(.opacity)
+                        .animation(RelayMotion.enter, value: transcript)
                 } else {
                     TextField("", text: $text,
                               prompt: Text(placeholder).foregroundStyle(RelayColor.neutral7), axis: .vertical)
@@ -100,13 +111,16 @@ struct AgentDock: View {
                     .background(RelayGlassBackground(glass: .selected,
                                                      shape: RoundedRectangle(cornerRadius: 10, style: .continuous)))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.relayPlain)
             .disabled(!canSend)
+            .animation(RelayMotion.enter, value: canSend)
             .padding(.trailing, 4)
+            .padding(.bottom, 4)
             .accessibilityLabel("Send")
         }
         .frame(minHeight: 44)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(RelayColor.neutral1))
+        .animation(RelayMotion.move, value: isTalking)
     }
 
     private func sendIfPossible() {
@@ -134,6 +148,8 @@ private struct DockSquareButton: View {
             .background(RelayGlassBackground(glass: configuration.isPressed ? .selected : .control, shape: shape))
             .contentShape(shape)
             .opacity(isEnabled ? 1 : 0.4)
+            .animation(RelayMotion.enter, value: isEnabled)
+            .relayPressed(configuration.isPressed)
     }
 }
 
@@ -151,13 +167,19 @@ struct TalkButton: View {
         let active = isTalking || (mode == .hold && touching)
         HStack(spacing: 8) {
             LucideImage(active ? .audioLines : .mic, size: 20)
+                .id(active)
+                .transition(.relayControlSwap)
             Text(label(active: active))
+                .contentTransition(.opacity)
         }
+        .animation(RelayMotion.enter, value: active)
         .relayTextStyle(.control)
         .foregroundStyle(RelayColor.neutral1)
         .frame(maxWidth: .infinity, minHeight: RelayMetrics.controlHeight)
-        .background(shape.fill(active ? RelayColor.primaryPressed : RelayColor.neutral10))
+        .background(shape.fill(active ? RelayColor.primaryPressed : RelayColor.neutral10)
+            .animation(RelayMotion.press, value: active))
         .contentShape(shape)
+        .relayPressed(touching)
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { _ in

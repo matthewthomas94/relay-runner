@@ -86,10 +86,13 @@ extension View {
                     RelayBannerView(banner: banner)
                         .padding(.horizontal, RelayBannerMetrics.sideMargin)
                         .padding(.top, RelayBannerMetrics.top)
-                        .transition(.relaySurface)
+                        // Drops in from the top and leaves the way it came, faster.
+                        .transition(.asymmetric(
+                            insertion: .offset(y: -16).combined(with: .opacity).combined(with: .scale(scale: 0.97, anchor: .top)),
+                            removal: .offset(y: -12).combined(with: .opacity).animation(.easeOut(duration: 0.18))))
                 }
             }
-            .animation(RelayMotion.change, value: banner)
+            .animation(RelayMotion.enter, value: banner)
             .ignoresSafeArea(edges: .top)
         }
     }

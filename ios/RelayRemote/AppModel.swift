@@ -247,7 +247,12 @@ final class AppModel {
             }
             self.voice?.receive(frame)
         }
-        session.onStateChange = { [weak self] state in self?.notifier.sessionStateChanged(state) }
+        session.onStateChange = { [weak self, weak session] state in
+            self?.notifier.sessionStateChanged(state)
+            // The phone plays replies at the Mac's speech speed, so learn it on
+            // every connect, not only when Settings opens.
+            if state == .connected || state == .connectedToApp { _ = session?.requestSettings() }
+        }
         voice.onSpokenRequest = { [weak self] text in self?.agents.send(text) }
         if isForeground { session.start() }
     }

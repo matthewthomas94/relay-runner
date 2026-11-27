@@ -20,11 +20,30 @@ final class SystemSpeechSynthesizer: NSObject, SpeechSynthesizing, AVSpeechSynth
         voice = Self.preferredVoice()
     }
 
+    /// The Mac's speech speed (0.5...2.0x), applied to the phone's own voice.
+    var speed: Double = 1
+
+    /// AVSpeech rates are not linear: the default (0.5) is natural speech and
+    /// 1.0 is very fast. Map 1x to the default, 2x to near the top and 0.5x
+    /// halfway to the minimum.
+    static func utteranceRate(for speed: Double) -> Float {
+        let base = Double(AVSpeechUtteranceDefaultSpeechRate)
+        let clamped = min(max(speed, 0.5), 2)
+        let value: Double
+        if clamped >= 1 {
+            value = base + (Double(AVSpeechUtteranceMaximumSpeechRate) * 0.9 - base) * (clamped - 1)
+        } else {
+            value = base - (base - Double(AVSpeechUtteranceMinimumSpeechRate)) * (1 - clamped)
+        }
+        return Float(value)
+    }
+
     func speak(_ text: String, completion: @escaping @MainActor (Bool) -> Void) {
         finish(played: false)
         self.completion = completion
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = voice
+        utterance.rate = Self.utteranceRate(for: speed)
         synthesizer.speak(utterance)
     }
 

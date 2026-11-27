@@ -40,14 +40,19 @@ struct AgentsScreen: View {
             Group {
                 if state.notRunning {
                     notRunning
+                        .transition(.relaySurface)
                 } else {
                     AgentChatFeed(name: state.name, messages: state.feed, speakingSeq: state.speakingSeq,
                                   waiting: state.waiting) {
                         if let waiting = state.waiting { actions.play(waiting) }
                     }
                     .id(state.selected)
+                    // Switching agents crossfades the chats.
+                    .transition(.opacity)
                 }
             }
+            .animation(RelayMotion.enter, value: state.notRunning)
+            .animation(RelayMotion.enter, value: state.selected)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.bottom, 6)
             .modifier(Dimmed(isDimmed: isOffline))
@@ -76,6 +81,7 @@ struct AgentsScreen: View {
                 .relayTextStyle(.cardTitle)
                 .foregroundStyle(RelayColor.neutral10)
                 .contentTransition(.opacity)
+                .animation(RelayMotion.enter, value: state.name)
         }
         .padding(.top, 2)
         .accessibilityElement(children: .combine)
@@ -125,6 +131,6 @@ private struct Dimmed: ViewModifier {
         content
             .opacity(isDimmed ? AgentsScreen.dimmedOpacity : 1)
             .disabled(isDimmed)
-            .animation(RelayMotion.change, value: isDimmed)
+            .animation(RelayMotion.enter, value: isDimmed)
     }
 }

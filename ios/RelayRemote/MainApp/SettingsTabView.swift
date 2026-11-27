@@ -362,9 +362,9 @@ private struct RelayToggleStyle: ToggleStyle {
                     Circle().fill(configuration.isOn ? RelayColor.neutral1 : RelayColor.neutral10)
                         .frame(width: 24, height: 24).padding(4)
                 }
-                .animation(.easeOut(duration: 0.18), value: configuration.isOn)
+                .animation(RelayMotion.move, value: configuration.isOn)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.relayPlain)
         .accessibilityRepresentation { Toggle(isOn: configuration.$isOn) { configuration.label } }
     }
 }
@@ -374,6 +374,7 @@ private struct SegmentedRow<Value: Hashable>: View {
     var subtitle: String?
     let options: [(String, Value)]
     @Binding var selection: Value
+    @Namespace private var pill
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -385,17 +386,21 @@ private struct SegmentedRow<Value: Hashable>: View {
                 ForEach(options.indices, id: \.self) { index in
                     let option = options[index]
                     let selected = option.1 == selection
-                    Button { selection = option.1 } label: {
+                    Button { withAnimation(RelayMotion.move) { selection = option.1 } } label: {
                         Text(option.0).relayTextStyle(.control)
                             .foregroundStyle(selected ? RelayColor.neutral10 : RelayColor.neutral7)
+                            .animation(RelayMotion.enter, value: selected)
                             .frame(maxWidth: .infinity, minHeight: 40)
                             .background {
+                                // One pill that slides to the selected option.
                                 if selected {
                                     RoundedRectangle(cornerRadius: 10, style: .continuous).fill(RelayColor.neutral4)
+                                        .matchedGeometryEffect(id: "pill", in: pill)
                                 }
                             }
+                            .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.relayPlain)
                     .accessibilityAddTraits(selected ? .isSelected : [])
                 }
             }

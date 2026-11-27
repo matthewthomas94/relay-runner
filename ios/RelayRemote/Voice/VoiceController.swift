@@ -39,7 +39,9 @@ final class VoiceController {
     private(set) var currentSeq: Int?
     private(set) var activity = Activity.idle
     private(set) var transcript = ""
-    private(set) var isListening = false
+    private(set) var isListening = false {
+        didSet { syncHold() }
+    }
     private(set) var lastProblem: String?
     var readiness: SpeechRecognizer.Readiness { recognizer.readiness }
     var isSpeaking: Bool { queue.isSpeaking }
@@ -58,7 +60,12 @@ final class VoiceController {
     @ObservationIgnored private let player = AudioQueueSpeechPlayer()
     @ObservationIgnored private let recognizer = SpeechRecognizer()
     @ObservationIgnored private let queue: SpeechPlaybackQueue
-    @ObservationIgnored private var utteranceOpen = false
+    @ObservationIgnored private var utteranceOpen = false {
+        didSet { syncHold() }
+    }
+    /// Pressed again while the last utterance was still finishing: open a new
+    /// one as soon as it has, without stopping the microphone in between.
+    @ObservationIgnored private var openAfterClose = false
     /// The user let go (true) or cancelled (false) while the utterance was
     /// still opening; it closes that way once open.
     @ObservationIgnored private var closeWhenOpen: Bool?
@@ -94,13 +101,26 @@ final class VoiceController {
 
     // MARK: - Talk
 
-    /// Opens an utterance for `agent` (nil: the focused agent).
+    /// Opens an utterance for `agent` (nil: the focused agent). The control
+    /// and the glow respond at once: `isListening` turns on before the
+    /// microphone and the analyzer have started, and a press while the last
+    /// utterance is still being transcribed is kept rather than ignored.
     func pressToTalkBegan(agent: String? = nil) {
-        guard remoteMode, !utteranceOpen, !busy, !isListening else { return }
+        guard remoteMode, !isListening else { return }
         isListening = true
         closeWhenOpen = nil
         bargeIn(agent: agent)
+        if utteranceOpen || busy {
+            openAfterClose = true
+            return
+        }
         Task { await openUtterance() }
+    }
+
+    /// The speech speed the Mac reports, applied to both of the phone's voices.
+    func setSpeechSpeed(_ speed: Double) {
+        player.rate = Float(speed)
+        synthesizer.speed = speed
     }
 
     /// Finishes the utterance and sends its transcript.
@@ -169,6 +189,9 @@ final class VoiceController {
 
     /// RR-540: every inbound frame from the session, for the playback queue.
     func receive(_ frame: Frame) {
+        if case .settingsState(let settings) = frame, let percent = settings.speechSpeedPercent {
+            setSpeechSpeed(Double(percent) / 100)
+        }
         queue.receive(frame)
     }
 
@@ -264,6 +287,13 @@ final class VoiceController {
         }
         // The text box shows the transcript only while the user talks.
         transcript = ""
+        let reopen = openAfterClose && isListening
+        openAfterClose = false
+        if reopen {
+            // Pressed again while this one finished: keep the microphone open.
+            Task { await openUtterance() }
+            return
+        }
         recognizer.stopCapture()
         try? audio.setRecording(false)
         refreshActivity()
@@ -332,6 +362,12 @@ final class VoiceController {
         } else {
             activity = .idle
         }
+    }
+
+    /// Replies wait while the user is talking or their words are still being
+    /// transcribed, then play in turn.
+    private func syncHold() {
+        queue.isHeld = isListening || utteranceOpen
     }
 
     private func notifyIfIdle() {

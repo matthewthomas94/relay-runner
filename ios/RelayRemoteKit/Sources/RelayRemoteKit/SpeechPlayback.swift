@@ -88,6 +88,17 @@ public final class SpeechPlaybackQueue {
     /// Fires after anything that may change `playbackState` or `waitingReply`.
     public var onChange: (() -> Void)?
 
+    /// While true no reply starts: the user is talking, and a reply that
+    /// arrives meanwhile waits its turn and plays once they finish, as on the
+    /// desktop. A reply already playing is not affected.
+    public var isHeld = false {
+        didSet {
+            guard isHeld != oldValue else { return }
+            log(isHeld ? "playback held" : "playback released")
+            if !isHeld { pump() }
+        }
+    }
+
     public var mode: PlaybackMode {
         didSet {
             guard mode != oldValue else { return }
@@ -366,7 +377,7 @@ public final class SpeechPlaybackQueue {
 
     private func pump() {
         flushAcks()
-        if !isSpeaking, let index = entries.firstIndex(where: isPlayable) {
+        if !isSpeaking, !isHeld, let index = entries.firstIndex(where: isPlayable) {
             entries[index].state = .speaking
             isSpeaking = true
             currentSeq = entries[index].seq

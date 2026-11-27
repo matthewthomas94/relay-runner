@@ -13,6 +13,21 @@ enum RelayMotion {
     static let swap = Animation.easeInOut(duration: swapDuration)
     static let change = Animation.easeInOut(duration: 0.3)
 
+    // The interaction curves (Emil Kowalski's strong ease-out and ease-in-out;
+    // the built-in easings are too weak). UI motion stays under 300 ms.
+
+    /// Press feedback: 160 ms strong ease-out.
+    static let press = Animation.timingCurve(0.23, 1, 0.32, 1, duration: 0.16)
+    /// Something arriving or leaving (a message, a banner, a swapped
+    /// control): 240 ms strong ease-out.
+    static let enter = Animation.timingCurve(0.23, 1, 0.32, 1, duration: 0.24)
+    /// Something moving on screen (a selection sliding between tabs, a box
+    /// growing): a critically damped spring, so a quick second tap retargets
+    /// from where it is instead of restarting.
+    static let move = Animation.spring(duration: 0.3, bounce: 0)
+    /// How far a pressed control shrinks.
+    static let pressedScale: CGFloat = 0.97
+
     /// Smoothstep on 0...1.
     static func smoothstep(_ value: Double) -> Double {
         let t = min(max(value, 0), 1)
@@ -74,4 +89,54 @@ struct RelaySwap<Value: Equatable, Content: View>: View {
             withAnimation(RelayMotion.swap) { hidden = 0 }
         }
     }
+}
+
+extension View {
+    /// Press feedback for anything tappable: shrinks to 97% while pressed and
+    /// springs back on release. Scale only, so Reduce Motion keeps it (it is
+    /// feedback, not movement across the screen).
+    func relayPressed(_ pressed: Bool) -> some View {
+        scaleEffect(pressed ? RelayMotion.pressedScale : 1)
+            .animation(RelayMotion.press, value: pressed)
+    }
+}
+
+extension AnyTransition {
+    /// A message or row arriving: rises 8 pt and fades in with a hint of
+    /// scale; leaves with a quicker fade.
+    static var relayRise: AnyTransition {
+        .asymmetric(
+            insertion: .opacity.combined(with: .offset(y: 8)).combined(with: .scale(scale: 0.98, anchor: .bottom)),
+            removal: .opacity.animation(.easeOut(duration: 0.15))
+        )
+    }
+
+    /// A control swapping for another in the same place (Replay and Cancel,
+    /// the Talk label): a short crossfade with a slight blur and scale.
+    static var relayControlSwap: AnyTransition {
+        .modifier(active: RelayControlSwapModifier(hidden: true), identity: RelayControlSwapModifier(hidden: false))
+    }
+}
+
+struct RelayControlSwapModifier: ViewModifier {
+    let hidden: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(hidden ? 0 : 1)
+            .blur(radius: hidden ? 2 : 0)
+            .scaleEffect(hidden ? 0.9 : 1)
+    }
+}
+
+/// A `ButtonStyle` wrapper that adds `relayPressed` to any label.
+struct RelayPressableStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.relayPressed(configuration.isPressed)
+    }
+}
+
+extension ButtonStyle where Self == RelayPressableStyle {
+    /// A plain button with press feedback.
+    static var relayPlain: RelayPressableStyle { RelayPressableStyle() }
 }

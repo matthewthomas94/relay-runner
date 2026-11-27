@@ -18,6 +18,7 @@ struct AgentChatFeed: View {
             LazyVStack(spacing: 20) {
                 ForEach(messages) { message in
                     row(message)
+                        .transition(.relayRise)
                 }
                 if let waiting {
                     WaitingReplyPanel(name: name, receivedAt: waiting.receivedAt, onPlay: onPlay)
@@ -28,7 +29,9 @@ struct AgentChatFeed: View {
             .padding(.horizontal, RelayMetrics.screenMargin)
             .padding(.top, Self.topFade)
             .padding(.bottom, Self.bottomFade)
-            .animation(RelayMotion.change, value: waiting)
+            .animation(RelayMotion.enter, value: waiting)
+            .animation(RelayMotion.enter, value: messages.count)
+            .animation(RelayMotion.enter, value: speakingSeq)
         }
         .scrollIndicators(.hidden)
         .defaultScrollAnchor(.bottom)
@@ -69,6 +72,7 @@ struct AgentChatFeed: View {
                     .relayGlass(.panel)
                 meta(message.seq != nil && message.seq == speakingSeq
                      ? "\(name) · speaking" : "\(name) · \(Self.time(message.date))")
+                    .contentTransition(.opacity)
             }
             .padding(.trailing, 51)
             .frame(maxWidth: .infinity, alignment: .leading)

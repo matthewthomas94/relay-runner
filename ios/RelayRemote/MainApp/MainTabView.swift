@@ -20,11 +20,17 @@ struct MainTabView: View {
 
     var body: some View {
         ZStack {
-            switch selection {
-            case .agents: AgentsTabView(model: model)
-            case .workspace: WorkspaceTabView(model: model, sample: WorkspaceFeed.debugSample(workspaceSample))
-            case .settings: SettingsTabView(model: model)
+            // Tabs crossfade with a hint of scale instead of cutting.
+            Group {
+                switch selection {
+                case .agents: AgentsTabView(model: model)
+                case .workspace: WorkspaceTabView(model: model, sample: WorkspaceFeed.debugSample(workspaceSample))
+                case .settings: SettingsTabView(model: model)
+                }
             }
+            .id(selection)
+            .transition(.asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.99)),
+                                    removal: .opacity))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .glassTabBar { GlassTabBar(selection: $selection) }
@@ -38,6 +44,6 @@ struct MainTabView: View {
         }
         .onAppear { if let ticketSample { model.showSampleTicket(ticketSample.row) } }
         // RR-545: a tapped reply notification opens the Agents tab on its agent.
-        .onChange(of: model.agentsTabRequests) { selection = .agents }
+        .onChange(of: model.agentsTabRequests) { withAnimation(RelayMotion.move) { selection = .agents } }
     }
 }

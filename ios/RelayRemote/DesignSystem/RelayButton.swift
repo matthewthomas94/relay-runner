@@ -41,6 +41,9 @@ private struct RelayButtonBody: View {
             }
             .contentShape(shape)
             .opacity(isEnabled ? 1 : 0.4)
+            .animation(RelayMotion.press, value: configuration.isPressed)
+            .animation(RelayMotion.enter, value: isEnabled)
+            .relayPressed(configuration.isPressed)
     }
 
     private var foreground: Color {

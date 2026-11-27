@@ -1,41 +1,47 @@
 import SwiftUI
 
-/// The glass surfaces on the styles board: a blurred backdrop under a
-/// translucent neutral, with a faint hairline that is lighter at the top.
+/// The glass surfaces in the final Figma screens: each is Figma's Glass effect
+/// (refraction 0.8, depth 20, light from the top left) under a translucent
+/// neutral fill. On the phone that is iOS's own Liquid Glass with the same
+/// fill laid over it, so the backdrop refracts and the rim catches the light
+/// the way the designs show, instead of a flat blur.
 enum RelayGlass {
-    /// Panels: #0c0f13 at 50%.
+    /// Panels, the dock and chat bubbles: #0c0f13 at 50%.
     case panel
-    /// Secondary buttons and bars: #171a1e at 75%.
+    /// The bottom tab bar: #0c0f13 at 70%.
+    case bar
+    /// Secondary buttons: #171a1e at 75%.
     case control
-    /// Selected tabs and items: #212529.
+    /// Selected tabs and pressed controls: #212529 at 75%.
     case selected
 
     var tint: Color {
         switch self {
         case .panel: return RelayColor.neutral2.opacity(0.5)
+        case .bar: return RelayColor.neutral2.opacity(0.7)
         case .control: return RelayColor.neutral3.opacity(0.75)
-        case .selected: return RelayColor.neutral4
+        case .selected: return RelayColor.neutral4.opacity(0.75)
         }
     }
 }
 
-/// The glass surface as a shape fill, for any container.
+/// The glass surface as a shape fill, for any container. `stroke` is the
+/// hairline some surfaces carry in the designs (the tab bar at 6%, a selected
+/// agent tab at 8%); most have none.
 struct RelayGlassBackground<S: InsettableShape>: View {
     var glass: RelayGlass = .panel
     let shape: S
+    var stroke: Double = 0
 
     var body: some View {
-        shape
-            .fill(.ultraThinMaterial)
+        Color.clear
+            .glassEffect(.regular, in: shape)
             .overlay(shape.fill(glass.tint))
-            .overlay(
-                shape.strokeBorder(
-                    LinearGradient(colors: [.white.opacity(0.10), .white.opacity(0.04)],
-                                   startPoint: .top, endPoint: .bottom),
-                    lineWidth: 1
-                )
-            )
+            .overlay {
+                if stroke > 0 { shape.strokeBorder(.white.opacity(stroke), lineWidth: 1) }
+            }
             .environment(\.colorScheme, .dark)
+            .animation(RelayMotion.press, value: glass)
     }
 }
 

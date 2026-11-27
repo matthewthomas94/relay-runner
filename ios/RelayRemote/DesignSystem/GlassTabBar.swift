@@ -31,11 +31,14 @@ struct GlassTabBar: View {
     @Binding var selection: MainTab
     /// Tabs drawn at 30%, as the tutorial dims controls it is not teaching.
     var dimmed = false
+    @Namespace private var pill
 
     static let height: CGFloat = 66
     static let bottomOffset: CGFloat = 30
-    static let cornerRadius: CGFloat = 33
+    /// The Figma bar: radius 24; the selected tab inside it, radius 18.
+    static let cornerRadius: CGFloat = 24
     static let inset: CGFloat = 7
+    static let pillRadius: CGFloat = 18
     /// How far the bar's top sits above the bottom safe-area edge on a phone
     /// with a home indicator (34 pt). Content above the bar insets by this.
     static let contentInset: CGFloat = height + bottomOffset - 34
@@ -43,17 +46,21 @@ struct GlassTabBar: View {
     var body: some View {
         HStack(spacing: 0) {
             ForEach(MainTab.allCases) { tab in
-                Button { selection = tab } label: { item(tab) }
-                    .buttonStyle(.plain)
+                Button {
+                    withAnimation(RelayMotion.move) { selection = tab }
+                } label: { item(tab) }
+                    .buttonStyle(.relayPlain)
                     .accessibilityLabel(tab.title)
                     .accessibilityAddTraits(tab == selection ? [.isSelected] : [])
             }
         }
         .padding(Self.inset)
         .frame(height: Self.height)
-        .background(RelayGlassBackground(glass: .control,
-                                         shape: RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)))
+        .background(RelayGlassBackground(glass: .bar,
+                                         shape: RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous),
+                                         stroke: 0.06))
         .opacity(dimmed ? 0.3 : 1)
+        .animation(RelayMotion.enter, value: dimmed)
         .padding(.horizontal, RelayMetrics.screenMargin)
     }
 
@@ -64,12 +71,14 @@ struct GlassTabBar: View {
             Text(tab.title).font(.custom(RelayTextStyle.Weight.regular.postScriptName, fixedSize: 12))
         }
         .foregroundStyle(selected ? RelayColor.neutral10 : RelayColor.neutral7)
+        .animation(RelayMotion.enter, value: selected)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background {
+            // One pill that slides to the selected tab.
             if selected {
                 RelayGlassBackground(glass: .selected,
-                                     shape: RoundedRectangle(cornerRadius: Self.cornerRadius - Self.inset,
-                                                             style: .continuous))
+                                     shape: RoundedRectangle(cornerRadius: Self.pillRadius, style: .continuous))
+                    .matchedGeometryEffect(id: "pill", in: pill)
             }
         }
         .contentShape(Rectangle())

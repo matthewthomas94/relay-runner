@@ -7,6 +7,7 @@ struct AgentTabStrip: View {
     let tabs: [AgentsScreenState.Tab]
     let selected: String
     let onSelect: (String) -> Void
+    @Namespace private var pill
 
     static let height: CGFloat = 36
     /// The desktop terminal tabs' label size.
@@ -18,8 +19,10 @@ struct AgentTabStrip: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
                     ForEach(tabs) { tab in
-                        Button { onSelect(tab.slug) } label: { item(tab) }
-                            .buttonStyle(.plain)
+                        Button {
+                            withAnimation(RelayMotion.move) { onSelect(tab.slug) }
+                        } label: { item(tab) }
+                            .buttonStyle(.relayPlain)
                             .id(tab.slug)
                             .accessibilityElement(children: .ignore)
                             .accessibilityLabel("\(tab.name), \(StatusGlyph.accessibilityLabel(tab.glyph))"
@@ -30,7 +33,7 @@ struct AgentTabStrip: View {
                 .padding(.horizontal, 12)
             }
             .onChange(of: selected) { _, slug in
-                withAnimation(RelayMotion.change) { proxy.scrollTo(slug, anchor: .center) }
+                withAnimation(RelayMotion.move) { proxy.scrollTo(slug, anchor: .center) }
             }
         }
         .frame(height: Self.height)
@@ -42,14 +45,18 @@ struct AgentTabStrip: View {
             Text(tab.name)
                 .relayTextStyle(tab.marked && !isSelected ? Self.markedLabel : Self.label)
                 .foregroundStyle(isSelected || tab.marked ? RelayColor.neutral10 : RelayColor.neutral7)
+                .animation(RelayMotion.enter, value: isSelected)
             StatusGlyph(state: tab.glyph)
         }
         .padding(.leading, 15)
         .padding(.trailing, 12)
         .frame(height: Self.height)
         .background {
+            // One glass tab (with the Figma 8% hairline) that slides to the selection.
             if isSelected {
-                RelayGlassBackground(glass: .panel, shape: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                RelayGlassBackground(glass: .panel, shape: RoundedRectangle(cornerRadius: 12, style: .continuous),
+                                     stroke: 0.08)
+                    .matchedGeometryEffect(id: "pill", in: pill)
             }
         }
         .contentShape(Rectangle())
