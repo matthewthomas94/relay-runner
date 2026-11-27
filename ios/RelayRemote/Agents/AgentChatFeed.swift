@@ -13,7 +13,11 @@ struct AgentChatFeed: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(spacing: 20) {
+            // Not lazy: a LazyVStack estimates the height of rows it has not
+            // laid out, and with the bottom anchor the feed jumped past its
+            // last message and could not scroll back up when long replies
+            // came into view. A chat holds at most `ChatStore.limit` rows.
+            VStack(spacing: 20) {
                 // Only the newest reply with the playing seq: an older one may
                 // share it from before the Mac restarted.
                 let speakingID = speakingSeq.flatMap { seq in messages.last(where: { $0.seq == seq })?.id }
