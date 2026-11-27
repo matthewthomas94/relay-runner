@@ -25,11 +25,12 @@ enum AppGlowState: Equatable {
 /// playback field while a reply plays (`DotField`). One view at the app root,
 /// driven by the voice state.
 ///
-/// It moves exactly like the desktop's `ParticleFieldRenderer` under
-/// `VoiceOverlayMotion`: a field arrives and departs over 200 ms on a
-/// smoothstep, fading, blurring by 12 pt and scaling to 96% about the field's
-/// own centre at the base of the screen, so it blooms up from the bottom
-/// rather than sliding. Switching between listening and playback crossfades
+/// A field rises from the bottom edge to its full height as it arrives
+/// (500 ms, strong ease-out) and sinks back into the bottom edge as it
+/// leaves (340 ms, ease-in), while carrying the desktop's surface transform
+/// from `ParticleFieldRenderer` under `VoiceOverlayMotion`: fading, blurring
+/// by 12 pt and scaling to 96% about the field's own centre at the base of
+/// the screen. Switching between listening and playback crossfades
 /// the two fields over 450 ms on the change curve. Reduce Motion keeps only
 /// the fades.
 struct AppGlowLayer: View {
@@ -58,11 +59,19 @@ struct StateGlowLayer: View {
     @State private var departure = 1.0
     /// 0 still showing `previous`, 1 fully `current`.
     @State private var arrival = 1.0
+    /// How far up the field has risen: 0 sunk into the bottom edge, 1 full.
+    @State private var reveal = 0.0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// The desktop's `VoiceOverlayMotion.travelDuration` on its smoothstep.
+    /// The desktop's surface motion (fade, blur, 96% scale) over its
+    /// `VoiceOverlayMotion.travelDuration` smoothstep on the way in.
     static let enter = Animation.timingCurve(0.45, 0, 0.55, 1, duration: 0.2)
-    static let exit = enter
+    /// Leaving takes as long as the sink, so the falling edge stays visible.
+    static let exit = Animation.timingCurve(0.4, 0, 1, 1, duration: 0.34)
+    /// The field rises from the bottom edge to its full height, pushing up.
+    static let rise = Animation.timingCurve(0.16, 1, 0.3, 1, duration: 0.5)
+    /// And pulls back down into the bottom edge as it leaves.
+    static let sink = Animation.timingCurve(0.4, 0, 1, 1, duration: 0.34)
     static let crossfade = Animation.timingCurve(0.16, 1, 0.3, 1, duration: 0.45)
 
     /// The centre of the field showing, which the desktop scales about.
@@ -74,10 +83,10 @@ struct StateGlowLayer: View {
     var body: some View {
         ZStack {
             if let style = previous.style {
-                DotField(style: style).opacity(1 - arrival)
+                DotField(style: style, reveal: reveal).opacity(1 - arrival)
             }
             if let style = current.style {
-                DotField(style: style).opacity(arrival)
+                DotField(style: style, reveal: reveal).opacity(arrival)
             }
         }
         .opacity(1 - departure)
@@ -92,6 +101,7 @@ struct StateGlowLayer: View {
     private func transition(to new: AppGlowState) {
         if new == .none {
             guard current != .none else { return }
+            withAnimation(reduceMotion ? nil : Self.sink) { reveal = 0 }
             withAnimation(Self.exit) { departure = 1 } completion: {
                 // Only clear if nothing new arrived meanwhile.
                 if departure == 1 { current = .none; previous = .none }
@@ -104,12 +114,17 @@ struct StateGlowLayer: View {
             previous = .none
             current = new
             arrival = 1
-            if wasHidden { departure = 1 }
+            if wasHidden {
+                departure = 1
+                reveal = reduceMotion ? 1 : 0
+            }
             withAnimation(Self.enter) { departure = 0 }
+            withAnimation(Self.rise) { reveal = 1 }
             return
         }
         guard new != current else {
             withAnimation(Self.enter) { departure = 0 }
+            withAnimation(Self.rise) { reveal = 1 }
             return
         }
         // Listening <-> playback: crossfade the fields.
