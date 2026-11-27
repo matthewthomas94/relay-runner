@@ -19,7 +19,11 @@ struct AppFlowRouter: View {
             if stage == .app {
                 RelayBackdrop().transition(.opacity.animation(RelayMotion.change))
             }
-            AppGlowLayer(model: model)
+            // In the app the glow sits over the scrolling content and under
+            // the glass, so `MainTabView` draws it (user, 2026-11-27).
+            if launch.showsGallery || stage != .app {
+                AppGlowLayer(model: model)
+            }
             if launch.showsGallery {
                 galleryOrApp
             } else if let stage {

@@ -182,15 +182,13 @@ private struct WorkspaceList: View {
             }
         }
         .refreshable { await refresh() }
-        // The list fades out at its edges, as the Agents chat does.
+        // The list fades out at its top edge, as the Agents chat does. Tickets
+        // pass straight under the project tabs' glass (user, 2026-11-27).
         .mask {
             VStack(spacing: 0) {
                 LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
                     .frame(height: AgentChatFeed.topFade)
                 Rectangle().fill(.black)
-                // Tickets fade out as they pass behind the project tabs.
-                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
-                    .frame(height: ProjectTabStrip.reserved)
             }
         }
         .opacity(dimmed ? 0.3 : 1)

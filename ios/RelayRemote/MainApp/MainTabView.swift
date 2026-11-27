@@ -56,6 +56,9 @@ struct MainTabView: View {
         // The content ends at the tab bar's top; with the keyboard up the bar
         // steps aside and the content sits on the keyboard.
         .safeAreaPadding(.bottom, keyboardShown ? 0 : GlassTabBar.contentInset)
+        // Layering on every tab, back to front: the scrolling content, the
+        // state glow, then the tappable glass (user, 2026-11-27).
+        .overlay { AppGlowLayer(model: model) }
         .overlayPreferenceValue(HostedPanelKey.self) { panels in glassLayer(panels[selection]) }
         .animation(RelayMotion.enter, value: keyboardShown)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in

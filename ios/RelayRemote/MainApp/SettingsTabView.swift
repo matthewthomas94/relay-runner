@@ -101,14 +101,14 @@ private struct SettingsContent: View {
             .padding(.bottom, AgentChatFeed.bottomFade)
         }
         .scrollIndicators(.hidden)
-        // The panel fades out at the list's edges, as the Agents chat does.
+        // The panel fades out at the top edge, as the Agents chat does. There is
+        // no fade at the bottom: it scrolls straight under the tab bar's glass
+        // (user, 2026-11-27).
         .mask {
             VStack(spacing: 0) {
                 LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
                     .frame(height: AgentChatFeed.topFade)
                 Rectangle().fill(.black)
-                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
-                    .frame(height: AgentChatFeed.bottomFade)
             }
         }
         .defaultScrollAnchor(LaunchOptions.current.scrollsToBottom ? .bottom : .top)
@@ -428,11 +428,16 @@ private struct SegmentedRow<Value: Hashable>: View {
                         Text(option.0).relayTextStyle(.control)
                             .foregroundStyle(selected ? RelayColor.neutral10 : RelayColor.neutral7)
                             .animation(RelayMotion.enter, value: selected)
-                            .frame(maxWidth: .infinity, minHeight: 32)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .background {
-                                // One pill that slides to the selected option.
+                                // One pill that slides to the selected option:
+                                // the Mac's SettingsSegmentedPicker, black at
+                                // 72% with the kit's small shadow.
                                 if selected {
-                                    RoundedRectangle(cornerRadius: 9, style: .continuous).fill(RelayGlass.raised.tint)
+                                    RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius, style: .continuous)
+                                        .fill(RelayColor.neutral1.opacity(0.72))
+                                        .shadow(color: .black.opacity(Double(0x16) / 255), radius: 0.75, y: 0.5)
+                                        .shadow(color: .black.opacity(Double(0x20) / 255), radius: 3, y: 2)
                                         .matchedGeometryEffect(id: "pill", in: pill)
                                 }
                             }
@@ -442,9 +447,11 @@ private struct SegmentedRow<Value: Hashable>: View {
                     .accessibilityAddTraits(selected ? .isSelected : [])
                 }
             }
+            // The Mac's toggle buttons: a neutral-3 track, radius 16, 4 pt in
+            // (Figma Final 27, user 2026-11-27).
             .padding(4)
-            .frame(height: 40)
-            .modifier(FieldSurface())
+            .frame(height: RelayMetrics.controlHeight)
+            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(RelayColor.neutral3.opacity(0.5)))
         }
     }
 }

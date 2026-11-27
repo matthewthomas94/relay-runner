@@ -1,20 +1,23 @@
 import SwiftUI
 
 /// The dock's controls, so the tutorial (RR-542) can dim the ones a step is
-/// not teaching. `talk` is the white button inside the text box; `replay` is
-/// the control that reads Play, Replay or Cancel.
+/// not teaching. `textBox` is the text box and its Send button; `replay` is
+/// the playback control on the left (Play, Stop, Replay, or Cancel while
+/// talking); `talk` is the white talk button on the right.
 enum DockControl: Hashable, CaseIterable {
-    case textBox, replay, talk, stop
+    case textBox, replay, talk
 }
 
-/// The dock from screens 21–25 (RR-552, RR-553): one glass message panel
-/// holding the agent tabs, a text box whose white button is both the talk
-/// button and Send, then labelled Replay and Stop sharing a row. The
-/// tutorial's dock has no agent tabs. It sits at the bottom of its
-/// container, so as the text box fills it grows upward. While the selected
-/// agent has a reply not played yet (Queue mode) Replay reads Play and plays
-/// it (RR-554). While the user talks the text box shows the live transcript
-/// and Replay becomes Cancel.
+/// The dock from screens 21–25 (Figma Final, user 2026-11-27): one glass
+/// message panel holding the agent tabs, a text box whose Send button is the
+/// old secondary up arrow, then a row of two buttons sharing its width. On
+/// the left one playback control: Play while the selected agent has a reply
+/// not played yet (RR-554, shimmering with the desktop's attention dots),
+/// Stop while a reply plays, otherwise Replay, and Cancel while the user
+/// talks. On the right the white talk button: Hold to talk, then Release to
+/// send while talking (Tap to talk and Tap to send in Toggle mode). The
+/// tutorial's dock has no agent tabs. It sits at the bottom of its container,
+/// so as the text box fills it grows upward.
 struct AgentDock: View {
     @Binding var text: String
     let placeholder: String
@@ -25,8 +28,10 @@ struct AgentDock: View {
     /// The live transcript, shown in the text box while talking.
     var transcript = ""
     var canReplay = true
-    /// The selected agent has a reply not played yet: Replay reads Play.
+    /// The selected agent has a reply not played yet: the control reads Play.
     var canPlay = false
+    /// A reply is playing: the control reads Stop.
+    var isPlaying = false
     var canStop = true
     /// Controls drawn at 30%, as the tutorial dims controls it is not teaching.
     var dimmed: Set<DockControl> = []
@@ -69,16 +74,23 @@ struct AgentDock: View {
                             .transition(.relayControlSwap)
                     }
                 }
-                .disabled(replayFace == .replay && !canReplay)
+                .disabled(!replayEnabled)
                 .buttonStyle(RelayButtonStyle(role: .secondary, fullWidth: true))
+                .background {
+                    // A reply waiting to be played shimmers, as an agent
+                    // wanting attention does on the Mac.
+                    if replayFace == .play {
+                        FluxDots()
+                            .clipShape(RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius, style: .continuous))
+                            .transition(.opacity)
+                    }
+                }
                 .animation(RelayMotion.enter, value: replayFace)
                 .opacity(dimmed.contains(.replay) ? 0.3 : 1)
                 .allowsHitTesting(!inert.contains(.replay))
-                Button(action: onStop) { RelayButtonLabel("Stop", icon: .square) }
-                    .buttonStyle(RelayButtonStyle(role: .secondary, fullWidth: true))
-                    .disabled(!canStop)
-                    .opacity(dimmed.contains(.stop) ? 0.3 : 1)
-                    .allowsHitTesting(!inert.contains(.stop))
+                DockTalkButton(mode: talkMode, isTalking: isTalking, onCommand: onTalk)
+                    .opacity(dimmed.contains(.talk) ? 0.3 : 1)
+                    .allowsHitTesting(!inert.contains(.talk))
             }
         }
         .padding(Self.padding)
@@ -89,29 +101,40 @@ struct AgentDock: View {
         .animation(RelayMotion.enter, value: dimmed)
     }
 
-    enum ReplayFace { case cancel, play, replay }
+    enum ReplayFace { case cancel, stop, play, replay }
 
     @ViewBuilder
     private var replayLabel: some View {
         switch replayFace {
         case .cancel: RelayButtonLabel("Cancel", icon: .x)
+        case .stop: RelayButtonLabel("Stop", icon: .square)
         case .play: RelayButtonLabel("Play", icon: .play)
         case .replay: RelayButtonLabel("Replay", icon: .rotateCcw)
+        }
+    }
+
+    private var replayEnabled: Bool {
+        switch replayFace {
+        case .cancel, .play: return true
+        case .stop: return canStop
+        case .replay: return canReplay
         }
     }
 
     private func replayAction() {
         switch replayFace {
         case .cancel: onCancel()
+        case .stop: onStop()
         case .play: onPlay()
         case .replay: onReplay()
         }
     }
 
-    /// What the control beside Stop reads: Cancel while talking, Play while a
-    /// reply waits to be played, otherwise Replay.
+    /// What the playback control reads: Cancel while talking, Stop while a
+    /// reply plays, Play while a reply waits to be played, otherwise Replay.
     var replayFace: ReplayFace {
         if isTalking { return .cancel }
+        if isPlaying { return .stop }
         return canPlay ? .play : .replay
     }
 
@@ -119,10 +142,11 @@ struct AgentDock: View {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var canSend: Bool { hasText && !isTalking }
+
     private var textBox: some View {
-        // The talk button sits in the bottom-right corner, 4 pt in from the
-        // edges, so on one line it is centred and as the box grows it stays at
-        // the bottom.
+        // Send sits in the bottom-right corner, 4 pt in from the edges, so on
+        // one line it is centred and as the box grows it stays at the bottom.
         HStack(alignment: .bottom, spacing: 8) {
             Group {
                 if isTalking {
@@ -149,18 +173,26 @@ struct AgentDock: View {
             .padding(.leading, 14)
             .padding(.vertical, 10)
             .frame(minHeight: 44, alignment: .leading)
-            .opacity(dimmed.contains(.textBox) ? 0.3 : 1)
-            .allowsHitTesting(!inert.contains(.textBox))
-            DockTalkButton(mode: talkMode, isTalking: isTalking, hasText: hasText,
-                           onCommand: onTalk, onSend: sendIfPossible)
-                .opacity(dimmed.contains(.talk) ? 0.3 : 1)
-                .allowsHitTesting(!inert.contains(.talk))
-                .padding(.trailing, 4)
-                .padding(.bottom, 4)
-                .padding(.top, 4)
+            // The old secondary Send: grey until there is text to send.
+            Button(action: sendIfPossible) {
+                LucideImage(.arrowUp, size: 18)
+                    .foregroundStyle(canSend ? RelayColor.neutral10 : RelayColor.neutral7)
+                    .frame(width: 36, height: 36)
+                    .background(RelayGlassBackground(glass: .selected,
+                                                     shape: RoundedRectangle(cornerRadius: 10, style: .continuous)))
+            }
+            .buttonStyle(.relayPlain)
+            .disabled(!canSend)
+            .animation(RelayMotion.enter, value: canSend)
+            .padding(.trailing, 4)
+            .padding(.bottom, 4)
+            .padding(.top, 4)
+            .accessibilityLabel("Send")
         }
         .frame(minHeight: 44)
         .modifier(FieldSurface())
+        .opacity(dimmed.contains(.textBox) ? 0.3 : 1)
+        .allowsHitTesting(!inert.contains(.textBox))
         .animation(RelayMotion.move, value: isTalking)
     }
 
@@ -170,44 +202,40 @@ struct AgentDock: View {
     }
 }
 
-/// The white button in the text box: the talk button and Send in one
-/// (RR-552). Empty box: the mic, and hold or tap to talk as the Talk setting
-/// says. Talking: the sound wave; release (Hold) or tap (Toggle) sends. With
-/// typed text: the arrow, and a tap sends the text. Its pressed and active
-/// state is the plain pressed fill; haptics fire straight from the touch.
+/// The white talk button on the dock's right (Figma Final 21–25, user
+/// 2026-11-27): the mic and Hold to talk, then the sound wave and Release to
+/// send while talking (Tap to talk and Tap to send in Toggle mode). Hold or
+/// tap follows the Talk setting. Its pressed and active state is the plain
+/// pressed fill; haptics fire straight from the touch.
 struct DockTalkButton: View {
     let mode: TalkMode
     let isTalking: Bool
-    let hasText: Bool
     let onCommand: (TalkGesture.Command) -> Void
-    let onSend: () -> Void
     @State private var touching = false
-    /// Whether the press that is down sends typed text rather than talking,
-    /// decided when the finger lands so typing mid-press changes nothing.
-    @State private var pressSends = false
 
-    static let size: CGFloat = 36
-
-    private enum Face { case mic, wave, send }
+    private enum Face { case talk, send }
 
     private var face: Face {
-        if isTalking || (mode == .hold && touching && !pressSends) { return .wave }
-        return hasText ? .send : .mic
+        isTalking || (mode == .hold && touching) ? .send : .talk
     }
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
-        let active = face == .wave
-        // The icon swaps in its own slot, the old one gone before the new arrives.
+        let shape = RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius, style: .continuous)
+        // The label swaps in its own slot, the old one gone before the new arrives.
         ZStack {
-            icon
+            label
                 .id(face)
                 .transition(.relayControlSwap)
         }
             .animation(RelayMotion.enter, value: face)
+            .relayTextStyle(.control)
             .foregroundStyle(RelayColor.neutral1)
-            .frame(width: Self.size, height: Self.size)
-            .modifier(RelayGlassSurface(glass: active || touching ? .primaryPressed : .primary, shape: shape))
+            // "Release to send" stays on one line in half the row.
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: RelayMetrics.controlHeight)
+            .modifier(RelayGlassSurface(glass: touching ? .primaryPressed : .primary, shape: shape))
             .contentShape(shape)
             .scaleEffect(touching ? RelayMotion.pressedScale : 1)
             .animation(RelayMotion.press, value: touching)
@@ -217,43 +245,30 @@ struct DockTalkButton: View {
                     .onChanged { _ in
                         guard !touching else { return }
                         RelayHaptics.press()
-                        pressSends = hasText && !isTalking
                         touching = true
-                        if !pressSends { onCommand(TalkGesture.touchDown(mode: mode, isTalking: isTalking)) }
+                        onCommand(TalkGesture.touchDown(mode: mode, isTalking: isTalking))
                     }
                     .onEnded { _ in
                         RelayHaptics.release()
                         touching = false
-                        if pressSends {
-                            onSend()
-                        } else {
-                            onCommand(TalkGesture.touchUp(mode: mode, isTalking: isTalking))
-                        }
+                        onCommand(TalkGesture.touchUp(mode: mode, isTalking: isTalking))
                     }
             )
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(label)
+            .accessibilityLabel(title)
             .accessibilityAddTraits(.isButton)
-            .accessibilityAction {
-                // VoiceOver taps toggle in either mode, or send typed text.
-                if hasText && !isTalking { onSend() } else { onCommand(isTalking ? .send : .start) }
-            }
+            // VoiceOver taps toggle in either mode.
+            .accessibilityAction { onCommand(isTalking ? .send : .start) }
     }
 
-    @ViewBuilder
-    private var icon: some View {
-        switch face {
-        case .mic: LucideImage(.mic, size: 18)
-        case .wave: LucideImage(.audioLines, size: 18)
-        case .send: LucideImage(.arrowUp, size: 18)
-        }
+    private var label: some View {
+        RelayButtonLabel(title, icon: face == .send ? .audioLines : .mic)
     }
 
-    private var label: String {
+    private var title: String {
         switch face {
-        case .send: return "Send"
-        case .wave: return mode == .hold ? "Release to send" : "Tap to send"
-        case .mic: return mode == .hold ? "Hold to talk" : "Tap to talk"
+        case .send: return mode == .hold ? "Release to send" : "Tap to send"
+        case .talk: return mode == .hold ? "Hold to talk" : "Tap to talk"
         }
     }
 }

@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// The selected agent's chat, newest at the bottom. It fades out at its top
-/// and bottom edges with an alpha mask on the feed itself, and has no
-/// background, so the glows behind the screen show through.
+/// edge with an alpha mask on the feed itself, and has no background; the
+/// state glows draw over it (`MainTabView`).
 struct AgentChatFeed: View {
     let name: String
     let messages: [ChatMessage]
@@ -36,13 +36,13 @@ struct AgentChatFeed: View {
         .defaultScrollAnchor(.bottom)
         // Dragging the chat down pulls the keyboard away with it.
         .scrollDismissesKeyboard(.interactively)
+        // Only the top edge fades, under the agent; the bottom scrolls straight
+        // under the dock's glass (user, 2026-11-27).
         .mask {
             VStack(spacing: 0) {
                 LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
                     .frame(height: Self.topFade)
                 Rectangle().fill(.black)
-                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
-                    .frame(height: Self.bottomFade)
             }
         }
     }

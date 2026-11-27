@@ -12,7 +12,7 @@ enum TutorialStep: Int, CaseIterable, Equatable {
         case .playReply: return [.replay]
         case .holdToTalk: return [.talk]
         case .releaseToSend: return [.talk, .textBox]
-        case .stopPlayback: return [.stop]
+        case .stopPlayback: return [.replay]
         }
     }
 

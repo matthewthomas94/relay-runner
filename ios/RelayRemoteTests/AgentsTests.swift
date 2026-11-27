@@ -325,12 +325,13 @@ final class AgentsTests: XCTestCase {
         func face(_ voice: VoiceSnapshot) -> AgentDock.ReplayFace {
             let state = AgentsScreenState(agents: agents, voice: voice, talkMode: .hold)
             return AgentDock(text: .constant(""), placeholder: "", isTalking: state.isTalking,
-                             canPlay: state.waiting != nil).replayFace
+                             canPlay: state.waiting != nil, isPlaying: state.isPlaying).replayFace
         }
 
         XCTAssertEqual(face(VoiceSnapshot(waitingSeqs: [5, 6])), .play, "George's reply has not played")
-        XCTAssertEqual(face(VoiceSnapshot(playingSeq: 6, waitingSeqs: [5])), .replay, "once played it reads Replay")
-        XCTAssertEqual(face(VoiceSnapshot(waitingSeqs: [5])), .replay)
+        XCTAssertEqual(face(VoiceSnapshot(playingSeq: 6, waitingSeqs: [5])), .stop, "while it plays it reads Stop")
+        XCTAssertEqual(face(VoiceSnapshot(waitingSeqs: [5])), .replay, "once played it reads Replay")
+        XCTAssertEqual(face(VoiceSnapshot(playingSeq: 5)), .stop, "another agent's reply playing reads Stop too")
         XCTAssertEqual(face(VoiceSnapshot(isTalking: true, waitingSeqs: [6])), .cancel, "talking still reads Cancel")
 
         agents.select("puck")

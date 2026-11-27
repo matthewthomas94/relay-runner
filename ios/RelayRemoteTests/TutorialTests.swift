@@ -121,7 +121,7 @@ final class TutorialTests: XCTestCase {
         XCTAssertEqual(TutorialStep.holdToTalk.litControls, [.talk])
         XCTAssertEqual(TutorialStep.releaseToSend.litControls, [.talk, .textBox])
         XCTAssertEqual(TutorialStep.playReply.litControls, [.replay], "the dock's Play")
-        XCTAssertEqual(TutorialStep.stopPlayback.litControls, [.stop])
+        XCTAssertEqual(TutorialStep.stopPlayback.litControls, [.replay], "the same control, reading Stop")
         XCTAssertFalse(TutorialStep.basics.showsDock)
         XCTAssertFalse(TutorialStep.allDone.showsDock)
     }

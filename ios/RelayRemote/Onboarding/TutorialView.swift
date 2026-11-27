@@ -16,7 +16,8 @@ struct TutorialView: View {
         #if DEBUG
         if let sample = sample.flatMap(TutorialSample.init(rawValue:)) {
             TutorialScreen(step: sample.step, problem: nil, agentName: "George", isTalking: sample.isTalking,
-                           transcript: sample.transcript, waiting: sample.waiting, onSkip: onFinished,
+                           transcript: sample.transcript, waiting: sample.waiting,
+                           isPlaying: sample.step == .stopPlayback, onSkip: onFinished,
                            sampleGlow: sample.glow)
         } else {
             live
@@ -45,7 +46,7 @@ extension TutorialStep {
         case .basics:
             return "Now let’s learn the basics"
         // Each chip is drawn like the control it names: the white talk
-        // button in the text box, the dock's labelled Play and Stop.
+        // button, the dock's labelled Play and Stop (one control).
         case .holdToTalk:
             return HeroText(lines: [[.text(talkMode == .hold ? "Hold " : "Tap "),
                                      .chip(icon: .mic, label: nil, style: .primary), .text(" & say hi")]])
@@ -86,6 +87,8 @@ struct TutorialScreen: View {
     var isTalking = false
     var transcript = ""
     var waiting: AgentsScreenState.WaitingReply?
+    /// A reply is playing: the dock's playback control reads Stop.
+    var isPlaying = false
     var onSkip: (() -> Void)?
     var actions = TutorialActions()
     /// Debug only: draws a glow here, where the app root has no voice to follow.
@@ -136,11 +139,12 @@ struct TutorialScreen: View {
 
     private var dock: some View {
         var dimmed = Set(DockControl.allCases).subtracting(step.litControls)
-        // Play lights up once the reply is there to play.
-        if waiting == nil { dimmed.insert(.replay) }
+        // Play lights up once the reply is there to play; Stop is the same
+        // control, lit while the reply plays.
+        if step == .playReply, waiting == nil { dimmed.insert(.replay) }
         return AgentDock(text: .constant(""), placeholder: "Message \(agentName)", talkMode: talkMode,
                          isTalking: isTalking, transcript: transcript, canPlay: waiting != nil,
-                         dimmed: dimmed, inert: dimmed,
+                         isPlaying: isPlaying, dimmed: dimmed, inert: dimmed,
                          onTalk: actions.talk, onPlay: { if let waiting { actions.play(waiting) } },
                          onStop: actions.stop)
     }
@@ -191,6 +195,7 @@ private struct LiveTutorial: View {
             isPlaying: voice.isSpeaking)
         TutorialScreen(step: tutorial.machine.step, problem: tutorial.machine.problem, agentName: state.name,
                        talkMode: talkMode, isTalking: state.isTalking, transcript: state.transcript, waiting: state.waiting,
+                       isPlaying: state.isPlaying,
                        onSkip: { tutorial.skip() },
                        actions: actions(agents: agents))
             .onChange(of: MacSessionStatus(session), initial: true) { _, status in
