@@ -8,20 +8,16 @@ import SwiftUI
 /// The motion follows Jakub Antalik's liquid-gooey (libraries.dev,
 /// github.com/Jakubantalik/Libraries.dev at dafcfc0,
 /// `packages/liquid-gooey/src/observer.ts`), with its bounce at 0 (no
-/// rebound, user 2026-11-27). The panel keeps its full width throughout;
-/// only its height and place change (user, 2026-11-28):
-/// - the liquid's centre travels on a quicker spring than its height, so it
-///   rises out of the bar thin and swells into place, or thins as it pours
+/// rebound, user 2026-11-27):
+/// - the liquid's centre travels on a quicker spring than its size, so it
+///   leaves as a small droplet and swells into place, or shrinks as it pours
 ///   back in;
 /// - while it moves its corners round towards a droplet, gliding back as it
 ///   settles;
 /// - a neck of glass ties it to the tab bar while it rises or sinks, and
 ///   thins until it snaps;
-/// - while it changes from one tab's panel to another, or pours in or out,
-///   its contents are blurred: the new ones sharpen and fade in as the
-///   liquid reaches its shape, the old ones blur out (user, 2026-11-28:
-///   things blur while they transform). A panel resizing in place (the text
-///   box growing a line) stays sharp.
+/// - the panel's contents sharpen and fade in as the liquid reaches its
+///   shape, and blur while it changes.
 ///
 /// It is iOS's own glass: the panel, the neck and the bar share one
 /// `GlassEffectContainer`, so where they touch they merge.
@@ -36,8 +32,7 @@ struct GooeyPanelGlass: View {
 
     var body: some View {
         TimelineView(.animation(paused: settled && liquid.rests(at: target))) { context in
-            let state = liquid.step(to: target, at: context.date, bar: bar, pouringIn: panel == nil,
-                                    identity: panel?.tab.rawValue)
+            let state = liquid.step(to: target, at: context.date, bar: bar, pouringIn: panel == nil)
             ZStack {
                 if let neck = state.neck(to: bar) {
                     Color.clear
@@ -69,10 +64,9 @@ struct GooeyPanelGlass: View {
                     .opacity(shown)
                     .blur(radius: (1 - shown) * GooeyLiquid.contentBlur)
                     .id(panel.tab)
-                    // The old contents blur out quickly as the liquid leaves them.
-                    .transition(.asymmetric(insertion: .identity,
-                                            removal: .modifier(active: BlurOut(gone: true), identity: BlurOut(gone: false))
-                                                .animation(.easeOut(duration: 0.1))))
+                    // The old contents go at once: fading, they were squeezed
+                    // into the liquid's next shape for a frame.
+                    .transition(.identity)
             }
         }
         .frame(width: state.rect.width, height: state.rect.height)
@@ -84,26 +78,15 @@ struct GooeyPanelGlass: View {
     }
 }
 
-/// Contents leaving the liquid: blurred and faded out.
-private struct BlurOut: ViewModifier {
-    let gone: Bool
-
-    func body(content: Content) -> some View {
-        content
-            .blur(radius: gone ? GooeyLiquid.contentBlur : 0)
-            .opacity(gone ? 0 : 1)
-    }
-}
-
 /// The liquid's springs, stepped once a frame by `GooeyPanelGlass`. A class
 /// so stepping it does not invalidate the view.
 final class GooeyLiquid {
     /// Coming out of the bar or changing shape, the centre's spring is the
-    /// quicker one: the liquid's mass moves first, thin, and swells into
-    /// place (liquid-gooey's mass 320 and size 170 stiffness, slowed for an
-    /// unhurried pour and critically damped, so nothing rebounds). Pouring
-    /// back in, the two swap: the panel thins first and then drops into the
-    /// bar. The width never animates.
+    /// quicker one: the liquid's mass moves first, as a droplet, and swells
+    /// into place (liquid-gooey's mass 320 and size 170 stiffness, slowed for
+    /// an unhurried pour and critically damped, so nothing rebounds). Pouring
+    /// back in, the two swap: the panel draws into a droplet first, which
+    /// then drops into the tab.
     static let quick = Spring(stiffness: 210, damping: 2 * sqrt(210))
     static let slow = Spring(stiffness: 105, damping: 2 * sqrt(105))
     /// Pouring in, the centre follows the shrinking panel down closely, so
@@ -141,8 +124,6 @@ final class GooeyLiquid {
         /// The liquid is pouring into the bar or has just come out of it; only
         /// then does a neck join the two.
         var pouring: Bool
-        /// Changing from one panel to another, or pouring: the contents blur.
-        var transforming: Bool
         var settled: Bool
 
         func radius(base: CGFloat) -> CGFloat {
@@ -152,7 +133,6 @@ final class GooeyLiquid {
 
         /// 1 once the liquid has its target's shape, fading with how far off it is.
         func contentOpacity(toward target: CGRect) -> Double {
-            guard transforming else { return 1 }
             guard target.width > 0, target.height > 0 else { return 0 }
             let off = max(abs(rect.width - target.width) / target.width,
                           abs(rect.height - target.height) / target.height,
@@ -181,9 +161,6 @@ final class GooeyLiquid {
     private var motion = 0.0, verticalMotion = 0.0
     /// Set while the liquid is inside the bar; cleared once it settles outside it.
     private var leftBar = false
-    /// Which panel the liquid holds, and whether it is changing to another.
-    private var identity: String?
-    private var transforming = false
     private var last: Date?
     private var started = false
 
@@ -193,21 +170,13 @@ final class GooeyLiquid {
             && abs(w - target.width) < 0.25 && abs(h - target.height) < 0.25 && motion < 0.01
     }
 
-    func step(to target: CGRect, at now: Date, bar: CGRect, pouringIn: Bool = false,
-              identity: String? = nil) -> State {
+    func step(to target: CGRect, at now: Date, bar: CGRect, pouringIn: Bool = false) -> State {
         if !started {
             // The first frame: already in place, as the page it belongs to.
             (cx, cy, w, h) = (target.midX, target.midY, target.width, target.height)
             started = true
             last = now
-            self.identity = identity
         }
-        if identity != self.identity {
-            self.identity = identity
-            transforming = true
-        }
-        // The panel keeps its full width: only its height and place move.
-        (cx, w, vcx, vw) = (target.midX, target.width, 0, 0)
         let elapsed = min(max(now.timeIntervalSince(last ?? now), 0), 1.0 / 20)
         last = now
         // Small fixed steps keep the stiff centre spring stable at any frame rate.
@@ -235,10 +204,8 @@ final class GooeyLiquid {
         let rect = CGRect(x: cx - w / 2, y: cy - h / 2, width: max(w, 0), height: max(h, 0))
         let settled = rests(at: target) && verticalMotion < 0.01
         if rect.maxY > bar.minY + 2 { leftBar = true } else if settled { leftBar = false }
-        if settled { transforming = false }
         return State(rect: rect, motion: motion, verticalMotion: verticalMotion,
-                     pouring: pouringIn || leftBar, transforming: transforming || pouringIn || leftBar,
-                     settled: settled)
+                     pouring: pouringIn || leftBar, settled: settled)
     }
 
     static func smoothstep(_ edge0: Double, _ edge1: Double, _ x: Double) -> Double {

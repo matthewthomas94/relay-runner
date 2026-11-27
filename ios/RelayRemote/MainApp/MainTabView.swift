@@ -139,7 +139,7 @@ struct MainTabView: View {
                                 .transition(.opacity)
                         }
                     } else if panel != nil || !keyboardShown {
-                        GooeyPanelGlass(panel: panel, target: frame ?? Self.tucked(in: bar), bar: bar,
+                        GooeyPanelGlass(panel: panel, target: frame ?? Self.tucked(selection, in: bar), bar: bar,
                                         radius: Self.panelRadius)
                     }
                     if !keyboardShown {
@@ -214,12 +214,11 @@ struct MainTabView: View {
         }
     }
 
-    /// Where the panel's glass waits with no panel showing: inside the tab
-    /// bar, as wide as the bar, so the panel pours in and out at its full
-    /// width; coming out as a droplet that widened read worse (user,
-    /// 2026-11-28).
-    private static func tucked(in bar: CGRect) -> CGRect {
-        bar.insetBy(dx: 0, dy: 8)
+    /// Where the panel's glass waits with no panel showing: a droplet in the
+    /// selected tab's pill, so the panel pours into the tab that was tapped
+    /// and, going back, pours out of it (user, 2026-11-28).
+    private static func tucked(_ tab: MainTab, in bar: CGRect) -> CGRect {
+        GlassTabBar.itemRect(tab, in: bar).insetBy(dx: 14, dy: 8)
     }
 
     #if DEBUG
