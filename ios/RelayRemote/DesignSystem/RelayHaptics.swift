@@ -15,6 +15,12 @@ enum RelayHaptics {
         medium.prepare()
     }
 
+    /// A finger landing on any other pressable control (`relayPressed`).
+    static func tap() {
+        light.impactOccurred()
+        light.prepare()
+    }
+
     /// The finger lifting.
     static func release() {
         light.impactOccurred()

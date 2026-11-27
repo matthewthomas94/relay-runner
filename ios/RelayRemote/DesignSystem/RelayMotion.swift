@@ -99,7 +99,8 @@ extension View {
     func relayPressed(_ pressed: Bool) -> some View {
         scaleEffect(pressed ? RelayMotion.pressedScale : 1)
             .animation(RelayMotion.press, value: pressed)
-            .sensoryFeedback(.impact(weight: .light), trigger: pressed) { _, isPressed in isPressed }
+            // Straight from UIKit: `sensoryFeedback` can be late or silent on a quick tap.
+            .onChange(of: pressed) { _, isPressed in if isPressed { RelayHaptics.tap() } }
     }
 }
 

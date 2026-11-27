@@ -29,6 +29,11 @@ final class RelayRemoteAppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = notifications
+        // A finger landing in a scroll view (the agent and project tabs, the
+        // ticket list, Settings) presses what is under it at once, rather than
+        // after the ~150 ms scroll views wait to see whether it will scroll.
+        // Dragging still scrolls and cancels the press (user, 2026-11-27).
+        UIScrollView.appearance().delaysContentTouches = false
         notifications.openAgent = { [weak model] slug in model?.openAgentChat(slug) }
         return true
     }
