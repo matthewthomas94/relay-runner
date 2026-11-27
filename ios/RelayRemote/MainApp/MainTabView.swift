@@ -120,9 +120,9 @@ struct MainTabView: View {
     /// Motion the panels crossfade instead.
     private func glassLayer(_ panel: HostedPanel?) -> some View {
         GeometryReader { proxy in
-            let bar = CGRect(x: RelayMetrics.screenMargin,
+            let bar = CGRect(x: RelayMetrics.barMargin,
                              y: proxy.size.height - GlassTabBar.bottomOffset - GlassTabBar.height,
-                             width: proxy.size.width - 2 * RelayMetrics.screenMargin,
+                             width: proxy.size.width - 2 * RelayMetrics.barMargin,
                              height: GlassTabBar.height)
             let frame = panel.map { proxy[$0.anchor] }
             GlassEffectContainer(spacing: Self.morphSpacing) {

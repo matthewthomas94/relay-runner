@@ -96,7 +96,7 @@ struct WorkspaceTabView: View {
                 ProjectTabStrip(tabs: listing.tabs, selection: Bindable(model).workspaceProject,
                                 drawsGlass: !hostsPanels)
                     .hostedPanel(.workspace, hosted: hostsPanels, glass: .bar)
-                    .padding(.horizontal, RelayMetrics.screenMargin)
+                    .padding(.horizontal, RelayMetrics.barMargin)
                     .padding(.bottom, ProjectTabStrip.bottomGap)
             }
         }

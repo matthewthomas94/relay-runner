@@ -55,7 +55,7 @@ struct AgentDock: View {
     /// The Figma dock: radius 20, 10 pt padding, 12 pt in from the screen.
     static let cornerRadius: CGFloat = 20
     static let padding: CGFloat = 10
-    static let sideInset: CGFloat = 12
+    static let sideInset = RelayMetrics.barMargin
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)

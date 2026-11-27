@@ -65,7 +65,7 @@ struct GlassTabBar: View {
         .modifier(BarGlass(morph: morph))
         .opacity(dimmed ? 0.3 : 1)
         .animation(RelayMotion.enter, value: dimmed)
-        .padding(.horizontal, RelayMetrics.screenMargin)
+        .padding(.horizontal, RelayMetrics.barMargin)
     }
 
     private func item(_ tab: MainTab) -> some View {
@@ -122,7 +122,7 @@ extension GlassTabBar {
                 .glassEffect(RelayGlass.bar.liquid, in: GlassTabBar.shape)
                 .glassEffectID(GlassTabBar.morphID, in: morph)
                 .glassEffectTransition(.materialize)
-                .padding(.horizontal, RelayMetrics.screenMargin)
+                .padding(.horizontal, RelayMetrics.barMargin)
         }
     }
 }

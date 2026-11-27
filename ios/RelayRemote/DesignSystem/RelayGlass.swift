@@ -188,5 +188,9 @@ enum RelayMetrics {
     static let controlHeight: CGFloat = 44
     /// The onboarding primary button.
     static let largeControlHeight: CGFloat = 52
+    /// Content: messages, Workspace tickets, the Settings panel.
     static let screenMargin: CGFloat = 16
+    /// The bottom UI, all in line (user, 2026-11-28): the message dock, the
+    /// Workspace project tabs and the tab bar.
+    static let barMargin: CGFloat = 12
 }
