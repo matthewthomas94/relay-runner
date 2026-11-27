@@ -43,15 +43,12 @@ struct AgentsScreenState: Equatable {
         let marked: Bool
     }
 
-    /// The selected agent's newest reply waiting for Play in Queue mode.
+    /// The selected agent's newest reply waiting for Play in Queue mode. It
+    /// shows in the chat as a normal bubble; the dock's Play plays it.
     struct WaitingReply: Equatable {
         let seq: Int
-        /// The chat message holding this reply. Seqs start again when the
-        /// Mac restarts, so the feed keys rows by this, not by `seq`.
-        let messageID: UUID?
         /// That agent's older waiting replies, skipped when this one plays.
         let skipping: Set<Int>
-        let receivedAt: Date
     }
 
     var tabs: [Tab]
@@ -84,21 +81,12 @@ struct AgentsScreenState: Equatable {
         orb = talking != nil ? .listening : playing == selected ? .playing : .idle
         let chat = agents.chat(selected)
         let mine = voice.waitingSeqs.filter { agents.agent(ofSeq: $0) == selected }
-        // The newest reply waiting for Play shows as "New reply from <agent>"
-        // until it plays. Older ones (such as the messenger's quick
-        // acknowledgement before the full reply) show as bubbles: Play skips
-        // them anyway, and revealing them only on Play made the chat jump.
-        let waitingMessage = mine.last.flatMap { last in chat.last(where: { $0.seq == last }) }
-        // The feed keeps every message in order; the chat draws the waiting
-        // one as "New reply" where it is, so a message sent after it lands below.
+        // Every reply shows as a bubble at once (RR-554). The dock's Play
+        // plays the newest waiting one and skips the agent's older ones (such
+        // as the messenger's quick acknowledgement before the full reply).
         feed = chat
         speakingSeq = playing == selected ? voice.playingSeq : nil
-        if let last = mine.last {
-            waiting = WaitingReply(seq: last, messageID: waitingMessage?.id, skipping: Set(mine.dropLast()),
-                                   receivedAt: waitingMessage?.date ?? agents.now())
-        } else {
-            waiting = nil
-        }
+        waiting = mine.last.map { WaitingReply(seq: $0, skipping: Set(mine.dropLast())) }
         notRunning = agents.isStopped(selected) && !voice.isTalking
         reachability = agents.reachability
         isTalking = voice.isTalking

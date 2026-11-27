@@ -65,8 +65,8 @@ enum AgentsSample: String, CaseIterable {
 import SwiftUI
 
 /// `--agents-sample=play-demo`: presses Play on its own every few seconds,
-/// with the playback glow behind, so the morph and the glow can be recorded
-/// in the simulator.
+/// with the playback glow behind, so the dock's Play and Replay swap and the
+/// glow can be recorded in the simulator.
 struct AgentsPlayDemo: View {
     @State private var playing = false
     /// One model for both states, so the messages keep their identities.

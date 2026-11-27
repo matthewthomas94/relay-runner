@@ -45,7 +45,7 @@ extension TutorialStep {
         case .basics:
             return "Now let’s learn the basics"
         // Each chip is drawn like the control it names: the white talk
-        // button in the text box, Play on the New reply card, labelled Stop.
+        // button in the text box, the dock's labelled Play and Stop.
         case .holdToTalk:
             return HeroText(lines: [[.text(talkMode == .hold ? "Hold " : "Tap "),
                                      .chip(icon: .mic, label: nil, style: .primary), .text(" & say hi")]])
@@ -116,11 +116,6 @@ struct TutorialScreen: View {
             VStack(spacing: 12) {
                 Spacer(minLength: 0)
                 if step.showsDock {
-                    if step == .playReply, let waiting {
-                        WaitingReplyPanel(name: agentName, receivedAt: waiting.receivedAt) { actions.play(waiting) }
-                            .padding(.horizontal, RelayMetrics.screenMargin)
-                            .transition(.relaySurface)
-                    }
                     dock
                         .padding(.horizontal, AgentDock.sideInset)
                         .padding(.bottom, AgentsScreen.dockBottomGap)
@@ -128,7 +123,6 @@ struct TutorialScreen: View {
                 }
             }
             .animation(RelayMotion.change, value: step.showsDock)
-            .animation(RelayMotion.change, value: waiting)
         }
         .glassTabBar {
             GlassTabBar(selection: .constant(.agents), dimmed: true)
@@ -139,10 +133,14 @@ struct TutorialScreen: View {
     }
 
     private var dock: some View {
-        let dimmed = Set(DockControl.allCases).subtracting(step.litControls)
+        var dimmed = Set(DockControl.allCases).subtracting(step.litControls)
+        // Play lights up once the reply is there to play.
+        if waiting == nil { dimmed.insert(.replay) }
         return AgentDock(text: .constant(""), placeholder: "Message \(agentName)", talkMode: talkMode,
-                         isTalking: isTalking, transcript: transcript, dimmed: dimmed, inert: dimmed,
-                         onTalk: actions.talk, onStop: actions.stop)
+                         isTalking: isTalking, transcript: transcript, canPlay: waiting != nil,
+                         dimmed: dimmed, inert: dimmed,
+                         onTalk: actions.talk, onPlay: { if let waiting { actions.play(waiting) } },
+                         onStop: actions.stop)
     }
 }
 
@@ -267,7 +265,7 @@ enum TutorialSample: String, CaseIterable {
     var transcript: String { self == .release ? "Hi" : "" }
 
     var waiting: AgentsScreenState.WaitingReply? {
-        self == .play ? .init(seq: 1, messageID: nil, skipping: [], receivedAt: .now.addingTimeInterval(-2)) : nil
+        self == .play ? .init(seq: 1, skipping: []) : nil
     }
 
     var glow: DotFieldStyle? {

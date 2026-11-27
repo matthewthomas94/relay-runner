@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// The dock's controls, so the tutorial (RR-542) can dim the ones a step is
-/// not teaching. `talk` is the white button inside the text box.
+/// not teaching. `talk` is the white button inside the text box; `replay` is
+/// the control that reads Play, Replay or Cancel.
 enum DockControl: Hashable, CaseIterable {
     case textBox, replay, talk, stop
 }
@@ -9,8 +10,9 @@ enum DockControl: Hashable, CaseIterable {
 /// The dock from screens 21–25 (RR-552): a text box whose white button is
 /// both the talk button and Send, then labelled Replay and Stop sharing a row.
 /// It sits at the bottom of its container, so as the text box fills it grows
-/// upward. While the user talks the text box shows the live transcript and
-/// Replay becomes Cancel.
+/// upward. While the selected agent has a reply not played yet (Queue mode)
+/// Replay reads Play and plays it (RR-554). While the user talks the text box
+/// shows the live transcript and Replay becomes Cancel.
 struct AgentDock: View {
     @Binding var text: String
     let placeholder: String
@@ -19,6 +21,8 @@ struct AgentDock: View {
     /// The live transcript, shown in the text box while talking.
     var transcript = ""
     var canReplay = true
+    /// The selected agent has a reply not played yet: Replay reads Play.
+    var canPlay = false
     var canStop = true
     /// Controls drawn at 30%, as the tutorial dims controls it is not teaching.
     var dimmed: Set<DockControl> = []
@@ -31,6 +35,7 @@ struct AgentDock: View {
     var onTalk: (TalkGesture.Command) -> Void = { _ in }
     var onCancel: () -> Void = {}
     var onReplay: () -> Void = {}
+    var onPlay: () -> Void = {}
     var onStop: () -> Void = {}
 
     /// The text box grows to three lines, then scrolls (user, 2026-11-27).
@@ -45,17 +50,21 @@ struct AgentDock: View {
             textBox
             HStack(spacing: 8) {
                 Group {
-                    if isTalking {
+                    switch replayFace {
+                    case .cancel:
                         Button(action: onCancel) { RelayButtonLabel("Cancel", icon: .x) }
                             .transition(.relayControlSwap)
-                    } else {
+                    case .play:
+                        Button(action: onPlay) { RelayButtonLabel("Play", icon: .play) }
+                            .transition(.relayControlSwap)
+                    case .replay:
                         Button(action: onReplay) { RelayButtonLabel("Replay", icon: .rotateCcw) }
                             .disabled(!canReplay)
                             .transition(.relayControlSwap)
                     }
                 }
                 .buttonStyle(RelayButtonStyle(role: .secondary, fullWidth: true))
-                .animation(RelayMotion.enter, value: isTalking)
+                .animation(RelayMotion.enter, value: replayFace)
                 .opacity(dimmed.contains(.replay) ? 0.3 : 1)
                 .allowsHitTesting(!inert.contains(.replay))
                 Button(action: onStop) { RelayButtonLabel("Stop", icon: .square) }
@@ -70,6 +79,15 @@ struct AgentDock: View {
             if drawsGlass { RelayGlassBackground(glass: .panel, shape: shape) }
         }
         .animation(RelayMotion.enter, value: dimmed)
+    }
+
+    enum ReplayFace { case cancel, play, replay }
+
+    /// What the control beside Stop reads: Cancel while talking, Play while a
+    /// reply waits to be played, otherwise Replay.
+    var replayFace: ReplayFace {
+        if isTalking { return .cancel }
+        return canPlay ? .play : .replay
     }
 
     private var hasText: Bool {
