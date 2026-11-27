@@ -501,40 +501,35 @@ struct FieldSurface: ViewModifier {
     }
 }
 
-/// The speech speed slider, a copy of the Mac's `SettingsSlider` (Figma 27,
-/// RR-553): a 44 pt rounded track, a white value fill up to an upright thumb
-/// held 8 pt in from the ends, and the value as a caption inside the track,
-/// grey beside the fill and dark on it once past halfway. It reports the
+/// The Mac's `SettingsSlider` look (Figma 27): a rounded track, a white fill up
+/// to a thin upright thumb, and the value printed inside the track. Reports the
 /// final value on release.
 private struct SpeedSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     let onCommit: (Double) -> Void
+    @Environment(\.isEnabled) private var isEnabled
 
-    /// Keeps the thumb clear of the rounded ends.
-    static let thumbInset: CGFloat = 8
-    /// The value fill: white at 72%.
-    static let fill = RelayColor.neutral10.opacity(0.72)
-
-    private var fraction: Double {
-        min(max((value - range.lowerBound) / (range.upperBound - range.lowerBound), 0), 1)
-    }
+    /// Keeps the thumb clear of the rounded ends, as on the Mac.
+    private static let thumbInset: CGFloat = 8
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius, style: .continuous)
         GeometryReader { proxy in
             let width = proxy.size.width
             let height = proxy.size.height
+            let fraction = min(max((value - range.lowerBound) / (range.upperBound - range.lowerBound), 0), 1)
             let thumb = Self.thumbInset + (width - Self.thumbInset * 2) * fraction
+            let shape = RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius, style: .continuous)
             ZStack {
                 shape.fill(RelayGlass.control.tint)
-                shape.fill(Self.fill)
+                shape.fill(RelayColor.neutral10.opacity(isEnabled ? 0.72 : 0.3))
                     .mask(alignment: .leading) { Rectangle().frame(width: fraction >= 1 ? width : thumb) }
                 Capsule()
                     .fill(RelayColor.neutral10)
-                    .shadow(color: .black.opacity(0.35), radius: 1.5, y: 1)
+                    .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
                     .frame(width: 2.5, height: height - 14)
                     .position(x: thumb, y: height / 2)
+                // The value sits on the wider side of the thumb: dark on the fill, grey beside it.
                 Text(String(format: "%.1fx", value))
                     .relayTextStyle(.caption)
                     .monospacedDigit()
@@ -561,9 +556,8 @@ private struct SpeedSlider: View {
         }
     }
 
-    /// The value under a finger at `x` in a track `width` wide.
     private func position(_ x: CGFloat, width: CGFloat) -> Double {
-        let fraction = min(max((x - Self.thumbInset) / max(1, width - Self.thumbInset * 2), 0), 1)
+        let fraction = min(max((x - Self.thumbInset) / max(width - Self.thumbInset * 2, 1), 0), 1)
         return range.lowerBound + Double(fraction) * (range.upperBound - range.lowerBound)
     }
 }
