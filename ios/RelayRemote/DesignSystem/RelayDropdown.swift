@@ -32,42 +32,62 @@ struct RelayDropdown: View {
         }
         .buttonStyle(.relayPlain)
         .accessibilityValue(label)
-        .popover(isPresented: $isPresented, arrowEdge: .top) {
+        // No arrow edge: iOS opens the list above or below the pill, wherever
+        // there is more room. Pinned below, a pill low on the screen squeezed
+        // the list and hid its last options (user, 2026-11-28).
+        .popover(isPresented: $isPresented, arrowEdge: nil) {
             optionList.presentationCompactAdaptation(.popover)
         }
     }
 
+    /// The heading's room: clear of the popover's rounded top corners.
+    private static let headingHeight: CGFloat = 40
+    private static let listPadding: CGFloat = 8
+    /// At most this tall; past it the options scroll.
+    private static let maxHeight: CGFloat = 360
+
+    /// The list asks for its full height up to `maxHeight`; when iOS gives
+    /// the popover less than that, the options scroll rather than being cut off.
     private var optionList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if let heading {
-                Text(heading).relayTextStyle(.caption).foregroundStyle(RelayColor.neutral7)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
-                    .padding(.bottom, 4)
-            }
-            ForEach(options, id: \.value) { option in
-                let selected = option.value == selection
-                Button {
-                    choose(option.value)
-                    isPresented = false
-                } label: {
-                    HStack(spacing: 12) {
-                        Text(option.label).relayTextStyle(.body).foregroundStyle(RelayColor.neutral10)
-                            .lineLimit(1).minimumScaleFactor(0.85)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        LucideImage(.check, size: 16).foregroundStyle(RelayColor.neutral10)
-                            .opacity(selected ? 1 : 0)
-                            .accessibilityHidden(true)
-                    }
-                    .padding(.horizontal, 16)
-                    .frame(height: RelayMetrics.controlHeight)
-                    .contentShape(Rectangle())
+        let full = CGFloat(options.count) * RelayMetrics.controlHeight + 2 * Self.listPadding
+            + (heading == nil ? 0 : Self.headingHeight)
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                if let heading {
+                    Text(heading).relayTextStyle(.caption).foregroundStyle(RelayColor.neutral7)
+                        .lineLimit(1)
+                        .padding(.horizontal, 16)
+                        .frame(height: Self.headingHeight, alignment: .bottomLeading)
                 }
-                .buttonStyle(.relayPlain)
-                .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+                rows
             }
+            .padding(.vertical, Self.listPadding)
         }
-        .padding(.vertical, 6)
-        .frame(width: Self.width)
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(width: Self.width, height: min(full, Self.maxHeight))
+    }
+
+    @ViewBuilder private var rows: some View {
+        ForEach(options, id: \.value) { option in
+            let selected = option.value == selection
+            Button {
+                choose(option.value)
+                isPresented = false
+            } label: {
+                HStack(spacing: 12) {
+                    Text(option.label).relayTextStyle(.body).foregroundStyle(RelayColor.neutral10)
+                        .lineLimit(1).minimumScaleFactor(0.85)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    LucideImage(.check, size: 16).foregroundStyle(RelayColor.neutral10)
+                        .opacity(selected ? 1 : 0)
+                        .accessibilityHidden(true)
+                }
+                .padding(.horizontal, 16)
+                .frame(height: RelayMetrics.controlHeight)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.relayPlain)
+            .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        }
     }
 }
