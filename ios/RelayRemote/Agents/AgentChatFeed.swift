@@ -121,8 +121,9 @@ struct AgentChatFeed: View {
         date.formatted(.dateTime.hour(.defaultDigits(amPM: .omitted)).minute())
     }
 
-    /// A little bounce, so the glass settles like liquid rather than sliding.
-    static let feedChange = Animation.spring(duration: 0.45, bounce: 0.22)
+    /// No bounce: a message settles into place on the ease-out, rather than
+    /// overshooting and springing back (user, 2026-11-28).
+    static let feedChange = Animation.spring(duration: 0.45, bounce: 0)
 }
 
 /// A chat surface's glass (radius 16): Liquid Glass tinted with the Figma

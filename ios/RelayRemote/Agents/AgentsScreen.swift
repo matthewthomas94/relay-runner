@@ -88,6 +88,12 @@ struct AgentsScreen: View {
         .relayBanner(banner)
     }
 
+    /// What the dock's text box shows: the transcript from the moment talking
+    /// starts until the message is sent, otherwise the draft.
+    private var dockTextKey: String {
+        state.isTalking || !state.transcript.isEmpty ? "t" + state.transcript : "d" + draft
+    }
+
     private var isOffline: Bool { state.reachability != .reachable }
 
     /// The old chat leaves where it is; the new one arrives from `direction`.
@@ -127,7 +133,7 @@ struct AgentsScreen: View {
                   onSend: send, onTalk: actions.talk, onCancel: actions.cancelTalk,
                   onReplay: actions.replay, onPlay: play, onStop: actions.stop)
             .modifier(Dimmed(isDimmed: isOffline))
-            .hostedPanel(.agents, hosted: hostsPanels, isTalking: state.isTalking)
+            .hostedPanel(.agents, hosted: hostsPanels, textKey: dockTextKey)
     }
 
     private var header: some View {

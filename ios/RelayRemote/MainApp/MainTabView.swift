@@ -97,11 +97,18 @@ struct MainTabView: View {
     private func movePanel(to tab: MainTab) async {
         guard panelTab != tab else { return }
         if reduceMotion { panelTab = tab; return }
-        withAnimation(RelayMotion.move) { panelTab = nil }
+        withAnimation(Self.sink) { panelTab = nil }
         try? await Task.sleep(for: .seconds(RelayMotion.tabExitDuration + RelayMotion.tabGap))
         guard !Task.isCancelled else { return }
-        withAnimation(RelayMotion.move) { panelTab = tab }
+        withAnimation(Self.rise) { panelTab = tab }
     }
+
+    /// The panel's glass sinking into the tab bar, and rising out of it: no
+    /// bounce, unhurried enough to read as liquid (user, 2026-11-28). The
+    /// rise starts as the sink is ending, with the new page, so the two read
+    /// as one gesture.
+    private static let sink = Animation.spring(duration: 0.34, bounce: 0)
+    private static let rise = Animation.spring(duration: 0.44, bounce: 0)
 
     /// The tabs' panels and the tab bar in one `GlassEffectContainer`
     /// (RR-552, RR-553). The panel above the tab bar is one glass that never
@@ -160,7 +167,7 @@ struct MainTabView: View {
                 panel.content
                     .id(panel.tab)
                     .transition(.asymmetric(
-                        insertion: .opacity.animation(.easeOut(duration: 0.15).delay(0.15)),
+                        insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.2)),
                         removal: .opacity.animation(.easeOut(duration: 0.08))))
             }
         }
@@ -174,11 +181,12 @@ struct MainTabView: View {
         .glassEffect(panel?.glass.liquid ?? RelayGlass.material, in: shape)
         .modifier(PanelGlassID(id: morphs ? Self.panelGlassID : nil, namespace: glassMorph))
         .position(x: frame.midX, y: frame.midY)
-        // When talking starts or stops, the place the Agents screen holds
-        // jumps to its new size at once; move the glass with the dock's own
-        // animation instead. Only then: between tabs the glass follows the
-        // page as it moves, and chasing it with an animation made it lurch.
-        .animation(RelayMotion.move, value: panel?.isTalking ?? false)
+        // When the text box grows or shrinks (talking, the transcript, a
+        // draft, a message sent), the place the Agents screen holds jumps to
+        // its new size at once; move the glass with the dock's own animation
+        // instead. Only then: between tabs the glass follows the page as it
+        // moves, and chasing it with an animation made it lurch.
+        .animation(RelayMotion.move, value: panel?.textKey ?? "")
     }
 
     /// The morphing panel's glass ID, or none while Reduce Motion crossfades.

@@ -162,7 +162,7 @@ struct AgentDock: View {
         // one line it is centred and as the box grows it stays at the bottom.
         HStack(alignment: .bottom, spacing: 8) {
             Group {
-                if isTalking {
+                if showsTranscript {
                     // The newest words stay in view: the transcript keeps its
                     // last three lines.
                     Text(transcript.isEmpty ? placeholder : transcript)
@@ -171,7 +171,7 @@ struct AgentDock: View {
                         .truncationMode(.head)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentTransition(.opacity)
-                        .animation(RelayMotion.enter, value: transcript)
+                        .animation(RelayMotion.move, value: transcript)
                 } else {
                     TextField("", text: $text,
                               prompt: Text(placeholder).foregroundStyle(RelayColor.neutral7), axis: .vertical)
@@ -206,8 +206,14 @@ struct AgentDock: View {
         .modifier(FieldSurface())
         .opacity(dimmed.contains(.textBox) ? 0.3 : 1)
         .allowsHitTesting(!inert.contains(.textBox))
-        .animation(RelayMotion.move, value: isTalking)
+        .animation(RelayMotion.move, value: showsTranscript)
     }
+
+    /// The transcript stays in the text box after the talk button is released
+    /// until the message is sent, so the box shrinks once, as the message
+    /// lands in the chat, rather than shrinking and then the chat jumping
+    /// when the message arrives (user, 2026-11-28).
+    private var showsTranscript: Bool { isTalking || !transcript.isEmpty }
 
     private func sendIfPossible() {
         guard !isTalking, hasText else { return }

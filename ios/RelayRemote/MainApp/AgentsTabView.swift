@@ -13,6 +13,8 @@ struct AgentsTabView: View {
         #if DEBUG
         if launch.agentsSample == "play-demo" {
             AgentsPlayDemo()
+        } else if launch.agentsSample == "talk-demo" {
+            AgentsTalkDemo(state: AgentsSample.ready.state)
         } else if let sample = launch.agentsSample.flatMap(AgentsSample.init(rawValue:)) {
             if let every = launch.cycleAgentsEvery {
                 AgentsCycleDemo(state: sample.state, every: every)
@@ -103,6 +105,40 @@ struct TabPlaceholder: View {
 }
 
 #if DEBUG
+/// Debug (`--agents-sample=talk-demo`): talks a message, releases and sends
+/// it as the live voice layer does, on a loop, so the dock can be recorded.
+private struct AgentsTalkDemo: View {
+    @State var state: AgentsScreenState
+
+    var body: some View {
+        AgentsScreen(state: state)
+            .task {
+                let words = "Could you put the latest build in my Applications as well and then check the tabs".split(separator: " ")
+                let base = state.feed
+                while !Task.isCancelled {
+                    state.feed = base
+                    try? await Task.sleep(for: .seconds(1))
+                    state.isTalking = true
+                    for count in 1...words.count {
+                        try? await Task.sleep(for: .seconds(0.08))
+                        state.transcript = words.prefix(count).joined(separator: " ")
+                    }
+                    try? await Task.sleep(for: .seconds(0.4))
+                    // Released: listening ends at once; the transcript clears
+                    // and the message files once the recogniser finishes.
+                    state.isTalking = false
+                    try? await Task.sleep(for: .seconds(0.5))
+                    state.feed.append(ChatMessage(role: .user, text: state.transcript, date: .now))
+                    state.transcript = ""
+                    state.isPreparing = true
+                    try? await Task.sleep(for: .seconds(1.5))
+                    state.isPreparing = false
+                    try? await Task.sleep(for: .seconds(1))
+                }
+            }
+    }
+}
+
 /// Debug: the sample screen switching agents on a timer (`--cycle-agents`).
 private struct AgentsCycleDemo: View {
     @State var state: AgentsScreenState

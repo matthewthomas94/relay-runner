@@ -14,8 +14,9 @@ struct HostedPanel {
     let content: AnyView
     /// The fill over the glass.
     var glass: RelayGlass = .panel
-    /// Talking or not: the one change that resizes the dock in place.
-    var isTalking = false
+    /// What the dock's text box holds (the draft or the transcript): when it
+    /// changes, the dock can resize in place, and its glass follows.
+    var textKey = ""
 }
 
 /// Every tab's hosted panel, by tab: while one tab replaces another both are
@@ -39,13 +40,13 @@ extension View {
     /// Elsewhere: the panel as it is.
     @ViewBuilder
     func hostedPanel(_ tab: MainTab, hosted: Bool, glass: RelayGlass = .panel,
-                     isTalking: Bool = false) -> some View {
+                     textKey: String = "") -> some View {
         if hosted {
             hidden()
                 .accessibilityHidden(true)
                 .anchorPreference(key: HostedPanelKey.self, value: .bounds) {
                     [tab: HostedPanel(tab: tab, anchor: $0, content: AnyView(self), glass: glass,
-                                      isTalking: isTalking)]
+                                      textKey: textKey)]
                 }
         } else {
             self

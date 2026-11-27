@@ -259,7 +259,15 @@ private struct TicketRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .relayGlass(.card, cornerRadius: 20)
+        // Drawn, not Liquid Glass: live glass ignored the page's fade and
+        // blur and showed a beat after the cards' text when Workspace arrived
+        // (user, 2026-11-28). Neutral-3 is the colour the card glass renders
+        // on the black backdrop, with the card glass's lit rim.
+        .background {
+            let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+            shape.fill(RelayColor.neutral3)
+                .overlay(RelayGlassRim(shape: shape, light: RelayGlass.card.rimLight))
+        }
         .accessibilityElement(children: .combine)
     }
 }
