@@ -35,6 +35,8 @@ struct AgentChatFeed: View {
         }
         .scrollIndicators(.hidden)
         .defaultScrollAnchor(.bottom)
+        // Dragging the chat down pulls the keyboard away with it.
+        .scrollDismissesKeyboard(.interactively)
         .mask {
             VStack(spacing: 0) {
                 LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)

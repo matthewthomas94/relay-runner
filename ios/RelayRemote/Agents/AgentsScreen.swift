@@ -55,6 +55,9 @@ struct AgentsScreen: View {
             .animation(RelayMotion.enter, value: state.selected)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.bottom, 6)
+            // Tapping the chat puts the keyboard away; buttons in it still work.
+            .contentShape(Rectangle())
+            .onTapGesture { dismissKeyboard() }
             .modifier(Dimmed(isDimmed: isOffline))
             AgentTabStrip(tabs: state.tabs, selected: state.selected, onSelect: actions.select)
                 .modifier(Dimmed(isDimmed: isOffline))
@@ -84,6 +87,8 @@ struct AgentsScreen: View {
                 .animation(RelayMotion.enter, value: state.name)
         }
         .padding(.top, 2)
+        .contentShape(Rectangle())
+        .onTapGesture { dismissKeyboard() }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
     }
@@ -120,6 +125,10 @@ struct AgentsScreen: View {
 
     private func send() {
         if actions.send(draft) { draft = "" }
+    }
+
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 }
 
