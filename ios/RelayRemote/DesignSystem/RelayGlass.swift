@@ -28,9 +28,9 @@ enum RelayGlass {
     /// The primary button pressed or active: the pressed grey at 85%.
     case primaryPressed
 
-    /// The glass under every tint: iOS's clear Liquid Glass, the least
-    /// frosted, so the backdrop and the dot fields show through.
-    static let material = Glass.clear
+    /// The glass under every tint: iOS's regular Liquid Glass, the more
+    /// frosted of its two, nearer Figma's frost 48 (user, 2026-11-28).
+    static let material = Glass.regular
 
     /// This surface's Liquid Glass: the clear glass tinted with its fill.
     var liquid: Glass { RelayGlass.material.tint(liquidTint) }
