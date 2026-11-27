@@ -450,6 +450,7 @@ final class STTEngine: @unchecked Sendable {
         captureInterruptionEpoch &+= 1
         captureInterruptionLock.unlock()
         resetRecordingBuffer()
+        gesture.clearPendingGestures()
         if !preservingGesture { gesture.reset() }
         captureOwnershipLock.lock()
         defer { captureOwnershipLock.unlock() }

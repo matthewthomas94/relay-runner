@@ -238,6 +238,12 @@ final class CapsLockGesture {
         return true
     }
 
+    /// Drops modifier shortcuts (play, cancel, Workspace, agent switch) pressed
+    /// while Relay Remote held the mic, so none replays when the Mac takes it back.
+    func clearPendingGestures() {
+        clearModifierTaps()
+    }
+
     /// Poll the activation key state and return any gesture event detected.
     /// Call this at ~50ms intervals.
     func poll(currentSegment: String) -> Event? {
