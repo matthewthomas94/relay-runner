@@ -11,7 +11,9 @@ struct AgentsTabView: View {
 
     var body: some View {
         #if DEBUG
-        if let sample = launch.agentsSample.flatMap(AgentsSample.init(rawValue:)) {
+        if launch.agentsSample == "play-demo" {
+            AgentsPlayDemo()
+        } else if let sample = launch.agentsSample.flatMap(AgentsSample.init(rawValue:)) {
             AgentsScreen(state: sample.state, draft: sample.draft)
         } else {
             live

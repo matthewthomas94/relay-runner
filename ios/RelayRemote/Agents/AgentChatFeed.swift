@@ -13,29 +13,41 @@ struct AgentChatFeed: View {
     static let topFade: CGFloat = 32
     static let bottomFade: CGFloat = 24
 
-    /// Play morphs the "New reply" panel into the reply's bubble.
+    /// Play morphs the "New reply" panel into the reply's bubble: the glass
+    /// reshapes from one to the other, the panel's label and button fade out
+    /// fast, and the reply's text fades in as the glass settles.
     @Namespace private var replyMorph
+    /// The last reply shown as "New reply", so its bubble knows to arrive
+    /// out of the panel instead of rising in on its own.
+    @State private var lastWaitingSeq: Int?
+    /// Replies whose text already faded in, so scrolling back never replays it.
+    @State private var arrived: Set<Int> = []
 
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 20) {
                 ForEach(messages) { message in
                     row(message)
-                        .transition(.relayRise)
+                        .transition(isMorphing(message) ? .identity : .relayRise)
                 }
                 if let waiting {
-                    WaitingReplyPanel(name: name, receivedAt: waiting.receivedAt, onPlay: onPlay)
-                        .matchedGeometryEffect(id: Self.morphID(waiting.seq), in: replyMorph)
+                    WaitingReplyPanel(name: name, receivedAt: waiting.receivedAt, onPlay: onPlay,
+                                      glassID: Self.morphID(waiting.seq), namespace: replyMorph)
                         .id("waiting")
-                        .transition(.relaySurface)
+                        .transition(.asymmetric(insertion: .relaySurface,
+                                                removal: .opacity.animation(.easeOut(duration: 0.12))))
                 }
             }
             .padding(.horizontal, RelayMetrics.screenMargin)
             .padding(.top, Self.topFade)
             .padding(.bottom, Self.bottomFade)
-            .animation(RelayMotion.move, value: waiting)
-            .animation(RelayMotion.enter, value: messages.count)
+            // One animation for a feed change, so Play's two halves (the
+            // panel leaving, the bubble arriving) move as one.
+            .animation(RelayMotion.move, value: FeedChange(count: messages.count, waiting: waiting?.seq))
             .animation(RelayMotion.enter, value: speakingSeq)
+        }
+        .onChange(of: waiting?.seq, initial: true) { _, seq in
+            if let seq { lastWaitingSeq = seq }
         }
         .scrollIndicators(.hidden)
         .defaultScrollAnchor(.bottom)
@@ -73,10 +85,16 @@ struct AgentChatFeed: View {
                 Text(message.text)
                     .relayTextStyle(.body)
                     .foregroundStyle(RelayColor.neutral10)
+                    .modifier(MorphArrival(active: isMorphing(message)) {
+                        if let seq = message.seq { arrived.insert(seq) }
+                    })
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
-                    .relayGlass(.panel)
-                    .modifier(ReplyMorph(id: message.seq.map(Self.morphID), namespace: replyMorph))
+                    .background {
+                        RelayGlassBackground(shape: RoundedRectangle(cornerRadius: RelayMetrics.panelRadius,
+                                                                     style: .continuous))
+                            .modifier(ReplyMorph(id: message.seq.map(Self.morphID), namespace: replyMorph))
+                    }
                 meta(message.seq != nil && message.seq == speakingSeq
                      ? "\(name) · speaking" : "\(name) · \(Self.time(message.date))")
                     .contentTransition(.opacity)
@@ -102,6 +120,17 @@ struct AgentChatFeed: View {
 
     static func morphID(_ seq: Int) -> String { "reply-\(seq)" }
 
+    /// The reply that was just "New reply", arriving out of its panel.
+    private func isMorphing(_ message: ChatMessage) -> Bool {
+        guard let seq = message.seq, message.role == .agent else { return false }
+        return seq == lastWaitingSeq && !arrived.contains(seq)
+    }
+
+    private struct FeedChange: Equatable {
+        let count: Int
+        let waiting: Int?
+    }
+
     static func time(_ date: Date) -> String {
         date.formatted(.dateTime.hour(.defaultDigits(amPM: .omitted)).minute())
     }
@@ -112,6 +141,9 @@ struct WaitingReplyPanel: View {
     let name: String
     let receivedAt: Date
     let onPlay: () -> Void
+    /// Ties the panel's glass to its reply's bubble for the Play morph.
+    var glassID: String?
+    var namespace: Namespace.ID?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -132,7 +164,11 @@ struct WaitingReplyPanel: View {
         .padding(.leading, 14)
         .padding(.trailing, 12)
         .padding(.vertical, 12)
-        .relayGlass(.panel)
+        .background {
+            RelayGlassBackground(shape: RoundedRectangle(cornerRadius: RelayMetrics.panelRadius,
+                                                         style: .continuous))
+                .modifier(ReplyMorph(id: glassID, namespace: namespace))
+        }
     }
 
     static func age(from start: Date, to now: Date) -> String {
@@ -147,13 +183,34 @@ struct WaitingReplyPanel: View {
 /// into the other; replies without a seq are left alone.
 private struct ReplyMorph: ViewModifier {
     let id: String?
-    let namespace: Namespace.ID
+    let namespace: Namespace.ID?
 
     func body(content: Content) -> some View {
-        if let id {
+        if let id, let namespace {
             content.matchedGeometryEffect(id: id, in: namespace)
         } else {
             content
         }
+    }
+}
+
+/// The reply's text arriving inside the glass that morphed out of the
+/// "New reply" panel: it fades in from a 4 pt blur just after the glass
+/// starts moving. `done` runs once it has, so it never plays again.
+private struct MorphArrival: ViewModifier {
+    let active: Bool
+    let done: () -> Void
+    @State private var shown = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        let hidden = active && !shown
+        content
+            .opacity(hidden ? 0 : 1)
+            .blur(radius: hidden && !reduceMotion ? 4 : 0)
+            .onAppear {
+                guard active else { return }
+                withAnimation(RelayMotion.enter.delay(0.08)) { shown = true } completion: { done() }
+            }
     }
 }

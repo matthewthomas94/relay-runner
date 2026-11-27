@@ -25,13 +25,30 @@ enum AppGlowState: Equatable {
 /// playback field while a reply plays (`DotField`). One view at the app root,
 /// driven by the voice state.
 ///
-/// It moves exactly like the desktop's `ParticleFieldRenderer`: a field
-/// arrives and departs as a surface (fade, 96% scale, 12 pt blur; in on the
-/// desktop enter curve over 360 ms, out on the exit curve over 160 ms), and
-/// switching between listening and playback crossfades the two fields over
-/// 450 ms on the change curve. Reduce Motion keeps only the fades.
+/// It moves exactly like the desktop's `ParticleFieldRenderer` under
+/// `VoiceOverlayMotion`: a field arrives and departs over 200 ms on a
+/// smoothstep, fading, blurring by 12 pt and scaling to 96% about the field's
+/// own centre at the base of the screen, so it blooms up from the bottom
+/// rather than sliding. Switching between listening and playback crossfades
+/// the two fields over 450 ms on the change curve. Reduce Motion keeps only
+/// the fades.
 struct AppGlowLayer: View {
     let model: AppModel
+
+    private var target: AppGlowState {
+        guard let voice = model.voice else { return .none }
+        let listening = voice.isListening || voice.activity == .listening || voice.activity == .hearing
+        return .resolve(listening: listening, playing: voice.isSpeaking)
+    }
+
+    var body: some View {
+        StateGlowLayer(target: target)
+    }
+}
+
+/// The glow for a given state; `AppGlowLayer` feeds it the live voice state.
+struct StateGlowLayer: View {
+    let target: AppGlowState
 
     /// The field showing, or leaving when `departure` heads to 1.
     @State private var current = AppGlowState.none
@@ -43,14 +60,15 @@ struct AppGlowLayer: View {
     @State private var arrival = 1.0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    static let enter = Animation.timingCurve(0.16, 1, 0.3, 1, duration: 0.36)
-    static let exit = Animation.timingCurve(0.4, 0, 1, 1, duration: 0.16)
+    /// The desktop's `VoiceOverlayMotion.travelDuration` on its smoothstep.
+    static let enter = Animation.timingCurve(0.45, 0, 0.55, 1, duration: 0.2)
+    static let exit = enter
     static let crossfade = Animation.timingCurve(0.16, 1, 0.3, 1, duration: 0.45)
 
-    private var target: AppGlowState {
-        guard let voice = model.voice else { return .none }
-        let listening = voice.isListening || voice.activity == .listening || voice.activity == .hearing
-        return .resolve(listening: listening, playing: voice.isSpeaking)
+    /// The centre of the field showing, which the desktop scales about.
+    private var anchor: UnitPoint {
+        let coverage = (current.style ?? previous.style)?.coverage ?? DotFieldStyle.playback.coverage
+        return UnitPoint(x: 0.5, y: 1 - coverage / 2)
     }
 
     var body: some View {
@@ -63,7 +81,7 @@ struct AppGlowLayer: View {
             }
         }
         .opacity(1 - departure)
-        .scaleEffect(reduceMotion ? 1 : 1 - (1 - RelayMotion.hiddenScale) * departure)
+        .scaleEffect(reduceMotion ? 1 : 1 - (1 - RelayMotion.hiddenScale) * departure, anchor: anchor)
         .blur(radius: reduceMotion ? 0 : RelayMotion.pageBlur * departure)
         .ignoresSafeArea()
         .allowsHitTesting(false)
