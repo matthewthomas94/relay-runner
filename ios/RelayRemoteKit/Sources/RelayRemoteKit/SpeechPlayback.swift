@@ -199,10 +199,12 @@ public final class SpeechPlaybackQueue {
     ///   - player: plays `audio: true` frames in the Mac's voice; without one
     ///     every frame is synthesised.
     ///   - audioWait: how long a reply in the Mac's voice waits for its first
-    ///     audio before the text is synthesised instead.
+    ///     audio before the text is synthesised instead. The Mac takes up to
+    ///     about 3 s to voice the start of a long reply, so 1.5 s often fell
+    ///     back to the phone's voice when the Mac's was on its way.
     ///   - stallTimeout: how long a started stream may go without a new part.
     public init(synthesizer: SpeechSynthesizing, player: SpeechAudioPlaying? = nil,
-                mode: PlaybackMode = .autoPlay, audioWait: TimeInterval = 1.5,
+                mode: PlaybackMode = .autoPlay, audioWait: TimeInterval = 5,
                 stallTimeout: TimeInterval = 15, schedule: SpeechTimer? = nil,
                 log: RemoteLogger = .silent, sendAck: @escaping (Ack) -> Void) {
         self.synthesizer = synthesizer
