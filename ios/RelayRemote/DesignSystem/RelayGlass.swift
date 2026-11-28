@@ -132,10 +132,12 @@ struct RelayGlassSurface<S: InsettableShape>: ViewModifier {
     }
 }
 
-/// Figma's Glass light on a surface's edge: a 1 pt rim, brightest at the
-/// top-left corner where the light falls, fading across the surface and
-/// catching again faintly at the bottom-right, as a glass slab does. `light`
-/// is Figma's light intensity.
+/// Figma's Glass light on a surface's edge: a 1 pt rim, brightest along the
+/// top where the light falls, fading down the sides and catching again
+/// faintly along the bottom, as a glass slab does. Top to bottom, not corner
+/// to corner: across a wide button or tab a diagonal lit the left and right
+/// ends instead, unlike the rest of the app's glass (user, 2026-11-28).
+/// `light` is Figma's light intensity.
 struct RelayGlassRim<S: InsettableShape>: View {
     let shape: S
     var light: Double = 0.8
@@ -146,7 +148,7 @@ struct RelayGlassRim<S: InsettableShape>: View {
                                    .init(color: .white.opacity(0.06 * light), location: 0.4),
                                    .init(color: .white.opacity(0.04 * light), location: 0.6),
                                    .init(color: .white.opacity(0.16 * light), location: 1)],
-                           startPoint: .topLeading, endPoint: .bottomTrailing),
+                           startPoint: .top, endPoint: .bottom),
             lineWidth: 1)
         .allowsHitTesting(false)
     }

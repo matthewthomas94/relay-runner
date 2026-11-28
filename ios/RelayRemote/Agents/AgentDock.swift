@@ -195,12 +195,22 @@ struct AgentDock: View {
             .padding(.leading, 14)
             .padding(.vertical, 10)
             .frame(minHeight: 44, alignment: .leading)
-            // The old secondary Send: grey until there is text to send.
+            // The old secondary Send: grey until there is text to send, then
+            // the selected fill with the glass's lit rim, as the selected
+            // tabs (user, 2026-11-28).
             Button(action: sendIfPossible) {
+                let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
                 LucideImage(.arrowUp, size: 18)
                     .foregroundStyle(canSend ? RelayColor.neutral10 : RelayColor.neutral7)
                     .frame(width: 36, height: 36)
-                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Self.sendFill))
+                    .background {
+                        if canSend {
+                            shape.fill(RelayGlass.selected.tint)
+                                .overlay(RelayGlassRim(shape: shape, light: RelayGlass.selected.rimLight))
+                        } else {
+                            shape.fill(Self.sendFill)
+                        }
+                    }
             }
             .buttonStyle(.relayPlain)
             .disabled(!canSend)

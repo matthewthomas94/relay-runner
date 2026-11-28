@@ -78,10 +78,13 @@ struct GlassTabBar: View {
         .animation(RelayMotion.enter, value: selected)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background {
-            // One pill that slides to the selected tab.
+            // One pill that slides to the selected tab: the selected fill
+            // with the glass's lit rim, as the agent and project tabs (user,
+            // 2026-11-28).
             if selected {
-                RelayGlassBackground(glass: .selected,
-                                     shape: RoundedRectangle(cornerRadius: Self.pillRadius, style: .continuous))
+                Color.clear
+                    .modifier(RelayGlassSurface(glass: .selected,
+                                                shape: RoundedRectangle(cornerRadius: Self.pillRadius, style: .continuous)))
                     .matchedGeometryEffect(id: "pill", in: pill)
             }
         }
