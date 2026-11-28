@@ -258,8 +258,11 @@ struct AgentDock: View {
                     .onSubmit(sendIfPossible)
                     // A field that grows types Return as a new line and never
                     // submits, so the keyboard's Send key sends (user, 2026-11-28).
+                    // The dock is drawn twice when the tab bar hosts its
+                    // glass (`hostedPanel`), so this runs twice per Return:
+                    // only the first, while the newline is still there, sends.
                     .onChange(of: text) { old, new in
-                        guard new.count == old.count + 1,
+                        guard text == new, new.count == old.count + 1,
                               new.filter({ $0 == "\n" }).count > old.filter({ $0 == "\n" }).count else { return }
                         text = old
                         sendIfPossible()
