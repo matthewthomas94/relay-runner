@@ -32,10 +32,13 @@ struct AgentChatFeed: View {
                 ForEach(messages) { message in
                     row(message, speaking: message.id == speakingID,
                         waiting: message.id == waitingID && message.id != speakingID)
-                        // New rows rise in from below.
+                        // New rows rise in from below, unblurring as they
+                        // settle, and the rows above ease up to make room
+                        // (user, 2026-11-28: they popped in too fast).
                         .transition(.asymmetric(
-                            insertion: .opacity.combined(with: .offset(y: 24))
-                                .combined(with: .scale(scale: 0.98, anchor: .bottom)),
+                            insertion: .modifier(active: RelayHiddenModifier(hidden: 1),
+                                                 identity: RelayHiddenModifier(hidden: 0))
+                                .combined(with: .offset(y: 32)),
                             removal: .opacity))
                 }
             }
@@ -132,7 +135,7 @@ struct AgentChatFeed: View {
 
     /// No bounce: a message settles into place on the ease-out, rather than
     /// overshooting and springing back (user, 2026-11-28).
-    static let feedChange = Animation.spring(duration: 0.45, bounce: 0)
+    static let feedChange = Animation.spring(duration: 0.7, bounce: 0)
 }
 
 /// A chat surface's glass (radius 16): Liquid Glass tinted with the Figma

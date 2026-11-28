@@ -132,6 +132,32 @@ extension AnyTransition {
     }
 }
 
+extension AnyTransition {
+    /// The dock's buttons changing (Play, Cancel, Stop, Hold to talk,
+    /// Release to send): `relayControlSwap`, eased out over longer, so a tap
+    /// settles rather than snaps (user, 2026-11-28).
+    static var relayDockSwap: AnyTransition {
+        .asymmetric(
+            insertion: .modifier(active: RelayControlSwapModifier(hidden: true),
+                                 identity: RelayControlSwapModifier(hidden: false))
+                .animation(RelayMotion.dockEnter),
+            removal: .modifier(active: RelayControlSwapModifier(hidden: true),
+                               identity: RelayControlSwapModifier(hidden: false))
+                .animation(RelayMotion.dockExit))
+    }
+}
+
+extension RelayMotion {
+    /// A dock button's label leaving: 180 ms easing in.
+    static let dockExitDuration: TimeInterval = 0.18
+    static let dockExit = Animation.timingCurve(0.4, 0, 1, 1, duration: dockExitDuration)
+    /// The new label arriving once the old has gone: 320 ms easing out.
+    static let dockEnter = Animation.timingCurve(0.23, 1, 0.32, 1, duration: 0.32).delay(dockExitDuration)
+    /// The rest of a dock button's change (its surface, the Send arrow
+    /// lighting up): 400 ms easing in and out.
+    static let dockSwap = Animation.timingCurve(0.65, 0, 0.35, 1, duration: 0.4)
+}
+
 extension RelayMotion {
     /// A control leaving its place for another: 100 ms on the exit curve.
     static let controlExitDuration: TimeInterval = 0.1

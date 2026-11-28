@@ -78,12 +78,12 @@ struct AgentDock: View {
                     ZStack {
                         replayLabel
                             .id(replayFace)
-                            .transition(.relayControlSwap)
+                            .transition(.relayDockSwap)
                     }
                 }
                 .disabled(!replayEnabled)
                 .buttonStyle(RelayButtonStyle(role: .secondary, fullWidth: true))
-                .animation(RelayMotion.enter, value: replayFace)
+                .animation(RelayMotion.dockSwap, value: replayFace)
                 .opacity(dimmed.contains(.replay) ? 0.3 : 1)
                 .allowsHitTesting(!inert.contains(.replay))
                 DockTalkButton(mode: talkMode, isTalking: isTalking, onCommand: onTalk)
@@ -214,7 +214,7 @@ struct AgentDock: View {
             }
             .buttonStyle(.relayPlain)
             .disabled(!canSend)
-            .animation(RelayMotion.enter, value: canSend)
+            .animation(RelayMotion.dockSwap, value: canSend)
             .padding(.trailing, 4)
             .padding(.bottom, 4)
             .padding(.top, 4)
@@ -273,9 +273,9 @@ struct DockTalkButton: View {
         ZStack {
             label
                 .id(face)
-                .transition(.relayControlSwap)
+                .transition(.relayDockSwap)
         }
-            .animation(RelayMotion.enter, value: face)
+            .animation(RelayMotion.dockSwap, value: face)
             .relayTextStyle(.control)
             .foregroundStyle(RelayColor.neutral10)
             // "Release to send" stays on one line in half the row.
