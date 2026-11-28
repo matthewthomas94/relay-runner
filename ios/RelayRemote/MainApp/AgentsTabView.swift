@@ -11,8 +11,16 @@ struct AgentsTabView: View {
 
     var body: some View {
         #if DEBUG
-        if let sample = launch.agentsSample.flatMap(AgentsSample.init(rawValue:)) {
-            AgentsScreen(state: sample.state, draft: sample.draft)
+        if launch.agentsSample == "play-demo" {
+            AgentsPlayDemo()
+        } else if launch.agentsSample == "talk-demo" {
+            AgentsTalkDemo(state: AgentsSample.ready.state)
+        } else if let sample = launch.agentsSample.flatMap(AgentsSample.init(rawValue:)) {
+            if let every = launch.cycleAgentsEvery {
+                AgentsCycleDemo(state: sample.state, every: every)
+            } else {
+                AgentsScreen(state: sample.state, draft: sample.draft)
+            }
         } else {
             live
         }
@@ -40,19 +48,24 @@ private struct LiveAgentsScreen: View {
         let talkMode = TalkModePreference().mode
         let snapshot = VoiceSnapshot(isTalking: voice.isListening, transcript: voice.transcript,
                                      playingSeq: voice.isSpeaking ? voice.currentSeq : nil,
-                                     waitingSeqs: voice.waitingSeqs)
+                                     waitingSeqs: voice.waitingSeqs, isPreparing: voice.isPreparing)
         AgentsScreen(state: AgentsScreenState(agents: agents, voice: snapshot, talkMode: talkMode),
-                     actions: actions(playing: agents.agent(ofSeq: snapshot.playingSeq)))
+                     actions: actions(playing: agents.agent(ofSeq: snapshot.playingSeq)
+                                        ?? agents.activities.first { $0.value == .playing }?.key))
             .onChange(of: MacSessionStatus(session), initial: true) { _, status in agents.update(status) }
     }
 
     private func actions(playing: String?) -> AgentsScreenActions {
         AgentsScreenActions(
             select: { agents.select($0) },
+            setWorkStyle: { agents.setWorkStyle($0, for: agents.selected) },
             send: { agents.send($0) },
             talk: { command in
                 switch command {
-                case .start: voice.pressToTalkBegan(agent: agents.selected)
+                case .start:
+                    // The talk button is disabled until the agent is running; this backs it up.
+                    guard !agents.isStarting(agents.selected), !agents.isStopped(agents.selected) else { return }
+                    voice.pressToTalkBegan(agent: agents.selected)
                 case .send: voice.pressToTalkEnded()
                 case .none: break
                 }
@@ -65,7 +78,10 @@ private struct LiveAgentsScreen: View {
                 if let playing, playing != agents.selected { targets.append(playing) }
                 voice.stop(agents: targets)
             },
-            replay: { voice.replay(agent: agents.selected) },
+            replay: {
+                agents.replayRequested(for: agents.selected)
+                voice.replay(agent: agents.selected)
+            },
             start: { agents.start(agents.selected) },
             retry: {
                 if case .waiting = session.state { session.retryNow() } else { session.start() }
@@ -91,3 +107,61 @@ struct TabPlaceholder: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
+
+#if DEBUG
+/// Debug (`--agents-sample=talk-demo`): talks a message, releases and sends
+/// it as the live voice layer does, on a loop, so the dock can be recorded.
+private struct AgentsTalkDemo: View {
+    @State var state: AgentsScreenState
+
+    var body: some View {
+        AgentsScreen(state: state)
+            .task {
+                let words = "Could you put the latest build in my Applications as well and then check the tabs".split(separator: " ")
+                let base = state.feed
+                while !Task.isCancelled {
+                    state.feed = base
+                    try? await Task.sleep(for: .seconds(1))
+                    state.isTalking = true
+                    for count in 1...words.count {
+                        try? await Task.sleep(for: .seconds(0.08))
+                        state.transcript = words.prefix(count).joined(separator: " ")
+                    }
+                    try? await Task.sleep(for: .seconds(0.4))
+                    // Released: listening ends at once; the transcript clears
+                    // and the message files once the recogniser finishes.
+                    state.isTalking = false
+                    try? await Task.sleep(for: .seconds(0.5))
+                    state.feed.append(ChatMessage(role: .user, text: state.transcript, date: .now))
+                    state.transcript = ""
+                    state.isPreparing = true
+                    try? await Task.sleep(for: .seconds(1.5))
+                    state.isPreparing = false
+                    try? await Task.sleep(for: .seconds(1))
+                }
+            }
+    }
+}
+
+/// Debug: the sample screen switching agents on a timer (`--cycle-agents`).
+private struct AgentsCycleDemo: View {
+    @State var state: AgentsScreenState
+    let every: Double
+
+    var body: some View {
+        AgentsScreen(state: state)
+            .task {
+                let order = ["puck", "sky", "isabella", "george"]
+                while !Task.isCancelled {
+                    for slug in order {
+                        try? await Task.sleep(for: .seconds(every))
+                        withAnimation(RelayMotion.move) {
+                            state.selected = slug
+                            state.name = state.tabs.first { $0.slug == slug }?.name ?? slug
+                        }
+                    }
+                }
+            }
+    }
+}
+#endif

@@ -4,8 +4,8 @@ import RelayRemoteKit
 import RelayRemoteProtocol
 
 /// Speech on the phone (RR-429): spoken requests become `utterance` frames,
-/// `speech` frames play here in the Mac's voice when it streams one (RR-458)
-/// and in the phone's own voice otherwise, while the Mac stays silent, and the
+/// `speech` frames play here in the Mac's voice (RR-458), never in the phone's
+/// own (user, 2026-11-28), while the Mac stays silent, and the
 /// stop, replay and cancel buttons send `control` frames. One utterance at a
 /// time: `pressToTalkBegan` opens it and `pressToTalkEnded` sends it, whether
 /// the Talk control is held or toggled (RR-540; there is no hands-free mode).
@@ -30,19 +30,33 @@ final class VoiceController {
     }
     /// Auto-play, or wait for `play()` (RR-458).
     var playbackMode = PlaybackMode.autoPlay {
-        didSet { queue.mode = playbackMode }
+        didSet { syncQueueMode() }
+    }
+    /// Auto-play waits once the user leaves the app: nothing plays while
+    /// they are away, and when they come back replies wait for Play until
+    /// they play one themselves, so none starts before they are ready (user,
+    /// 2026-11-28). Queue mode is unaffected.
+    private(set) var autoPlayPaused = false {
+        didSet { syncQueueMode() }
     }
     /// The newest reply waiting for Play in play-on-demand mode.
     private(set) var waitingReply: String?
     /// RR-540: every reply waiting for Play, oldest first, and the seq playing now.
     private(set) var waitingSeqs: [Int] = []
     private(set) var currentSeq: Int?
+    /// A reply is playing or about to (its audio not here yet). Kept here, not
+    /// read from the queue, so views that read it update when it changes.
+    private(set) var isSpeaking = false
+    /// Replay was pressed and its audio has not started, or a reply's audio
+    /// has not arrived yet: the dock reads "Preparing message".
+    private(set) var isPreparing = false
     private(set) var activity = Activity.idle
     private(set) var transcript = ""
-    private(set) var isListening = false
+    private(set) var isListening = false {
+        didSet { syncHold() }
+    }
     private(set) var lastProblem: String?
     var readiness: SpeechRecognizer.Readiness { recognizer.readiness }
-    var isSpeaking: Bool { queue.isSpeaking }
     /// True while the audio session is active, that is while recording or playing.
     var isAudioActive: Bool { audio.isActive }
     /// Fires when recording and playback have both ended.
@@ -54,25 +68,39 @@ final class VoiceController {
 
     @ObservationIgnored private let session: RemoteSession
     @ObservationIgnored private let audio = AudioSessionController()
-    @ObservationIgnored private let synthesizer = SystemSpeechSynthesizer()
     @ObservationIgnored private let player = AudioQueueSpeechPlayer()
     @ObservationIgnored private let recognizer = SpeechRecognizer()
+    /// What the microphone hears, for the sound wave and the listening dots.
+    @ObservationIgnored let micLevel = MicLevelMeter()
     @ObservationIgnored private let queue: SpeechPlaybackQueue
-    @ObservationIgnored private var utteranceOpen = false
+    @ObservationIgnored private var utteranceOpen = false {
+        didSet { syncHold() }
+    }
+    /// Pressed again while the last utterance was still finishing: open a new
+    /// one as soon as it has, without stopping the microphone in between.
+    @ObservationIgnored private var openAfterClose = false
     /// The user let go (true) or cancelled (false) while the utterance was
     /// still opening; it closes that way once open.
     @ObservationIgnored private var closeWhenOpen: Bool?
     @ObservationIgnored private var busy = false
+    /// Replay was pressed in Remote mode and its reply has not started playing.
+    @ObservationIgnored private var replayPending = false {
+        didSet { queueChanged() }
+    }
+    @ObservationIgnored private var replayTimeout: Task<Void, Never>?
 
     init(session: RemoteSession) {
         self.session = session
-        queue = SpeechPlaybackQueue(synthesizer: synthesizer, player: player, log: .system) { [weak session] ack in
+        // No synthesizer: the phone never speaks in its own voice. The Mac
+        // has taken up to 9 s to voice a reply, so its audio gets 30 s.
+        queue = SpeechPlaybackQueue(synthesizer: nil, player: player, audioWait: 30, log: .system) { [weak session] ack in
             session?.send(ack: ack)
         }
         queue.onPlaybackStateChange = { [weak self] speaking in self?.playbackChanged(speaking) }
         queue.onChange = { [weak self] in self?.queueChanged() }
         session.resumeCeiling = { [weak self] in self?.queue.resumeCeiling }
         recognizer.onTranscript = { [weak self] text in self?.transcript = text }
+        recognizer.onVoiceLevel = { [weak self] level in self?.micLevel.update(level) }
         audio.onInterruption = { [weak self] interruption in self?.interrupted(interruption) }
         audio.onRouteLost = { [weak self] in self?.routeLost() }
         Task { await recognizer.prepare(prompting: false) }
@@ -94,13 +122,25 @@ final class VoiceController {
 
     // MARK: - Talk
 
-    /// Opens an utterance for `agent` (nil: the focused agent).
+    /// Opens an utterance for `agent` (nil: the focused agent). The control
+    /// and the glow respond at once: `isListening` turns on before the
+    /// microphone and the analyzer have started, and a press while the last
+    /// utterance is still being transcribed is kept rather than ignored.
     func pressToTalkBegan(agent: String? = nil) {
-        guard remoteMode, !utteranceOpen, !busy, !isListening else { return }
+        guard remoteMode, !isListening else { return }
         isListening = true
         closeWhenOpen = nil
         bargeIn(agent: agent)
+        if utteranceOpen || busy {
+            openAfterClose = true
+            return
+        }
         Task { await openUtterance() }
+    }
+
+    /// The speech speed the Mac reports, applied to the Mac's voice on the phone.
+    func setSpeechSpeed(_ speed: Double) {
+        player.rate = Float(speed)
     }
 
     /// Finishes the utterance and sends its transcript.
@@ -130,14 +170,15 @@ final class VoiceController {
     /// stop, and only then open the utterance. The local stop happens even
     /// when the channel is down. Replay is unaffected (the Mac keeps the reply).
     private func bargeIn(agent: String?) {
+        replayPending = false
         queue.stopAll()
-        synthesizer.stopSpeaking()
         session.send(control: .stop, agent: agent)
     }
 
     /// Silences the phone at once and asks the Mac to stop each of `agents`
     /// (empty: the focused agent).
     func stop(agents: [String] = []) {
+        replayPending = false
         queue.stopAll()
         if agents.isEmpty {
             session.send(control: .stop)
@@ -149,33 +190,65 @@ final class VoiceController {
     /// The Play control in play-on-demand mode.
     func play() {
         queue.play()
+        autoPlayPaused = false
     }
 
     /// RR-540: plays one agent's waiting reply, skipping its older ones.
     func play(seq: Int, skipping: Set<Int>) {
         queue.play(seq: seq, skipping: skipping)
+        autoPlayPaused = false
+    }
+
+    /// The user left the app: auto-play waits (`autoPlayPaused`). A reply
+    /// already playing finishes.
+    func pauseAutoPlay() {
+        autoPlayPaused = true
     }
 
     /// The replayed reply plays at once in either playback mode.
     func replay(agent: String? = nil) {
         queue.playNextReply()
+        autoPlayPaused = false
         session.send(control: .replay, agent: agent)
+        // With Remote mode off the Mac plays the replay itself.
+        guard remoteMode else { return }
+        replayPending = true
+        // The Mac sends the replay at once; nothing within 10 s means it had none.
+        replayTimeout?.cancel()
+        replayTimeout = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard !Task.isCancelled else { return }
+            self?.replayPending = false
+        }
     }
 
     func cancel() {
+        replayPending = false
         queue.stopAll()
         session.send(control: .cancel)
     }
 
     /// RR-540: every inbound frame from the session, for the playback queue.
     func receive(_ frame: Frame) {
+        if case .settingsState(let settings) = frame, let percent = settings.speechSpeedPercent {
+            setSpeechSpeed(Double(percent) / 100)
+        }
         queue.receive(frame)
+    }
+
+    /// RR-545: holds the audio session in the background for `reason`, or
+    /// releases it. Returns whether the session is held. Releasing with nothing
+    /// recording or playing reports the audio idle.
+    @discardableResult
+    func setKeepAlive(_ on: Bool, for reason: KeepAliveReason) -> Bool {
+        let held = (try? audio.setKeepAlive(on, for: reason)) != nil && audio.isKeepingAlive
+        if !on { notifyIfIdle() }
+        return held
     }
 
     /// Called when the Mac is forgotten: release the microphone and speaker.
     func shutdown() {
         isListening = false
-        synthesizer.stopSpeaking()
         player.stop()
         Task { await closeUtterance(send: false) }
     }
@@ -213,7 +286,7 @@ final class VoiceController {
             return
         }
         do {
-            try audio.setRecording(true)
+            try await audio.startRecording()
             try await recognizer.startUtterance()
             utteranceOpen = true
             transcript = ""
@@ -254,6 +327,13 @@ final class VoiceController {
         }
         // The text box shows the transcript only while the user talks.
         transcript = ""
+        let reopen = openAfterClose && isListening
+        openAfterClose = false
+        if reopen {
+            // Pressed again while this one finished: keep the microphone open.
+            Task { await openUtterance() }
+            return
+        }
         recognizer.stopCapture()
         try? audio.setRecording(false)
         refreshActivity()
@@ -283,7 +363,6 @@ final class VoiceController {
         switch interruption {
         case .began:
             if queue.isSpeaking {
-                synthesizer.pause()
                 player.pause()
             }
             if utteranceOpen {
@@ -292,9 +371,6 @@ final class VoiceController {
             }
         case .ended(let shouldResume):
             audio.reactivate()
-            if synthesizer.isPaused {
-                if shouldResume { synthesizer.resume() } else { synthesizer.stopSpeaking() }
-            }
             if player.isPaused {
                 if shouldResume { player.resume() } else { player.stop() }
             }
@@ -307,10 +383,21 @@ final class VoiceController {
         Task { await closeUtterance(send: false) }
     }
 
+    private func syncQueueMode() {
+        queue.mode = autoPlayPaused ? .onDemand : playbackMode
+    }
+
     private func queueChanged() {
         waitingReply = queue.waitingReply
         waitingSeqs = queue.waitingSeqs
         currentSeq = queue.currentSeq
+        isSpeaking = queue.isSpeaking
+        // The replay is under way once its audio plays (or anything else does).
+        if replayPending, queue.playbackState == .playing {
+            replayPending = false
+            replayTimeout?.cancel()
+        }
+        isPreparing = replayPending || queue.playbackState == .buffering
         if queue.isSpeaking { refreshActivity() }
     }
 
@@ -322,6 +409,12 @@ final class VoiceController {
         } else {
             activity = .idle
         }
+    }
+
+    /// Replies wait while the user is talking or their words are still being
+    /// transcribed, then play in turn.
+    private func syncHold() {
+        queue.isHeld = isListening || utteranceOpen
     }
 
     private func notifyIfIdle() {

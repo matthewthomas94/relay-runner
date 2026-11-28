@@ -9,7 +9,9 @@ import UIKit
 /// background"): the channel is closed when the app leaves the foreground,
 /// unless the phone is still recording or speaking under the audio background
 /// mode, in which case it closes once the audio ends. It is reopened with
-/// `resume_after_seq` when the app returns.
+/// `resume_after_seq` when the app returns. RR-545: with Reply notifications on
+/// and allowed, `ReplyNotifier` holds the audio session instead, the channel
+/// stays open, and each reply posts a local notification.
 @MainActor
 @Observable
 final class AppModel {
@@ -26,7 +28,8 @@ final class AppModel {
     /// The Agents tab's chats, selection and per-agent state (RR-540).
     let agents: AgentsModel
     private(set) var pairingState = PairingState.idle
-    private(set) var startupError: String?
+    /// Set when the device key could not be created; pairing reports it.
+    @ObservationIgnored private var keyFailure: String?
     /// The Workspace tab's selected project tab (RR-543); nil is All. Lives
     /// here so it lasts for the app session, not just while the tab is shown.
     var workspaceProject: String?
@@ -34,6 +37,16 @@ final class AppModel {
     /// modal fades out, so the panel keeps its text as it leaves.
     private(set) var shownTicket: WorkspaceTicket?
     private(set) var isTicketOpen = false
+    /// Where the open ticket's card was on screen, so the modal grows out of
+    /// it and shrinks back into it (global coordinates).
+    private(set) var ticketOrigin: CGRect?
+    /// RR-545: counts the asks to show the Agents tab, as a tapped reply
+    /// notification makes; the tab view switches on each change.
+    private(set) var agentsTabRequests = 0
+    /// Testing: counts the asks to walk onboarding again (Settings › Testing).
+    private(set) var onboardingReplayRequests = 0
+    /// RR-545: reply and lost-connection notifications in the background.
+    @ObservationIgnored let notifier: ReplyNotifier
     /// Counts the asks for the open ticket's text; each one sends a `get`.
     private(set) var ticketRequests = 0
     /// The Remote mode switch (RR-454). On: this phone owns the microphone and
@@ -67,17 +80,42 @@ final class AppModel {
 
     init(remoteModePreference: RemoteModePreference = RemoteModePreference(),
          playbackModePreference: PlaybackModePreference = PlaybackModePreference(),
-         agents: AgentsModel? = nil) {
+         agents: AgentsModel? = nil,
+         notificationCenter: LocalNotificationCenter? = nil) {
         self.remoteModePreference = remoteModePreference
         self.playbackModePreference = playbackModePreference
         self.agents = agents ?? AgentsModel()
+        notifier = ReplyNotifier(center: notificationCenter ?? SystemNotificationCenter())
         remoteMode = remoteModePreference.isOn
         playbackMode = playbackModePreference.mode
+        notifier.holdAudio = { [weak self] on in
+            self?.voice?.setKeepAlive(on, for: .replyNotifications) ?? false
+        }
+    }
+
+    /// Testing: walk onboarding again from the splash, showing every
+    /// permission step. iOS keeps the permissions already granted (an app
+    /// cannot revoke its own), so those steps move on without a system prompt.
+    func redoOnboarding() {
+        let progress = OnboardingProgress()
+        progress.isFinished = false
+        progress.isReplaying = true
+        onboardingReplayRequests += 1
+    }
+
+    /// RR-545: a tapped reply notification opens that agent's chat on the Agents tab.
+    func openAgentChat(_ slug: String) {
+        guard AgentsModel.slugs.contains(slug) else { return }
+        agents.select(slug)
+        closeTicket()
+        agentsTabRequests += 1
+        notifier.chatOpened(slug)
     }
 
     /// RR-551: opens a Workspace row in the ticket modal. Text held from an
     /// earlier open is dropped, so the body loads fresh.
-    func openTicket(_ row: WorkspaceTicket) {
+    func openTicket(_ row: WorkspaceTicket, from origin: CGRect? = nil) {
+        ticketOrigin = origin
         session?.forgetWorkspaceTicket(projectID: row.projectId, ticketID: row.id)
         shownTicket = row
         isTicketOpen = true
@@ -87,7 +125,8 @@ final class AppModel {
     func closeTicket() { isTicketOpen = false }
 
     /// Debug only: shows a sample row in the modal without asking the Mac.
-    func showSampleTicket(_ row: WorkspaceTicket) {
+    func showSampleTicket(_ row: WorkspaceTicket, from origin: CGRect? = nil) {
+        ticketOrigin = origin
         shownTicket = row
         isTicketOpen = true
     }
@@ -104,9 +143,20 @@ final class AppModel {
         do {
             deviceKey = try DeviceKeyStore.loadOrCreate(in: secrets)
         } catch {
-            startupError = "The device key could not be created or read from the Keychain."
+            keyFailure = "The device key could not be created or read from the Keychain."
         }
+        #if DEBUG
+        let launch = LaunchOptions.current
+        if let every = launch.scriptedMacReplyEvery {
+            activate(ScriptedMac.mac, transport: ScriptedMac(replyEvery: every, dropAfter: launch.scriptedMacDropAfter),
+                     endpoints: ScriptedMac.endpoints)
+        } else if let mac = pairingStore.load() {
+            activate(mac)
+        }
+        #else
         if let mac = pairingStore.load() { activate(mac) }
+        #endif
+        Task { await notifier.refreshAuthorization() }
         pathMonitor.pathUpdateHandler = { [weak self] path in
             guard path.status == .satisfied else { return }
             Task { @MainActor in self?.session?.retryNow() }
@@ -115,7 +165,10 @@ final class AppModel {
     }
 
     func pair(code: String) async {
-        guard let deviceKey else { return }
+        guard let deviceKey else {
+            pairingState = .failed(keyFailure ?? "This iPhone could not create its device key.")
+            return
+        }
         pairingState = .pairing
         do {
             let payload = try PairingPayload.parse(code)
@@ -152,6 +205,8 @@ final class AppModel {
         switch phase {
         case .active:
             isForeground = true
+            notifier.enteredForeground(showing: agents.selected)
+            Task { await notifier.refreshAuthorization() }
             // A refused host key or device key waits for "Try again".
             if let session, session.state != .failed(.hostKeyMismatch),
                session.state != .failed(.authenticationRejected) {
@@ -160,15 +215,26 @@ final class AppModel {
         case .background:
             isForeground = false
             saveResumePoint()
-            // A reply still playing, or an utterance still recording, keeps the
-            // channel open; `audioBecameIdle` closes it afterwards.
-            if voice?.isAudioActive != true { session?.stop() }
+            voice?.pauseAutoPlay()
+            // RR-545: Reply notifications hold the audio session and keep the
+            // channel open. Otherwise a reply still playing, or an utterance
+            // still recording, keeps it open and `audioBecameIdle` closes it afterwards.
+            let keptAlive = notifier.enteredBackground(sessionUsable: isSessionUsable)
+            if !keptAlive, voice?.isAudioActive != true { session?.stop() }
         default:
             break
         }
     }
 
-    private func activate(_ mac: PairedMac) {
+    /// A session that can reach the Mac; a refused key waits for the user.
+    private var isSessionUsable: Bool {
+        guard let session, voice != nil else { return false }
+        if case .failed = session.state { return false }
+        return true
+    }
+
+    private func activate(_ mac: PairedMac, transport: RemoteTransport = SSHTransport(),
+                          endpoints: EndpointProvider? = nil) {
         guard let deviceKey else { return }
         paired = mac
         let configuration = SessionConfiguration(
@@ -180,8 +246,8 @@ final class AppModel {
             resumeAfterSeq: UserDefaults.standard.object(forKey: Self.resumeKey(mac)) as? Int,
             remoteMode: remoteMode
         )
-        let session = RemoteSession(configuration: configuration, transport: SSHTransport(),
-                                    endpoints: MacEndpointResolver(mac: mac))
+        let session = RemoteSession(configuration: configuration, transport: transport,
+                                    endpoints: endpoints ?? MacEndpointResolver(mac: mac))
         self.session = session
         let voice = VoiceController(session: session)
         voice.remoteMode = remoteMode
@@ -192,15 +258,25 @@ final class AppModel {
         // spoken request goes to the selected agent like a typed one.
         agents.session = session
         session.onInbound = { [weak self] frame in
-            self?.agents.receive(frame)
-            self?.voice?.receive(frame)
+            guard let self else { return }
+            agents.receive(frame)
+            if case .speech(let speech) = frame {
+                notifier.receive(speech, agent: agents.owner(of: speech.agent))
+            }
+            self.voice?.receive(frame)
+        }
+        session.onStateChange = { [weak self, weak session] state in
+            self?.notifier.sessionStateChanged(state)
+            // The phone plays replies at the Mac's speech speed, so learn it on
+            // every connect, not only when Settings opens.
+            if state == .connected || state == .connectedToApp { _ = session?.requestSettings() }
         }
         voice.onSpokenRequest = { [weak self] text in self?.agents.send(text) }
         if isForeground { session.start() }
     }
 
     private func audioBecameIdle() {
-        guard !isForeground else { return }
+        guard !isForeground, !notifier.isKeepingAlive else { return }
         saveResumePoint()
         session?.stop()
     }

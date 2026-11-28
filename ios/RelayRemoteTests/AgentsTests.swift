@@ -2,6 +2,7 @@ import Foundation
 import Network
 import RelayRemoteKit
 import RelayRemoteProtocol
+import SwiftUI
 import XCTest
 @testable import RelayRemote
 
@@ -216,6 +217,46 @@ final class AgentsTests: XCTestCase {
         XCTAssertEqual(agents.reachability, .appNotRunning)
     }
 
+    /// The header's work style switch (user, 2026-11-28): it shows the Mac's
+    /// style, sends a change, shows the choice at once and settles on the Mac's.
+    func testTheWorkStyleSwitchSendsTheChangeAndShowsItAtOnce() async throws {
+        let agents = model()
+        var clock = Date(timeIntervalSince1970: 1000)
+        agents.now = { clock }
+        let (session, mac) = try await connect(agents)
+        func report(_ georgeStyle: String) async {
+            mac.deliver(.sessionState(SessionState(appRunning: true, session: .ready, agents: [
+                AgentStatus(agent: "puck", running: true, state: .ready, workStyle: "auto"),
+                AgentStatus(agent: "george", running: true, state: .ready, workStyle: georgeStyle),
+            ])))
+            await eventually { session.agents.first { $0.agent == "george" }?.workStyle == georgeStyle }
+            agents.update(MacSessionStatus(session))
+        }
+        await report("auto")
+        XCTAssertEqual(agents.workStyle("george"), "auto")
+        XCTAssertNil(agents.workStyle("sky"), "no switch for an agent the Mac gives no style")
+
+        agents.setWorkStyle("direct", for: "george")
+        await eventually { mac.sentFrames.contains { if case .settingsCommand = $0 { return true } else { return false } } }
+        let set = mac.sentFrames.compactMap { frame -> SettingsCommand? in
+            if case .settingsCommand(let command) = frame { return command } else { return nil }
+        }
+        XCTAssertEqual(set.map(\.agent), ["george"])
+        XCTAssertEqual(set.map(\.workStyle), ["direct"])
+        XCTAssertEqual(set.first?.action, .set)
+        XCTAssertEqual(agents.workStyle("george"), "direct", "the choice shows before the Mac answers")
+
+        await report("auto")
+        XCTAssertEqual(agents.workStyle("george"), "direct", "an older report does not undo it")
+        await report("direct")
+        XCTAssertEqual(agents.workStyle("george"), "direct")
+
+        agents.setWorkStyle("orchestrated", for: "george")
+        clock.addTimeInterval(AgentsModel.workStyleWait + 1)
+        await report("direct")
+        XCTAssertEqual(agents.workStyle("george"), "direct", "a change the Mac never takes falls back to its style")
+    }
+
     func testRunningAgentsFromAMacWithoutPerAgentState() {
         func activity(_ slug: String, _ phase: SessionPhase, running: [String]?, active: String?) -> AgentActivity {
             AgentsModel.activity(of: slug, in: MacSessionStatus(
@@ -280,8 +321,15 @@ final class AgentsTests: XCTestCase {
         let waiting = AgentsScreenState(agents: agents, voice: VoiceSnapshot(waitingSeqs: [5, 6, 7]), talkMode: .hold)
         XCTAssertEqual(waiting.waiting?.seq, 7)
         XCTAssertEqual(waiting.waiting?.skipping, [6])
-        XCTAssertEqual(waiting.feed, [], "a waiting reply shows as the New reply panel")
+        XCTAssertEqual(waiting.feed.map(\.text), ["George one", "George two"],
+                       "every waiting reply shows in the chat as a bubble at once")
         XCTAssertEqual(waiting.orb, .idle)
+        let glyphs = Dictionary(uniqueKeysWithValues: waiting.tabs.map { ($0.slug, $0.glyph) })
+        XCTAssertEqual(glyphs["puck"], .playing, "an agent with a reply waiting shows the purple glyph, as on the Mac")
+        XCTAssertEqual(glyphs["george"], .playing)
+        XCTAssertNotEqual(glyphs["isabella"], .playing, "no reply waiting")
+        let nothingWaiting = AgentsScreenState(agents: agents, voice: VoiceSnapshot(), talkMode: .hold)
+        XCTAssertNotEqual(nothingWaiting.tabs.first { $0.slug == "george" }?.glyph, .playing, "played replies clear it")
 
         let playingPuck = AgentsScreenState(agents: agents, voice: VoiceSnapshot(playingSeq: 5), talkMode: .hold)
         XCTAssertNil(playingPuck.waiting)
@@ -299,6 +347,103 @@ final class AgentsTests: XCTestCase {
         XCTAssertEqual(talking.orb, .listening)
         XCTAssertEqual(talking.tabs.first { $0.slug == "george" }?.glyph, .listening)
         XCTAssertEqual(talking.transcript, "Hi")
+    }
+
+    func testAReplyReusingAnOldSeqAfterAMacRestartWaitsAsItself() {
+        let agents = model()
+        agents.select("george")
+        agents.receive(speech(6, "Old George reply", agent: "george"))
+        // The Mac restarted and its numbering began again.
+        agents.receive(speech(6, "New George reply", agent: "george"))
+
+        let state = AgentsScreenState(agents: agents, voice: VoiceSnapshot(waitingSeqs: [6]), talkMode: .hold)
+        XCTAssertEqual(state.feed.map(\.text), ["Old George reply", "New George reply"],
+                       "the older reply stays in the chat")
+        XCTAssertEqual(state.waiting?.seq, 6)
+    }
+
+    func testTheDockReadsPlayForAnUnplayedReplyThenReplay() {
+        let agents = model()
+        agents.select("george")
+        agents.receive(speech(5, "For Puck", agent: "puck"))
+        agents.receive(speech(6, "For George", agent: "george"))
+
+        func face(_ voice: VoiceSnapshot) -> AgentDock.ReplayFace {
+            let state = AgentsScreenState(agents: agents, voice: voice, talkMode: .hold)
+            return AgentDock(text: .constant(""), placeholder: "", isTalking: state.isTalking,
+                             canPlay: state.waiting != nil, isPlaying: state.isPlaying,
+                             isPreparing: state.isPreparing).replayFace
+        }
+
+        XCTAssertEqual(face(VoiceSnapshot(waitingSeqs: [5, 6])), .play, "George's reply has not played")
+        XCTAssertEqual(face(VoiceSnapshot(playingSeq: 6, waitingSeqs: [5])), .stop, "while it plays it reads Stop")
+        XCTAssertEqual(face(VoiceSnapshot(waitingSeqs: [5])), .replay, "once played it reads Replay")
+        XCTAssertEqual(face(VoiceSnapshot(playingSeq: 5)), .stop, "another agent's reply playing reads Stop too")
+        XCTAssertEqual(face(VoiceSnapshot(isTalking: true, waitingSeqs: [6])), .cancel, "talking still reads Cancel")
+        XCTAssertEqual(face(VoiceSnapshot(waitingSeqs: [5], isPreparing: true)), .preparing,
+                       "a pressed Replay reads Preparing until its audio starts")
+        XCTAssertEqual(face(VoiceSnapshot(playingSeq: 6, isPreparing: true)), .preparing,
+                       "a reply whose audio has not arrived reads Preparing, not Stop")
+        XCTAssertEqual(face(VoiceSnapshot(isTalking: true, isPreparing: true)), .cancel, "talking wins")
+
+        agents.select("puck")
+        XCTAssertEqual(face(VoiceSnapshot(waitingSeqs: [5])), .play, "Puck's own reply is still unplayed")
+        XCTAssertEqual(face(VoiceSnapshot()), .replay, "auto-play leaves nothing waiting")
+    }
+
+    func testTheHeaderStatusSaysWhatTheAgentIsDoing() {
+        func status(_ glyph: StatusGlyphState, _ workingOn: String? = nil, waiting: Bool = false) -> String {
+            AgentsScreenState.status(glyph: glyph, workingOn: workingOn, replyWaiting: waiting)
+        }
+        XCTAssertEqual(status(.listening, "Replay states"), "Listening", "talking wins")
+        XCTAssertEqual(status(.playing, "Replay states"), "Playing reply")
+        XCTAssertEqual(status(.working, "Replay states"), "Replay states", "the agent card's work while working")
+        XCTAssertEqual(status(.ready, "Replay states"), "Replay states", "and while it waits on the user")
+        XCTAssertEqual(status(.working), "Working")
+        XCTAssertEqual(status(.ready), "Ready")
+        XCTAssertEqual(status(.ready, waiting: true), "New reply")
+        XCTAssertEqual(status(.off, "Old work"), "Not running")
+    }
+
+    func testAnAgentStartingUpSaysSoUntilItIsReady() {
+        let agents = model()
+        agents.setSample(activities: ["puck": .starting, "isabella": .ready, "george": .off, "sky": .working],
+                         marked: [], reachability: .reachable, chats: [:])
+        func status(_ slug: String, _ voice: VoiceSnapshot = VoiceSnapshot()) -> String {
+            agents.select(slug)
+            return AgentsScreenState(agents: agents, voice: voice, talkMode: .hold).status
+        }
+        XCTAssertEqual(status("puck"), "Starting up", "a starting agent can't take a message yet")
+        XCTAssertEqual(status("puck", VoiceSnapshot(isTalking: true)), "Listening", "talking still wins")
+        XCTAssertEqual(status("isabella"), "Ready")
+        XCTAssertEqual(status("sky"), "Working", "a turn in progress is not starting up")
+        XCTAssertEqual(status("george"), "Not running")
+
+        // Nothing can be sent to it, by text or voice, until it is ready.
+        agents.select("puck")
+        XCTAssertTrue(AgentsScreenState(agents: agents, voice: VoiceSnapshot(), talkMode: .hold).isStarting)
+        XCTAssertFalse(agents.send("Hello?"), "a starting agent takes no message")
+        XCTAssertTrue(agents.chat("puck").isEmpty)
+        agents.select("isabella")
+        XCTAssertFalse(AgentsScreenState(agents: agents, voice: VoiceSnapshot(), talkMode: .hold).isStarting)
+    }
+
+    func testAReplayedReplyPlaysWithoutBeingFiledAgain() {
+        let agents = model()
+        agents.select("george")
+        agents.receive(speech(4, "Done, installed.", agent: "george"))
+        agents.replayRequested(for: "george")
+        agents.receive(speech(5, "Done, installed.", agent: "george"))
+        XCTAssertEqual(agents.chat("george").map(\.text), ["Done, installed."])
+        XCTAssertEqual(agents.agent(ofSeq: 5), "george", "the replay still plays as George's")
+        agents.receive(speech(6, "Done, installed.", agent: "george"))
+        XCTAssertEqual(agents.chat("george").count, 2, "only the one replay is folded in")
+    }
+
+    func testTheTutorialSpeaksInTheTalkSetting() {
+        XCTAssertEqual(TutorialStep.releaseToSend.hero(talkMode: .hold), "Now release to send")
+        XCTAssertNotEqual(TutorialStep.releaseToSend.hero(talkMode: .toggle), "Now release to send")
+        XCTAssertNotEqual(TutorialStep.holdToTalk.hero(talkMode: .hold), TutorialStep.holdToTalk.hero(talkMode: .toggle))
     }
 
     func testTalkModes() {
@@ -331,6 +476,23 @@ final class AgentsTests: XCTestCase {
         }
         XCTAssertEqual(controls.map(\.action), [.stop, .replay])
         XCTAssertEqual(controls.map(\.agent), ["sky", "sky"])
+    }
+
+    func testAutoPlayWaitsAfterLeavingUntilAReplyIsPlayedByHand() async throws {
+        let agents = model()
+        let (session, _) = try await connect(agents)
+        let voice = VoiceController(session: session)
+        voice.playbackMode = .autoPlay
+        voice.pauseAutoPlay()
+        voice.receive(.speech(Speech(seq: 1, kind: .final, source: .orchestrator, text: "First", agent: "sky")))
+        XCTAssertEqual(voice.waitingSeqs, [1], "after leaving, a reply waits for Play")
+        voice.play(seq: 1, skipping: [])
+        XCTAssertFalse(voice.autoPlayPaused)
+        voice.receive(.speech(Speech(seq: 2, kind: .final, source: .orchestrator, text: "Second", agent: "sky")))
+        XCTAssertEqual(voice.waitingSeqs, [], "once one is played by hand, auto-play is back")
+        voice.playbackMode = .onDemand
+        voice.receive(.speech(Speech(seq: 3, kind: .final, source: .orchestrator, text: "Third", agent: "sky")))
+        XCTAssertEqual(voice.waitingSeqs, [3], "Queue mode still waits")
     }
 
     func testSampleScreensBuild() {

@@ -98,8 +98,8 @@ final class SpeechAudioPlaybackTests: XCTestCase {
         queue = makeQueue(mode: .autoPlay)
     }
 
-    private func makeQueue(mode: PlaybackMode) -> SpeechPlaybackQueue {
-        let queue = SpeechPlaybackQueue(synthesizer: synthesizer, player: player, mode: mode, audioWait: 1.5,
+    private func makeQueue(mode: PlaybackMode, phoneVoice: Bool = true) -> SpeechPlaybackQueue {
+        let queue = SpeechPlaybackQueue(synthesizer: phoneVoice ? synthesizer : nil, player: player, mode: mode, audioWait: 1.5,
                                         stallTimeout: 15, schedule: timers.schedule, log: logs.logger) { [unowned self] in
             acks.append($0)
         }
@@ -189,6 +189,50 @@ final class SpeechAudioPlaybackTests: XCTestCase {
         queue.receive(voiced(1, "Spoken here"))
         XCTAssertEqual(synthesizer.spoken, ["Spoken here"])
         XCTAssertTrue(timers.pending.isEmpty)
+    }
+
+    // MARK: - No phone voice (user, 2026-11-28)
+
+    func testWithoutAPhoneVoiceTextOnlyRepliesAreShownNotSpoken() {
+        queue = makeQueue(mode: .autoPlay, phoneVoice: false)
+        queue.receive(.speech(Speech(seq: 1, kind: .final, source: .orchestrator, text: "No voice", audio: false)))
+        queue.receive(voiced(2))
+        XCTAssertEqual(synthesizer.spoken, [])
+        XCTAssertEqual(acks, [Ack(seq: 1, played: false)])
+        XCTAssertEqual(queue.currentSeq, 2, "the next reply still plays in the Mac's voice")
+        XCTAssertEqual(states, [true], "a reply never voiced does not start playback")
+    }
+
+    func testWithoutAPhoneVoiceMissingAudioEndsUnplayedAfterTheWait() {
+        queue = makeQueue(mode: .autoPlay, phoneVoice: false)
+        queue.receive(voiced(46, "Never spoken"))
+        XCTAssertEqual(queue.playbackState, .buffering)
+        timers.fireAll(delay: 1.5)
+        XCTAssertEqual(synthesizer.spoken, [])
+        XCTAssertEqual(queue.playbackState, .idle)
+        XCTAssertFalse(queue.isSpeaking)
+        XCTAssertEqual(acks, [Ack(seq: 46, played: false)])
+        queue.receive(part(46, 0, "late", last: true))
+        XCTAssertEqual(player.streams.count, 0, "audio arriving after the wait is dropped")
+    }
+
+    func testWithoutAPhoneVoiceFailedMacAudioEndsUnplayed() {
+        queue = makeQueue(mode: .autoPlay, phoneVoice: false)
+        queue.receive(voiced(46))
+        queue.receive(.speechAudio(SpeechAudio(seq: 46, part: 0, parts: 1, format: .aac, sampleRate: 24000,
+                                               data: "", last: true)))
+        XCTAssertEqual(synthesizer.spoken, [])
+        XCTAssertEqual(acks, [Ack(seq: 46, played: false)])
+    }
+
+    func testWithoutAPhoneVoicePlayerFailureEndsUnplayed() {
+        queue = makeQueue(mode: .autoPlay, phoneVoice: false)
+        queue.receive(voiced(46))
+        queue.receive(part(46, 0, "zz", last: true))
+        player.end(.failed)
+        XCTAssertEqual(synthesizer.spoken, [])
+        XCTAssertFalse(queue.isSpeaking)
+        XCTAssertEqual(acks, [Ack(seq: 46, played: false)])
     }
 
     // MARK: - Fallback
@@ -343,12 +387,12 @@ final class SpeechAudioPlaybackTests: XCTestCase {
         XCTAssertEqual(queue.waitingReply, "Next", "only the replayed reply skips the Play control")
     }
 
-    func testStopAndCancelDiscardTheWaitingReplyInOnDemandMode() {
+    func testStopAndCancelKeepTheWaitingReplyInOnDemandMode() {
         queue = makeQueue(mode: .onDemand)
         queue.receive(voiced(46))
         queue.stopAll()
-        XCTAssertEqual(acks, [Ack(seq: 46, played: false)])
-        XCTAssertNil(queue.waitingReply)
+        XCTAssertTrue(acks.isEmpty, "an unplayed reply keeps waiting for Play")
+        XCTAssertEqual(queue.waitingReply, "Reply")
     }
 
     // MARK: - Stop, skip and interrupt

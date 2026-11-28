@@ -69,7 +69,7 @@ public struct SessionConfiguration: Sendable {
     }
 }
 
-/// A frame as the debug screen lists it.
+/// A frame in the session's record.
 public struct FrameRecord: Equatable, Sendable, Identifiable {
     public enum Direction: Sendable { case sent, received }
 
@@ -101,13 +101,18 @@ public final class RemoteSession {
         case failed(RemoteFailure)
     }
 
-    public private(set) var state: State = .idle
+    public private(set) var state: State = .idle {
+        didSet { if state != oldValue { onStateChange?(state) } }
+    }
+    /// Called on the main actor with each new `state` (RR-545: the app watches
+    /// for a connection that does not come back in the background).
+    @ObservationIgnored public var onStateChange: ((State) -> Void)?
     public private(set) var records: [FrameRecord] = []
     public private(set) var pending: [PendingUtterance] = []
     public private(set) var expiredCount = 0
     public private(set) var missedUpdates = false
     public private(set) var lastError: ErrorFrame?
-    /// The code of the last non-terminal connection failure, for the debug screen.
+    /// The code of the last non-terminal connection failure.
     public private(set) var lastDisconnect: String?
     /// The Mac's latest `session_state` (RR-456).
     public private(set) var macSession: SessionState?
@@ -297,6 +302,15 @@ public final class RemoteSession {
                                               sizing: sizing))
     }
 
+    /// Changes one agent's work style (`RelayRemoteProtocol.workStyles`). The
+    /// agent routes its next request by it, and its `session_state` entry
+    /// reports it. False when no channel is up.
+    @discardableResult
+    public func updateWorkStyle(_ style: String, agent: String) -> Bool {
+        send(settingsCommand: SettingsCommand(clientId: UUID().uuidString.lowercased(), action: .set,
+                                              agent: agent, workStyle: style))
+    }
+
     private func send(settingsCommand command: SettingsCommand) -> Bool {
         guard let connection, core.isEstablished else { return false }
         core.settingsCommandSent()
@@ -412,6 +426,8 @@ public final class RemoteSession {
         transmit(.hello(hello), on: connection)
         var welcomedAt: Double?
         for try await line in connection.lines {
+            // After stop() a buffered line must not bring the session back.
+            guard !Task.isCancelled else { break }
             lastInbound = environment.now()
             let frame: Frame
             do {

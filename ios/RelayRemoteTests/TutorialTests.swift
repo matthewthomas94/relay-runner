@@ -120,8 +120,8 @@ final class TutorialTests: XCTestCase {
     func testLitControlsPerStep() {
         XCTAssertEqual(TutorialStep.holdToTalk.litControls, [.talk])
         XCTAssertEqual(TutorialStep.releaseToSend.litControls, [.talk, .textBox])
-        XCTAssertEqual(TutorialStep.playReply.litControls, [])
-        XCTAssertEqual(TutorialStep.stopPlayback.litControls, [.stop])
+        XCTAssertEqual(TutorialStep.playReply.litControls, [.replay], "the dock's Play")
+        XCTAssertEqual(TutorialStep.stopPlayback.litControls, [.replay], "the same control, reading Stop")
         XCTAssertFalse(TutorialStep.basics.showsDock)
         XCTAssertFalse(TutorialStep.allDone.showsDock)
     }
@@ -235,8 +235,8 @@ final class TutorialTests: XCTestCase {
     }
 
     func testTutorialHeroLinesFollowTheReferenceImages() {
-        XCTAssertEqual(TutorialStep.playReply.hero.lines.count, 2)
-        XCTAssertEqual(TutorialStep.basics.hero.lines.count, 1)
-        XCTAssertEqual(TutorialStep.stopPlayback.hero.lines.count, 1)
+        XCTAssertEqual(TutorialStep.playReply.hero(talkMode: .hold).lines.count, 2)
+        XCTAssertEqual(TutorialStep.basics.hero(talkMode: .hold).lines.count, 1)
+        XCTAssertEqual(TutorialStep.stopPlayback.hero(talkMode: .hold).lines.count, 2)
     }
 }

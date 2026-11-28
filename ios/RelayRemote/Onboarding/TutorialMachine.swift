@@ -8,10 +8,11 @@ enum TutorialStep: Int, CaseIterable, Equatable {
     /// takes no touches, as does the tab bar.
     var litControls: Set<DockControl> {
         switch self {
-        case .basics, .playReply, .allDone: return []
+        case .basics, .allDone: return []
+        case .playReply: return [.replay]
         case .holdToTalk: return [.talk]
         case .releaseToSend: return [.talk, .textBox]
-        case .stopPlayback: return [.stop]
+        case .stopPlayback: return [.replay]
         }
     }
 
@@ -123,7 +124,7 @@ struct TutorialMachine: Equatable {
         awaitingSend = true
     }
 
-    /// The user taps Play on the queued reply.
+    /// The user taps the dock's Play for the queued reply.
     mutating func playTapped() {
         guard !isFinished, step == .playReply else { return }
         enter(.stopPlayback)

@@ -27,6 +27,14 @@ final class AgentsModel {
     private(set) var marked: Set<String> = []
     /// What the Mac last reported for each agent while it was reachable.
     private(set) var activities: [String: AgentActivity] = [:]
+    /// Each running agent's "Currently working on", as its Mac agent card shows it.
+    private(set) var workingOn: [String: String] = [:]
+    /// Each agent's work style as the Mac reports it (`auto`, `direct` or
+    /// `orchestrated`); none from a Mac that does not send it.
+    private(set) var workStyles: [String: String] = [:]
+    /// A work style the phone just chose, shown until the Mac reports it, so
+    /// the switch answers at once; dropped after a few seconds if it never does.
+    private(set) var requestedWorkStyles: [String: (style: String, at: Date)] = [:]
     /// Agents the phone asked to start, until the Mac reports them running.
     private(set) var starting: Set<String> = []
     private(set) var reachability = Reachability.reachable
@@ -40,6 +48,9 @@ final class AgentsModel {
     @ObservationIgnored private let defaults: UserDefaults
     /// Which agent each reply's seq was filed under, for playback.
     @ObservationIgnored private var seqOwners: [Int: String] = [:]
+    /// Agents whose newest reply the user asked to hear again. The Mac sends
+    /// a replay as a new `speech` frame; it plays but is not a new message.
+    @ObservationIgnored private var replaying: Set<String> = []
 
     init(store: ChatStore = .standard, defaults: UserDefaults = .standard) {
         self.store = store
@@ -71,6 +82,13 @@ final class AgentsModel {
     func receive(_ frame: Frame) {
         switch frame {
         case .speech(let speech):
+            let agent = owner(of: speech.agent)
+            if replaying.contains(agent),
+               chats[agent]?.suffix(10).contains(where: { $0.role == .agent && $0.text == speech.text }) == true {
+                replaying.remove(agent)
+                seqOwners[speech.seq] = agent
+                return
+            }
             file(ChatMessage(role: .agent, text: speech.text, date: now(), seq: speech.seq), to: owner(of: speech.agent))
         case .status(let status):
             file(ChatMessage(role: .status, text: status.text, date: now(), seq: status.seq), to: owner(of: status.agent))
@@ -88,6 +106,12 @@ final class AgentsModel {
         if let tag, Self.slugs.contains(tag) { return tag }
         if let activeAgent, Self.slugs.contains(activeAgent) { return activeAgent }
         return selected
+    }
+
+    /// Replay was pressed for `agent`: its replayed reply plays without
+    /// being filed again.
+    func replayRequested(for agent: String) {
+        replaying.insert(agent)
     }
 
     /// The agent whose chat holds the reply `seq`.
@@ -119,11 +143,28 @@ final class AgentsModel {
     func send(_ text: String, to agent: String? = nil) -> Bool {
         let agent = agent ?? selected
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let session else { return false }
+        // An agent starting up takes nothing until it is ready (user, 2026-11-28).
+        guard !trimmed.isEmpty, !isStarting(agent), let session else { return false }
         if isStopped(agent) { start(agent) }
         guard session.send(text: trimmed, agent: agent) else { return false }
         file(ChatMessage(role: .user, text: trimmed, date: now()), to: agent)
         return true
+    }
+
+    static let workStyleWait: TimeInterval = 5
+
+    /// The work style the header shows for `slug`: the one just chosen, else the Mac's.
+    func workStyle(_ slug: String) -> String? {
+        if let request = requestedWorkStyles[slug], now().timeIntervalSince(request.at) < Self.workStyleWait {
+            return request.style
+        }
+        return workStyles[slug]
+    }
+
+    /// Changes `agent`'s work style on the Mac; it applies from its next request.
+    func setWorkStyle(_ style: String, for agent: String) {
+        guard workStyle(agent) != style, let session, session.updateWorkStyle(style, agent: agent) else { return }
+        requestedWorkStyles[agent] = (style, now())
     }
 
     /// Starts `agent` on the Mac with no project (its general-tasks project).
@@ -152,6 +193,15 @@ final class AgentsModel {
         var next: [String: AgentActivity] = [:]
         for slug in Self.slugs { next[slug] = Self.activity(of: slug, in: status) }
         activities = next
+        workingOn = Dictionary(uniqueKeysWithValues: Self.slugs.compactMap { slug in
+            status.agent(slug)?.workingOn.map { (slug, $0) }
+        })
+        workStyles = Dictionary(uniqueKeysWithValues: Self.slugs.compactMap { slug in
+            status.agent(slug)?.workStyle.map { (slug, $0) }
+        })
+        requestedWorkStyles = requestedWorkStyles.filter { slug, request in
+            workStyles[slug] != request.style && now().timeIntervalSince(request.at) < Self.workStyleWait
+        }
         // A start the phone asked for ends once the Mac reports the agent, or refuses.
         let refused = status.phase == .failed || status.error != nil
         starting = starting.filter { !refused && next[$0] == .off }
@@ -178,6 +228,12 @@ final class AgentsModel {
         }
     }
 
+    /// The phone asked to start `slug`, or the Mac reports it starting: not
+    /// ready for a message yet.
+    func isStarting(_ slug: String) -> Bool {
+        starting.contains(slug) || activities[slug] == .starting
+    }
+
     /// The Mac reports `slug` stopped and the phone has not asked to start it.
     func isStopped(_ slug: String) -> Bool {
         activities[slug] == .off && !starting.contains(slug)
@@ -186,9 +242,14 @@ final class AgentsModel {
     /// The tab glyph. The phone's own talking and playback win over the Mac's
     /// report; a start shows as the spinning glyph, as the desktop's starting
     /// notch does, and the grey dot splits into four when it begins.
-    func glyph(for slug: String, talking: String?, playing: String?) -> StatusGlyphState {
+    /// `waiting` holds the agents with a reply waiting for Play in Queue mode.
+    /// Like the desktop notch (`NotchSessionStatus.resolve` maps
+    /// `.messageWaiting` to `.playing`), a waiting reply shows the purple
+    /// playing glyph so it reads at a glance.
+    func glyph(for slug: String, talking: String?, playing: String?,
+               waiting: Set<String> = []) -> StatusGlyphState {
         if slug == talking { return .listening }
-        if slug == playing { return .playing }
+        if slug == playing || waiting.contains(slug) { return .playing }
         if starting.contains(slug) { return .working }
         return Self.glyph(activities[slug] ?? .off)
     }
@@ -210,6 +271,7 @@ final class AgentsModel {
         self.activities = activities
         self.marked = marked
         self.reachability = reachability
+        workStyles = ["puck": "direct", "isabella": "auto", "george": "auto", "sky": "orchestrated"]
         for (slug, chat) in chats {
             self.chats[slug] = chat
             for message in chat { if let seq = message.seq { seqOwners[seq] = slug } }

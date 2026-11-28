@@ -28,7 +28,28 @@ struct PairingFlowView: View {
 private struct PairingStepsView: View {
     let flow: PairingFlowModel
 
+    /// Pairing steps swap like onboarding stages (RR-553; they used to cut):
+    /// the old step fades out with a light blur, then the new one fades in.
     var body: some View {
+        ZStack {
+            step
+                .id(stepKey)
+                .transition(.relayStageSwap)
+        }
+        .animation(RelayMotion.swap, value: stepKey)
+    }
+
+    /// Which step shows, ignoring the check step's details.
+    private var stepKey: Int {
+        switch flow.step {
+        case .start: 0
+        case .scan: 1
+        case .check: 2
+        }
+    }
+
+    @ViewBuilder
+    private var step: some View {
         switch flow.step {
         case .start:
             OnboardingHeroLayout(

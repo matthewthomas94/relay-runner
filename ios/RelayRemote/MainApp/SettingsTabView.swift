@@ -68,6 +68,7 @@ private struct SettingsContent: View {
     @State private var notificationsDenied = false
     @State private var confirmingStop = false
     @State private var confirmingForget = false
+    @State private var confirmingRedo = false
 
     init(model: AppModel, session: RemoteSession, mac: PairedMac, preview: SettingsState? = nil) {
         self.model = model
@@ -80,17 +81,39 @@ private struct SettingsContent: View {
 
     var body: some View {
         ScrollView {
+            // Every section in one glass panel, like the desktop Settings
+            // detail panel (RR-552, Figma 27).
             VStack(alignment: .leading, spacing: 24) {
                 voice
                 orchestrator
                 macSection
                 pairing
+                testing
             }
+            .padding(.top, 18)
+            .padding(.bottom, 22)
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .relayGlass(.panel)
             .padding(.horizontal, RelayMetrics.screenMargin)
             .padding(.top, 16)
             .padding(.bottom, 24)
+            .padding(.bottom, AgentChatFeed.bottomFade)
         }
         .scrollIndicators(.hidden)
+        // The panel fades out at the top edge, as the Agents chat does. There is
+        // no fade at the bottom: it scrolls straight under the tab bar's glass
+        // (user, 2026-11-27).
+        .mask {
+            VStack(spacing: 0) {
+                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                    .frame(height: AgentChatFeed.topFade)
+                Rectangle().fill(.black)
+            }
+            // The mask reaches under the bars, so the list shows through
+            // their glass instead of stopping at their edge.
+            .ignoresSafeArea(edges: .bottom)
+        }
         .defaultScrollAnchor(LaunchOptions.current.scrollsToBottom ? .bottom : .top)
         .task {
             settings.start()
@@ -105,6 +128,11 @@ private struct SettingsContent: View {
             Button("Forget this Mac", role: .destructive) { model.forget() }
         } message: {
             Text("You will pair this iPhone again to use it.")
+        }
+        .confirmationDialog("Redo onboarding?", isPresented: $confirmingRedo, titleVisibility: .visible) {
+            Button("Redo onboarding") { model.redoOnboarding() }
+        } message: {
+            Text("Every step shows again. Your Mac stays paired.")
         }
     }
 
@@ -142,16 +170,25 @@ private struct SettingsContent: View {
     private var speechSpeed: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Speech speed").relayTextStyle(.body).foregroundStyle(RelayColor.neutral10)
-            HStack(spacing: 16) {
-                SpeedSlider(value: Binding(get: { settings.speechSpeed }, set: { settings.dragSpeed(to: $0) }),
-                            range: SettingsViewModel.speedRange,
-                            onCommit: { settings.commitSpeed($0) })
-                Text(String(format: "%.1fx", settings.speechSpeed))
-                    .relayTextStyle(.body).foregroundStyle(RelayColor.neutral10)
-                    .monospacedDigit()
+            // While the Mac's settings load, a skeleton of the slider (user, 2026-11-28).
+            ZStack {
+                if settings.phase == .loading {
+                    SkeletonField(label: "Loading speech speed") {
+                        Color.clear.frame(maxWidth: .infinity).frame(height: RelayMetrics.controlHeight)
+                            .skeletonOutline(radius: 12)
+                            .overlay(alignment: .leading) { SkeletonLine(width: 90, height: 10).padding(.leading, 14) }
+                    }
+                    .transition(.relaySkeleton)
+                } else {
+                    SpeedSlider(value: Binding(get: { settings.speechSpeed }, set: { settings.dragSpeed(to: $0) }),
+                                range: SettingsViewModel.speedRange,
+                                onCommit: { settings.commitSpeed($0) })
+                    .disabled(!settings.isEnabled)
+                    .opacity(settings.isEnabled ? 1 : 0.4)
+                    .transition(.relayAfterSkeleton)
+                }
             }
-            .disabled(!settings.isEnabled)
-            .opacity(settings.isEnabled ? 1 : 0.4)
+            .animation(RelayMotion.enter, value: settings.phase == .loading)
             if let line = macBackedLine {
                 Text(line).relayTextStyle(.caption).foregroundStyle(RelayColor.neutral7)
             }
@@ -197,17 +234,20 @@ private struct SettingsContent: View {
             SettingsRow {
                 ChoiceRow(title: "Model", options: settings.modelOptions, value: settings.model,
                           label: settings.label(for: settings.model, in: settings.modelOptions),
-                          isEnabled: settings.isEnabled, choose: settings.choose(model:))
+                          isEnabled: settings.isEnabled, loading: settings.phase == .loading,
+                          choose: settings.choose(model:))
             }
             SettingsRow {
                 ChoiceRow(title: "Effort", options: settings.effortOptions, value: settings.effort,
                           label: settings.label(for: settings.effort, in: settings.effortOptions),
-                          isEnabled: settings.isEnabled, choose: settings.choose(effort:))
+                          isEnabled: settings.isEnabled, loading: settings.phase == .loading,
+                          choose: settings.choose(effort:))
             }
             SettingsRow(isLast: true) {
                 ChoiceRow(title: "Sub-agent sizing", options: settings.sizingOptions, value: settings.sizing,
                           label: settings.label(for: settings.sizing, in: settings.sizingOptions),
-                          isEnabled: settings.isEnabled, choose: settings.choose(sizing:))
+                          isEnabled: settings.isEnabled, loading: settings.phase == .loading,
+                          choose: settings.choose(sizing:))
             }
         }
     }
@@ -279,12 +319,32 @@ private struct SettingsContent: View {
                         Text("Forget this Mac").relayTextStyle(.body).foregroundStyle(RelayColor.error)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.relayPlain)
                 }
             }
             Text("Also unpair it on your Mac.")
                 .relayTextStyle(.caption).foregroundStyle(RelayColor.neutral7)
-                .padding(.leading, 4)
+        }
+    }
+
+    // MARK: Testing
+
+    /// For testing the app: walk onboarding again. iOS does not let an app
+    /// revoke its own permissions, so to see the real system prompts again,
+    /// delete the app and reinstall it.
+    private var testing: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SettingsSection("Testing") {
+                SettingsRow(isLast: true) {
+                    Button { confirmingRedo = true } label: {
+                        Text("Redo onboarding").relayTextStyle(.body).foregroundStyle(RelayColor.neutral10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.relayPlain)
+                }
+            }
+            Text("iOS keeps granted permissions until the app is deleted.")
+                .relayTextStyle(.caption).foregroundStyle(RelayColor.neutral7)
         }
     }
 
@@ -298,6 +358,7 @@ private struct SettingsContent: View {
 
 // MARK: - Pieces
 
+/// A heading and its rows, inside the one Settings panel.
 private struct SettingsSection<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content
@@ -310,11 +371,8 @@ private struct SettingsSection<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).relayTextStyle(.cardTitle).foregroundStyle(RelayColor.neutral10)
-                .padding(.leading, 4)
             VStack(spacing: 0) { content }
-                .padding(.horizontal, 16)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .relayGlass(.panel)
         }
     }
 }
@@ -362,9 +420,9 @@ private struct RelayToggleStyle: ToggleStyle {
                     Circle().fill(configuration.isOn ? RelayColor.neutral1 : RelayColor.neutral10)
                         .frame(width: 24, height: 24).padding(4)
                 }
-                .animation(.easeOut(duration: 0.18), value: configuration.isOn)
+                .animation(RelayMotion.move, value: configuration.isOn)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.relayPlain)
         .accessibilityRepresentation { Toggle(isOn: configuration.$isOn) { configuration.label } }
     }
 }
@@ -374,6 +432,7 @@ private struct SegmentedRow<Value: Hashable>: View {
     var subtitle: String?
     let options: [(String, Value)]
     @Binding var selection: Value
+    @Namespace private var pill
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -385,22 +444,34 @@ private struct SegmentedRow<Value: Hashable>: View {
                 ForEach(options.indices, id: \.self) { index in
                     let option = options[index]
                     let selected = option.1 == selection
-                    Button { selection = option.1 } label: {
+                    Button { withAnimation(RelayMotion.move) { selection = option.1 } } label: {
                         Text(option.0).relayTextStyle(.control)
                             .foregroundStyle(selected ? RelayColor.neutral10 : RelayColor.neutral7)
-                            .frame(maxWidth: .infinity, minHeight: 40)
+                            .animation(RelayMotion.enter, value: selected)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .background {
+                                // One pill that slides to the selected option:
+                                // the Mac's SettingsSegmentedPicker, black at
+                                // 72% with the kit's small shadow.
                                 if selected {
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous).fill(RelayColor.neutral4)
+                                    RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius, style: .continuous)
+                                        .fill(RelayColor.neutral1.opacity(0.72))
+                                        .shadow(color: .black.opacity(Double(0x16) / 255), radius: 0.75, y: 0.5)
+                                        .shadow(color: .black.opacity(Double(0x20) / 255), radius: 3, y: 2)
+                                        .matchedGeometryEffect(id: "pill", in: pill)
                                 }
                             }
+                            .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.relayPlain)
                     .accessibilityAddTraits(selected ? .isSelected : [])
                 }
             }
-            .padding(2)
-            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(RelayColor.neutral1))
+            // The Mac's toggle buttons: a neutral-3 track, radius 16, 4 pt in
+            // (Figma Final 27, user 2026-11-27).
+            .padding(4)
+            .frame(height: RelayMetrics.controlHeight)
+            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(RelayColor.neutral3.opacity(0.5)))
         }
     }
 }
@@ -412,6 +483,8 @@ private struct ChoiceRow: View {
     let value: String?
     let label: String
     let isEnabled: Bool
+    /// While the Mac's settings load, a skeleton of the menu.
+    var loading = false
     let choose: (String) -> Void
 
     var body: some View {
@@ -419,59 +492,87 @@ private struct ChoiceRow: View {
             Text(title).relayTextStyle(.body).foregroundStyle(RelayColor.neutral10)
                 .lineLimit(1).minimumScaleFactor(0.8).layoutPriority(-1)
             Spacer(minLength: 8)
-            Menu {
-                ForEach(options, id: \.value) { option in
-                    Button {
-                        choose(option.value)
-                    } label: {
-                        if option.value == value {
-                            Label(option.label, systemImage: "checkmark")
-                        } else {
-                            Text(option.label)
-                        }
+            ZStack(alignment: .trailing) {
+                if loading {
+                    SkeletonField(label: "Loading \(title)") {
+                        Color.clear.frame(width: 120, height: RelayMetrics.controlHeight)
+                            .skeletonOutline(radius: 12)
+                            .overlay(alignment: .leading) { SkeletonLine(width: 64, height: 10).padding(.leading, 12) }
                     }
+                    .transition(.relaySkeleton)
+                } else {
+                    menu.transition(.relayAfterSkeleton)
                 }
-            } label: {
-                HStack(spacing: 6) {
-                    Text(label).relayTextStyle(.body).foregroundStyle(RelayColor.neutral10)
-                        .lineLimit(1).minimumScaleFactor(0.85)
-                    LucideImage(.chevronDown, size: 16).foregroundStyle(RelayColor.neutral7)
-                }
-                .padding(.horizontal, 12)
-                .frame(minHeight: RelayMetrics.controlHeight)
-                .background(RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius, style: .continuous)
-                    .fill(RelayColor.neutral1))
             }
+            .animation(RelayMotion.enter, value: loading)
+        }
+    }
+
+    private var menu: some View {
+        RelayDropdown(label: label, options: options.map { ($0.value, $0.label) }, selection: value,
+                      choose: choose)
+            .accessibilityLabel(title)
             .disabled(!isEnabled || options.isEmpty)
             .opacity(isEnabled ? 1 : 0.4)
-        }
     }
 }
 
-/// A slider in the styles' look that reports the final value on release.
+/// The Figma's fields (select, segmented control, text box): black at 50%
+/// with a hairline of #212529 at 50%, radius 12.
+struct FieldSurface: ViewModifier {
+    var stroke: Color = RelayColor.neutral4.opacity(0.5)
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius, style: .continuous)
+        content.background(shape.fill(RelayColor.neutral1.opacity(0.5))
+            .overlay(shape.strokeBorder(stroke, lineWidth: 1)))
+    }
+}
+
+/// The Mac's `SettingsSlider` look (Figma 27): a rounded track, a white fill up
+/// to a thin upright thumb, and the value printed inside the track. Reports the
+/// final value on release.
 private struct SpeedSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     let onCommit: (Double) -> Void
+    @Environment(\.isEnabled) private var isEnabled
+
+    /// Keeps the thumb clear of the rounded ends, as on the Mac.
+    private static let thumbInset: CGFloat = 8
 
     var body: some View {
         GeometryReader { proxy in
-            let knob: CGFloat = 32
-            let travel = max(proxy.size.width - knob, 1)
-            let fraction = (value - range.lowerBound) / (range.upperBound - range.lowerBound)
-            ZStack(alignment: .leading) {
-                Capsule().fill(RelayColor.neutral5).frame(height: 4)
-                Capsule().fill(RelayColor.neutral10).frame(width: travel * fraction + knob / 2, height: 4)
-                Circle().fill(RelayColor.neutral10).frame(width: knob, height: knob)
-                    .offset(x: travel * fraction)
+            let width = proxy.size.width
+            let height = proxy.size.height
+            let fraction = min(max((value - range.lowerBound) / (range.upperBound - range.lowerBound), 0), 1)
+            let thumb = Self.thumbInset + (width - Self.thumbInset * 2) * fraction
+            let shape = RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius, style: .continuous)
+            ZStack {
+                shape.fill(RelayGlass.control.tint)
+                shape.fill(RelayColor.neutral10.opacity(isEnabled ? 0.72 : 0.3))
+                    .mask(alignment: .leading) { Rectangle().frame(width: fraction >= 1 ? width : thumb) }
+                Capsule()
+                    .fill(RelayColor.neutral10)
+                    .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
+                    .frame(width: 2.5, height: height - 14)
+                    .position(x: thumb, y: height / 2)
+                // The value sits on the wider side of the thumb: dark on the fill, grey beside it.
+                Text(String(format: "%.1fx", value))
+                    .relayTextStyle(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(fraction >= 0.5 ? RelayColor.neutral1 : RelayColor.neutral7)
+                    .fixedSize()
+                    .position(x: fraction >= 0.5 ? thumb / 2 : (thumb + width) / 2, y: height / 2)
             }
-            .frame(height: proxy.size.height)
-            .contentShape(Rectangle())
+            .contentShape(shape)
             .gesture(DragGesture(minimumDistance: 0)
-                .onChanged { drag in value = position(drag.location.x, travel: travel, knob: knob) }
-                .onEnded { drag in onCommit(position(drag.location.x, travel: travel, knob: knob)) })
+                .onChanged { drag in value = position(drag.location.x, width: width) }
+                .onEnded { drag in onCommit(position(drag.location.x, width: width)) })
         }
-        .frame(height: 32)
+        .frame(height: RelayMetrics.controlHeight)
+        // A selection tick at each 0.1x step while dragging.
+        .sensoryFeedback(.selection, trigger: (value * 10).rounded())
         .accessibilityElement()
         .accessibilityLabel("Speech speed")
         .accessibilityValue(String(format: "%.1fx", value))
@@ -483,8 +584,8 @@ private struct SpeedSlider: View {
         }
     }
 
-    private func position(_ x: CGFloat, travel: CGFloat, knob: CGFloat) -> Double {
-        let fraction = min(max((x - knob / 2) / travel, 0), 1)
+    private func position(_ x: CGFloat, width: CGFloat) -> Double {
+        let fraction = min(max((x - Self.thumbInset) / max(width - Self.thumbInset * 2, 1), 0), 1)
         return range.lowerBound + Double(fraction) * (range.upperBound - range.lowerBound)
     }
 }

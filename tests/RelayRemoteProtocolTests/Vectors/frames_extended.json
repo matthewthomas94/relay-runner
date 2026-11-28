@@ -55,6 +55,11 @@
   "line": "{\"agents\":[{\"agent\":\"puck\",\"running\":false,\"state\":\"starting\"},{\"agent\":\"isabella\",\"running\":true,\"state\":\"ready\",\"working_on\":\"café notes\"}],\"app_running\":true,\"project_id\":\"0c9e7f3a-41d2-4b8e-9a65-1f2e3d4c5b6a\",\"project_name\":\"general-tasks\",\"session\":\"starting\",\"type\":\"session_state\"}"
  },
  {
+  "name": "session_state_agents_work_style",
+  "direction": "mac_to_phone",
+  "line": "{\"agents\":[{\"agent\":\"puck\",\"running\":true,\"state\":\"ready\",\"work_style\":\"direct\"},{\"agent\":\"isabella\",\"running\":false,\"state\":\"off\",\"work_style\":\"auto\"}],\"app_running\":true,\"project_id\":\"6d23b5b1-6da7-4056-b328-7ea8167388c0\",\"project_name\":\"relay-runner\",\"session\":\"ready\",\"type\":\"session_state\"}"
+ },
+ {
   "name": "workspace_command_list",
   "direction": "phone_to_mac",
   "line": "{\"action\":\"list\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"type\":\"workspace_command\"}"
@@ -93,6 +98,11 @@
   "name": "settings_command_set_effort_sizing",
   "direction": "phone_to_mac",
   "line": "{\"action\":\"set\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"effort\":\"high\",\"sizing\":\"user_default\",\"type\":\"settings_command\"}"
+ },
+ {
+  "name": "settings_command_set_work_style",
+  "direction": "phone_to_mac",
+  "line": "{\"action\":\"set\",\"agent\":\"puck\",\"client_id\":\"3f2b8a52-6c1e-4f0a-9d57-0b7a1c2e4d10\",\"type\":\"settings_command\",\"work_style\":\"orchestrated\"}"
  },
  {
   "name": "settings_state",

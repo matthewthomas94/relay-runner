@@ -80,7 +80,13 @@ struct OnboardingHeroLayout<Accessory: View, Secondary: View>: View {
                 Spacer(minLength: 0)
                 secondary
                 if let action {
-                    Button(action: action.perform) { RelayButtonLabel(action.title, icon: action.icon) }
+                    // The label swaps with the hero line (one permission step
+                    // to the next), rather than jumping while the line swaps.
+                    Button(action: action.perform) {
+                        RelaySwap(ActionFace(title: action.title, icon: action.icon)) {
+                            RelayButtonLabel($0.title, icon: $0.icon)
+                        }
+                    }
                         .buttonStyle(RelayButtonStyle(role: action.role, height: RelayMetrics.largeControlHeight,
                                                       fullWidth: true))
                 }
@@ -99,7 +105,7 @@ struct OnboardingHeroLayout<Accessory: View, Secondary: View>: View {
                         .padding(.vertical, 4)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.relayPlain)
                 .accessibilityLabel("Skip")
                 .padding(.top, 1)
                 .padding(.trailing, 20)
@@ -107,6 +113,12 @@ struct OnboardingHeroLayout<Accessory: View, Secondary: View>: View {
         }
         .background { if drawsBackground { RelayColor.neutral1 } }
     }
+}
+
+/// What an onboarding action's label shows.
+private struct ActionFace: Equatable {
+    let title: String
+    let icon: LucideIcon?
 }
 
 /// The hero lines, centred, with the cursor after the last one.
@@ -187,12 +199,8 @@ struct HeroChip: View {
         .foregroundStyle(style == .primary ? RelayColor.neutral1 : RelayColor.neutral10)
         .padding(.horizontal, label == nil ? 9 : 14)
         .frame(height: Self.height)
-        .background {
-            if style == .primary {
-                shape.fill(RelayColor.primaryPressed)
-            } else {
-                RelayGlassBackground(glass: .control, shape: shape)
-            }
-        }
+        // The real buttons' own surfaces: solid white like the talk button,
+        // or the secondary buttons' fill and lit rim.
+        .modifier(RelayGlassSurface(glass: style == .primary ? .primary : .control, shape: shape))
     }
 }

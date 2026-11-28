@@ -3,13 +3,16 @@ import RelayRemoteProtocol
 import SwiftUI
 
 /// What the ticket modal reads when it is not the Mac's: fixed sample data for
-/// a debug screenshot (`--ticket-sample=<name>`, see `LaunchOptions`).
+/// a screenshot (`--ticket-sample=<name>`, see `LaunchOptions`).
 struct TicketSample {
     var row: WorkspaceTicket
     var workspace: WorkspaceState
     var reply: WorkspaceTicketDetail?
     var unsupported = false
     var isUnreachable = false
+    /// Debug: the reply arrives this long after the modal opens, to watch
+    /// the loading hand-over (`--ticket-sample=arrive`).
+    var arrivesAfter: Duration?
 }
 
 /// The Workspace tab's ticket modal (RR-551): the tapped ticket, header from
@@ -19,6 +22,8 @@ struct TicketModalView: View {
     var sample: TicketSample?
 
     @State private var timedOut = false
+    /// Debug: whether a delayed sample reply has arrived.
+    @State private var sampleArrived = false
     @Environment(\.scenePhase) private var scenePhase
 
     /// How long the body may wait before the modal says the Mac is not answering.
@@ -29,7 +34,8 @@ struct TicketModalView: View {
     private var reading: WorkspaceTicketReading? {
         guard let row = sample?.row ?? model.shownTicket else { return nil }
         if let sample {
-            return WorkspaceTicketReading(row: row, workspace: sample.workspace, reply: sample.reply,
+            let arrived = sample.arrivesAfter == nil || sampleArrived
+            return WorkspaceTicketReading(row: row, workspace: sample.workspace, reply: arrived ? sample.reply : nil,
                                           unsupported: sample.unsupported)
         }
         let key = SessionCore.ticketKey(projectID: row.projectId, ticketID: row.id)
@@ -43,7 +49,7 @@ struct TicketModalView: View {
     }
 
     var body: some View {
-        RelayModal(isPresented: model.isTicketOpen, onClose: { model.closeTicket() },
+        RelayModal(isPresented: model.isTicketOpen, origin: model.ticketOrigin, onClose: { model.closeTicket() },
                    refresh: sample == nil ? refresh : nil) {
             if let reading { TicketHeader(reading: reading) }
         } content: {
@@ -52,6 +58,11 @@ struct TicketModalView: View {
             }
         }
         .task(id: model.isTicketOpen ? model.ticketRequests : -1) {
+            if let delay = sample?.arrivesAfter, model.isTicketOpen {
+                sampleArrived = false
+                try? await Task.sleep(for: delay)
+                sampleArrived = true
+            }
             guard model.isTicketOpen, sample == nil, let row = model.shownTicket else { return }
             timedOut = false
             session?.requestWorkspaceTicket(projectID: row.projectId, ticketID: row.id)
@@ -99,17 +110,47 @@ private struct TicketHeader: View {
     }
 }
 
-/// The scrolling part: loading, the rendered text, or one line and Retry.
+/// The scrolling part: a skeleton of the text while it loads, the rendered
+/// text, or one line and Retry. The skeleton's dots scatter out, then the
+/// text fades in from a light blur (user, 2026-11-28: the spinner flashed
+/// and the panel jumped).
 private struct TicketBody: View {
     let state: WorkspaceTicketReading.Body
     let dimmed: Bool
     let retry: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Which kind of state shows; a new text for the same ticket keeps it.
+    private var kind: Int {
+        switch state {
+        case .loading: 0
+        case .text: 1
+        case .error: 2
+        case .unsupported: 3
+        }
+    }
 
     var body: some View {
+        ZStack(alignment: .topLeading) {
+            if kind == 0 {
+                TicketSkeleton().transition(.relaySkeleton)
+            } else {
+                content
+                    .id(kind)
+                    .transition(reduceMotion ? .opacity : .relayAfterSkeleton)
+            }
+        }
+        .animation(RelayMotion.enter, value: kind)
+        .padding(.top, 4)
+        .opacity(dimmed ? 0.3 : 1)
+    }
+
+    @ViewBuilder
+    private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
             switch state {
             case .loading:
-                ProgressView().tint(RelayColor.neutral7).frame(maxWidth: .infinity).padding(.vertical, 24)
+                EmptyView()
             case .text(let markdown, let truncated):
                 MarkdownView(blocks: MarkdownBlocks.parse(markdown))
                 if truncated {
@@ -124,8 +165,30 @@ private struct TicketBody: View {
                     .relayScaledTextStyle(.body).foregroundStyle(RelayColor.neutral7)
             }
         }
-        .padding(.top, 4)
-        .opacity(dimmed ? 0.3 : 1)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// The ticket text's skeleton: a heading and a paragraph, then a heading
+/// and a short list, the shape most tickets take.
+private struct TicketSkeleton: View {
+    var body: some View {
+        SkeletonField(label: "Loading the ticket") {
+            VStack(alignment: .leading, spacing: 12) {
+                SkeletonLine(width: 110, height: 14).padding(.top, 8)
+                SkeletonLine(fraction: 1)
+                SkeletonLine(fraction: 0.94)
+                SkeletonLine(fraction: 0.62)
+                SkeletonLine(width: 150, height: 14).padding(.top, 16)
+                ForEach([0.72, 0.56, 0.66], id: \.self) { share in
+                    HStack(spacing: 10) {
+                        SkeletonLine(width: 10)
+                        SkeletonLine(fraction: share)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
 
@@ -163,7 +226,7 @@ struct MarkdownView: View {
                             .padding(12)
                     }
                     .background(RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius, style: .continuous)
-                        .fill(RelayColor.neutral4))
+                        .fill(RelayGlass.raised.tint))
                 }
             }
         }
@@ -268,6 +331,9 @@ extension TicketSample {
         case "unsupported": sample.unsupported = true
         case "long": sample.reply = reply(sampleMarkdown + "\n" + sampleMarkdown)
         case "truncated": sample.reply = reply(sampleMarkdown, truncated: true)
+        case "arrive":
+            sample.reply = reply(sampleMarkdown)
+            sample.arrivesAfter = .milliseconds(1200)
         case "done":
             workspace.tickets = []
             sample.workspace = workspace

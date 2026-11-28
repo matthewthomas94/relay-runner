@@ -234,6 +234,8 @@ pub struct AgentEntry {
     /// One of `off`, `starting`, `ready`, `working`, `listening`, `playing`.
     pub state: String,
     pub working_on: Option<String>,
+    /// One of `auto`, `direct`, `orchestrated`: the agent's work style.
+    pub work_style: Option<String>,
 }
 
 /// RR-532: asks the Mac for its Workspace; answered with `workspace_state`.
@@ -300,6 +302,9 @@ pub struct SettingsCommand {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub sizing: Option<String>,
+    /// With `work_style`: the agent whose work style changes.
+    pub agent: Option<String>,
+    pub work_style: Option<String>,
 }
 
 /// RR-532: one choice inside a `settings_state` option list (not a frame).
@@ -533,6 +538,7 @@ impl Frame {
                             item.insert("running", entry.running);
                             item.insert("state", entry.state.as_str());
                             opt(&mut item, "working_on", &entry.working_on);
+                            opt(&mut item, "work_style", &entry.work_style);
                             Value::Dict(item)
                         })
                         .collect::<Vec<_>>();
@@ -591,6 +597,8 @@ impl Frame {
                 opt(&mut out, "model", &f.model);
                 opt(&mut out, "effort", &f.effort);
                 opt(&mut out, "sizing", &f.sizing);
+                opt(&mut out, "agent", &f.agent);
+                opt(&mut out, "work_style", &f.work_style);
             }
             Frame::SettingsState(f) => {
                 opt(&mut out, "speech_speed_percent", &f.speech_speed_percent);
@@ -669,6 +677,7 @@ const AGENTS: Nested = Nested {
         req("running", Bool),
         req("state", Str),
         opt("working_on", Str),
+        opt("work_style", Str),
     ],
 };
 const WORKSPACE_PROJECTS: Nested = Nested {
@@ -849,6 +858,8 @@ fn fields(type_name: &str) -> Option<&'static [Field]> {
                     opt("model", Str),
                     opt("effort", Str),
                     opt("sizing", Str),
+                    opt("agent", Str),
+                    opt("work_style", Str),
                 ]
             }
         }
@@ -1270,6 +1281,8 @@ fn build(type_name: &str, object: &Dict) -> Frame {
             model: os("model"),
             effort: os("effort"),
             sizing: os("sizing"),
+            agent: os("agent"),
+            work_style: os("work_style"),
         }),
         "settings_state" => Frame::SettingsState(SettingsState {
             speech_speed_percent: int("speech_speed_percent"),
@@ -1309,6 +1322,7 @@ fn build(type_name: &str, object: &Dict) -> Frame {
                 running: matches!(entry.get("running"), Some(Value::Bool(true))),
                 state: text(entry, "state"),
                 working_on: optional_text(entry, "working_on"),
+                work_style: optional_text(entry, "work_style"),
             }),
         }),
     }

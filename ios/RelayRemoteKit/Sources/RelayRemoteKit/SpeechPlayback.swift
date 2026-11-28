@@ -76,6 +76,10 @@ public typealias SpeechTimer = @MainActor (_ delay: TimeInterval, _ fire: @escap
 ///   stream with an empty final part before any audio, or the player fails,
 ///   the text is synthesised instead. A stream that stops delivering for
 ///   `stallTimeout` ends with what it has and is acknowledged `played: false`.
+/// - Without a synthesizer the phone never speaks in its own voice (user,
+///   2026-11-28): a reply with no audio from the Mac, or whose audio is
+///   missing, fails or never starts, is shown only and acknowledged
+///   `played: false`.
 /// - In `.onDemand` mode speech waits for `play()`; status and control frames
 ///   resolve as before.
 @MainActor
@@ -87,6 +91,17 @@ public final class SpeechPlaybackQueue {
     public var onPlaybackStateChange: ((Bool) -> Void)?
     /// Fires after anything that may change `playbackState` or `waitingReply`.
     public var onChange: (() -> Void)?
+
+    /// While true no reply starts: the user is talking, and a reply that
+    /// arrives meanwhile waits its turn and plays once they finish, as on the
+    /// desktop. A reply already playing is not affected.
+    public var isHeld = false {
+        didSet {
+            guard isHeld != oldValue else { return }
+            log(isHeld ? "playback held" : "playback released")
+            if !isHeld { pump() }
+        }
+    }
 
     public var mode: PlaybackMode {
         didSet {
@@ -167,7 +182,7 @@ public final class SpeechPlaybackQueue {
         var released = false
     }
 
-    private let synthesizer: SpeechSynthesizing
+    private let synthesizer: SpeechSynthesizing?
     private let player: SpeechAudioPlaying?
     private let audioWait: TimeInterval
     private let stallTimeout: TimeInterval
@@ -185,13 +200,17 @@ public final class SpeechPlaybackQueue {
     private var releaseNext = false
 
     /// - Parameters:
+    ///   - synthesizer: the phone's own voice, for text-only frames and as the
+    ///     fallback for the Mac's; nil to never speak in it.
     ///   - player: plays `audio: true` frames in the Mac's voice; without one
     ///     every frame is synthesised.
     ///   - audioWait: how long a reply in the Mac's voice waits for its first
-    ///     audio before the text is synthesised instead.
+    ///     audio before the text is synthesised instead. The Mac takes up to
+    ///     about 3 s to voice the start of a long reply, so 1.5 s often fell
+    ///     back to the phone's voice when the Mac's was on its way.
     ///   - stallTimeout: how long a started stream may go without a new part.
-    public init(synthesizer: SpeechSynthesizing, player: SpeechAudioPlaying? = nil,
-                mode: PlaybackMode = .autoPlay, audioWait: TimeInterval = 1.5,
+    public init(synthesizer: SpeechSynthesizing?, player: SpeechAudioPlaying? = nil,
+                mode: PlaybackMode = .autoPlay, audioWait: TimeInterval = 5,
                 stallTimeout: TimeInterval = 15, schedule: SpeechTimer? = nil,
                 log: RemoteLogger = .silent, sendAck: @escaping (Ack) -> Void) {
         self.synthesizer = synthesizer
@@ -332,8 +351,12 @@ public final class SpeechPlaybackQueue {
     }
 
     /// Resolve queued speech below `seq` as unplayed and stop a current one.
+    /// In `.onDemand` mode a reply still waiting for Play is kept: talking,
+    /// Stop and the Mac's superseding stop silence what is playing, but every
+    /// agent's unplayed reply keeps waiting until it is played or skipped.
     private func discardPending(before seq: Int) {
-        for index in entries.indices where entries[index].seq < seq && entries[index].state == .waiting {
+        for index in entries.indices where entries[index].seq < seq && entries[index].state == .waiting
+            && !awaitsPlay(entries[index]) {
             entries[index].state = .resolved(played: false)
         }
         if let current = currentSeq, current < seq {
@@ -354,10 +377,14 @@ public final class SpeechPlaybackQueue {
     /// completion is ignored.
     private func silenceVoice() {
         switch currentVoice {
-        case .synthesizer: synthesizer.stopSpeaking()
+        case .synthesizer: synthesizer?.stopSpeaking()
         case .player: player?.stop()
         case .pending, nil: break
         }
+    }
+
+    private func awaitsPlay(_ entry: Entry) -> Bool {
+        mode == .onDemand && !entry.released && entry.text != nil
     }
 
     private func isPlayable(_ entry: Entry) -> Bool {
@@ -366,7 +393,14 @@ public final class SpeechPlaybackQueue {
 
     private func pump() {
         flushAcks()
-        if !isSpeaking, let index = entries.firstIndex(where: isPlayable) {
+        while !isSpeaking, !isHeld, let index = entries.firstIndex(where: isPlayable) {
+            guard entries[index].audio != nil || synthesizer != nil else {
+                // Text only, and the phone has no voice of its own: shown, never spoken.
+                entries[index].state = .resolved(played: false)
+                log("speech not voiced")
+                flushAcks()
+                continue
+            }
             entries[index].state = .speaking
             isSpeaking = true
             currentSeq = entries[index].seq
@@ -391,6 +425,12 @@ public final class SpeechPlaybackQueue {
     }
 
     private func synthesize(_ entry: Entry) {
+        guard let synthesizer else {
+            // No voice of the phone's own to fall back to: the reply ends unplayed.
+            log("speech not voiced")
+            finished(seq: entry.seq, generation: generation, played: false)
+            return
+        }
         currentVoice = .synthesizer
         let generation = self.generation
         synthesizer.speak(entry.text ?? "") { [weak self] played in
@@ -398,7 +438,8 @@ public final class SpeechPlaybackQueue {
         }
     }
 
-    /// Falls back to the phone's own voice for the current frame.
+    /// Falls back to the phone's own voice for the current frame, or ends it
+    /// unplayed without one.
     private func fallBack(_ event: String) {
         guard let seq = currentSeq, let index = index(of: seq) else { return }
         log(event)

@@ -11,6 +11,15 @@ import RelayRemoteProtocol
 public final class AudioQueueSpeechPlayer: SpeechAudioPlaying {
     /// Output gain, 0...1. Tests play at 0.
     public var volume: Float = 1
+    /// Playback speed, the Mac's TTS rate (0.5...2.0). The Mac renders its
+    /// voice at 1.0 and its own player applies the rate, so the phone must
+    /// too. Pitch is kept, as with the Mac's time-pitch processor.
+    public var rate: Float = 1 {
+        didSet {
+            rate = min(max(rate, 0.5), 2)
+            if let audioQueue { AudioQueueSetParameter(audioQueue, kAudioQueueParam_PlayRate, rate) }
+        }
+    }
     public private(set) var isPaused = false
 
     private var fileStream: AudioFileStreamID?
@@ -135,6 +144,15 @@ public final class AudioQueueSpeechPlayer: SpeechAudioPlaying {
             }
         }
         AudioQueueSetParameter(queue, kAudioQueueParam_Volume, volume)
+        // Time-pitch must be enabled before the queue starts; the rate can
+        // then change at any time.
+        var enableTimePitch: UInt32 = 1
+        AudioQueueSetProperty(queue, kAudioQueueProperty_EnableTimePitch, &enableTimePitch,
+                              UInt32(MemoryLayout<UInt32>.size))
+        var algorithm = kAudioQueueTimePitchAlgorithm_Spectral
+        AudioQueueSetProperty(queue, kAudioQueueProperty_TimePitchAlgorithm, &algorithm,
+                              UInt32(MemoryLayout<UInt32>.size))
+        AudioQueueSetParameter(queue, kAudioQueueParam_PlayRate, rate)
         Self.live[UInt(bitPattern: queue)] = WeakPlayer(player: self)
         AudioQueueAddPropertyListener(queue, kAudioQueueProperty_IsRunning, queueRunningChanged, nil)
     }

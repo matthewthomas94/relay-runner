@@ -14,6 +14,11 @@ enum AgentsSample: String, CaseIterable {
 
     @MainActor
     var state: AgentsScreenState {
+        AgentsScreenState(agents: agents, voice: voice, talkMode: .hold)
+    }
+
+    @MainActor
+    var agents: AgentsModel {
         let defaults = UserDefaults(suiteName: "relay-remote.samples") ?? .standard
         let agents = AgentsModel(store: ChatStore(directory: nil), defaults: defaults)
         agents.select(self == .notRunning ? "puck" : "george")
@@ -35,6 +40,10 @@ enum AgentsSample: String, CaseIterable {
         agents.setSample(activities: ["puck": .off, "isabella": .off, "george": .ready, "sky": .working],
                          marked: [], reachability: self == .unreachable ? .unreachable : .reachable,
                          chats: ["george": george])
+        return agents
+    }
+
+    var voice: VoiceSnapshot {
         var voice = VoiceSnapshot()
         switch self {
         case .ready: voice.waitingSeqs = [13]
@@ -44,12 +53,40 @@ enum AgentsSample: String, CaseIterable {
         case .playing: voice.playingSeq = 13
         case .notRunning, .unreachable, .longDraft: break
         }
-        return AgentsScreenState(agents: agents, voice: voice, talkMode: .hold)
+        return voice
     }
 
     var draft: String {
         guard self == .longDraft else { return "" }
         return "Could you put the latest build in my Applications as well, then open it and check that the agent tabs, the dock and the Workspace all line up with the designs before you cut the next release for the team"
+    }
+}
+
+import SwiftUI
+
+/// `--agents-sample=play-demo`: presses Play on its own every few seconds,
+/// with the playback glow behind, so the dock's Play and Replay swap and the
+/// glow can be recorded in the simulator.
+struct AgentsPlayDemo: View {
+    @State private var playing = false
+    /// One model for both states, so the messages keep their identities.
+    @State private var agents = AgentsSample.ready.agents
+
+    var body: some View {
+        ZStack {
+            StateGlowLayer(target: playing ? .playing : .none)
+            AgentsScreen(state: AgentsScreenState(agents: agents,
+                                                  voice: (playing ? AgentsSample.playing : .ready).voice,
+                                                  talkMode: .hold))
+        }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1.5))
+                playing = true
+                try? await Task.sleep(for: .seconds(2.5))
+                playing = false
+            }
+        }
     }
 }
 #endif

@@ -2102,7 +2102,18 @@ fn queue_depth(st: &State) -> usize {
         (Some(playing), Some(committed)) if playing == committed => 1,
         (playing, committed) => usize::from(playing.is_some()) + usize::from(committed.is_some()),
     };
-    heads + st.backlog.len() + st.remote_outstanding.len()
+    // Frames sent to a device and since stopped stay outstanding until it
+    // acks or detaches, but nothing is waiting on them, so they don't count.
+    let remote = st
+        .remote_outstanding
+        .entries
+        .iter()
+        .filter(|(key, _)| {
+            key.1 > st.remote_stopped_through.get(&key.0).copied().unwrap_or(0)
+                && !st.remote_stopped.contains(key)
+        })
+        .count();
+    heads + st.backlog.len() + remote
 }
 
 fn accept_locked(st: &mut State, intent: &Arc<SpeechIntent>) {

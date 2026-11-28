@@ -223,6 +223,10 @@ If you need user permission for a risky screen action:
 
 <!-- END GENERATED -->
 
+## Relay Remote builds on Matt's iPhone
+
+Every build installed on Matt's iPhone is an optimised Release build: `xcodebuild -scheme RelayRemote -configuration Release -destination id=<device> -allowProvisioningUpdates build`, then `xcrun devicectl device install app`. Never install a Debug build there: Debug Swift is unoptimised, and the app's always-on Canvas animations then make taps feel slow (user, 2026-11-27). Simulator work stays Debug, since the launch arguments (`--agents-sample`, `--cycle-tabs` and the rest) exist only in Debug builds.
+
 ## Where things live
 
 - `rust/relay-orchestrator/` — the daemon (HTTP + SQLite + worker spawn), shipped as `Contents/MacOS/relay-orchestrator`

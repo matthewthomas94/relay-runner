@@ -7,6 +7,8 @@ import Foundation
 /// - `--stage=<splash|permissions|pairing|tutorial|app>` starts at a stage,
 /// - `--pairing-step=<scan|check>` opens the pairing flow on a step,
 /// - `--tab=<agents|workspace|settings>` opens the app on a tab,
+/// - `--permission-step=<microphone|localNetwork|camera|notifications>` opens the
+///   permissions stage on that step even if it was already decided,
 /// - `--workspace-sample=<list|empty|error|unreachable|truncated>` fills the Workspace tab
 ///   with sample data instead of the Mac's,
 /// - `--agents-sample=<ready|holding|playing|not-running|unreachable|long-draft>`
@@ -16,8 +18,14 @@ import Foundation
 /// - `--ticket-sample=<short|long|loading|error|truncated|unsupported|done>` opens the Workspace
 ///   tab's ticket modal on sample data (add `--workspace-sample=unreachable` for the banner),
 /// - `--sample-settings` fills the Settings tab with sample data, unpaired,
+/// - `--cycle-tabs=<seconds>` switches between the tabs on its own (RR-552, recording the glass morphs),
+/// - `--sample-glow=<listening|playing|cycle>` shows a state glow behind every screen, or
+///   raises and sinks them in turn (RR-553, recording the glows on each tab),
 /// - `--scroll-bottom` opens scrolling screens at their end,
-/// - `--reset-onboarding` forgets that onboarding finished, as a fresh install.
+/// - `--reset-onboarding` forgets that onboarding finished, as a fresh install,
+/// - `--scripted-mac=<seconds>` connects to a scripted Mac inside the app that
+///   sends a reply from George every `seconds`, and `--scripted-mac-drop=<seconds>`
+///   makes it unreachable after `seconds` (RR-545, reply notifications).
 /// Release builds ignore them.
 struct LaunchOptions: Equatable {
     var showsGallery = false
@@ -30,8 +38,17 @@ struct LaunchOptions: Equatable {
     var tutorialSample: String?
     var ticketSample: String?
     var resetsOnboarding = false
+    var permissionStep: PermissionStep?
     var sampleSettings = false
     var scrollsToBottom = false
+    var scriptedMacReplyEvery: Double?
+    var scriptedMacDropAfter: Double?
+    var cycleTabsEvery: Double?
+    /// Debug: switches the sample agent every so many seconds, or opens and
+    /// closes the sample ticket, to record those transitions.
+    var cycleAgentsEvery: Double?
+    var cycleTicketEvery: Double?
+    var sampleGlow: String?
 
     init(arguments: [String]) {
         for argument in arguments {
@@ -45,11 +62,18 @@ struct LaunchOptions: Equatable {
             if argument == "--sample-settings" { sampleSettings = true }
             if let value = Self.value(of: "--stage", in: argument) { stage = AppStage(rawValue: value) }
             if let value = Self.value(of: "--pairing-step", in: argument) { pairingStep = value }
+            if let value = Self.value(of: "--permission-step", in: argument) { permissionStep = PermissionStep(rawValue: value) }
             if let value = Self.value(of: "--workspace-sample", in: argument) { workspaceSample = value }
             if let value = Self.value(of: "--ticket-sample", in: argument) { ticketSample = value }
             if let value = Self.value(of: "--tab", in: argument) { tab = MainTab(rawValue: value) }
             if let value = Self.value(of: "--agents-sample", in: argument) { agentsSample = value }
             if let value = Self.value(of: "--tutorial-step", in: argument) { tutorialSample = value }
+            if let value = Self.value(of: "--scripted-mac", in: argument) { scriptedMacReplyEvery = Double(value) }
+            if let value = Self.value(of: "--scripted-mac-drop", in: argument) { scriptedMacDropAfter = Double(value) }
+            if let value = Self.value(of: "--cycle-tabs", in: argument) { cycleTabsEvery = Double(value) }
+            if let value = Self.value(of: "--cycle-agents", in: argument) { cycleAgentsEvery = Double(value) }
+            if let value = Self.value(of: "--cycle-ticket", in: argument) { cycleTicketEvery = Double(value) }
+            if let value = Self.value(of: "--sample-glow", in: argument) { sampleGlow = value }
         }
     }
 

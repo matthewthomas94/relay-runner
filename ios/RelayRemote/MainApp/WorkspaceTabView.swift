@@ -3,7 +3,7 @@ import RelayRemoteProtocol
 import SwiftUI
 
 /// What the Workspace tab shows and how it asks for more: the live session's
-/// feed, or fixed sample data for a debug screenshot.
+/// feed, or fixed sample data for a screenshot.
 struct WorkspaceFeed {
     var workspace: WorkspaceState?
     var isUnreachable = false
@@ -38,6 +38,15 @@ enum WorkspacePhase: Equatable {
 
     static let appNotRunning = "Relay Runner isn’t running on your Mac."
 
+    /// Which kind of body shows; a refreshed list keeps the same one.
+    var kind: Int {
+        switch self {
+        case .loading: 0
+        case .list: 1
+        case .error: 2
+        }
+    }
+
     init(_ feed: WorkspaceFeed, project: String?) {
         if let workspace = feed.workspace {
             if let message = workspace.error {
@@ -60,16 +69,35 @@ struct WorkspaceTabView: View {
     var sample: WorkspaceFeed?
 
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.hostsPanels) private var hostsPanels
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var feed: WorkspaceFeed { sample ?? WorkspaceFeed(session: model.session) }
 
     var body: some View {
         let feed = feed
         let phase = WorkspacePhase(feed, project: model.workspaceProject)
-        VStack(spacing: 0) {
-            content(phase, feed: feed)
+        // The list runs on under the project tabs, which float in their own
+        // glass container 12 pt above the tab bar (Figma Final 26).
+        ZStack(alignment: .bottom) {
+            // A skeleton of the list while it loads; its dots scatter out,
+            // then the list fades in from a light blur (user, 2026-11-28).
+            ZStack {
+                if phase.kind == 0 {
+                    content(phase, feed: feed).transition(.relaySkeleton)
+                } else {
+                    content(phase, feed: feed)
+                        .id(phase.kind)
+                        .transition(reduceMotion ? .opacity : .relayAfterSkeleton)
+                }
+            }
+            .animation(RelayMotion.enter, value: phase.kind)
             if case .list(let listing) = phase {
-                ProjectTabStrip(tabs: listing.tabs, selection: Bindable(model).workspaceProject)
+                ProjectTabStrip(tabs: listing.tabs, selection: Bindable(model).workspaceProject,
+                                drawsGlass: !hostsPanels)
+                    .hostedPanel(.workspace, hosted: hostsPanels, glass: .bar)
+                    .padding(.horizontal, RelayMetrics.barMargin)
+                    .padding(.bottom, ProjectTabStrip.bottomGap)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -91,7 +119,7 @@ struct WorkspaceTabView: View {
             if feed.isUnreachable {
                 Spacer()
             } else {
-                ProgressView().tint(RelayColor.neutral7).frame(maxHeight: .infinity)
+                WorkspaceSkeleton()
             }
         case .error(let message):
             VStack(spacing: 12) {
@@ -106,7 +134,7 @@ struct WorkspaceTabView: View {
             .padding(.horizontal, 32)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .list(let listing):
-            WorkspaceList(listing: listing, dimmed: feed.isUnreachable, open: { model.openTicket($0) }) {
+            WorkspaceList(listing: listing, dimmed: feed.isUnreachable, open: { model.openTicket($0, from: $1) }) {
                 await refresh(feed)
             }
         }
@@ -133,8 +161,15 @@ struct WorkspaceTabView: View {
 private struct WorkspaceList: View {
     let listing: WorkspaceListing
     let dimmed: Bool
-    let open: (WorkspaceTicket) -> Void
+    let open: (WorkspaceTicket, CGRect?) -> Void
     let refresh: () async -> Void
+    /// Each card's place on screen, for the modal to grow out of. A box, so
+    /// scrolling writes to it without redrawing the list.
+    @State private var frames = CardFrames()
+
+    private final class CardFrames {
+        var byID: [String: CGRect] = [:]
+    }
 
     var body: some View {
         ScrollView {
@@ -150,10 +185,14 @@ private struct WorkspaceList: View {
                             + Text("  \(group.tickets.count)").font(RelayTextStyle.body.font).foregroundStyle(RelayColor.neutral7))
                         VStack(spacing: 8) {
                             ForEach(group.tickets, id: \.id) { ticket in
-                                Button { open(ticket) } label: {
+                                Button { open(ticket, frames.byID[ticket.id]) } label: {
                                     TicketRow(ticket: ticket, project: listing.projectName(of: ticket))
                                 }
                                 .buttonStyle(TicketRowButtonStyle())
+                                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                                    frames.byID[ticket.id] = $0
+                                }
+                                .transition(.relayRise)
                             }
                         }
                         .padding(.top, 12)
@@ -167,10 +206,27 @@ private struct WorkspaceList: View {
                 }
                 .padding(.horizontal, RelayMetrics.screenMargin)
                 .padding(.top, 72)
+                // The last ticket scrolls clear of the project tabs.
+                .padding(.bottom, ProjectTabStrip.reserved)
+                // Tickets arriving, leaving or moving lanes animate instead of jumping.
+                .animation(RelayMotion.move, value: listing.groups.map { $0.tickets.map(\.id) })
             }
         }
         .refreshable { await refresh() }
+        // The list fades out at its top edge, as the Agents chat does. Tickets
+        // pass straight under the project tabs' glass (user, 2026-11-27).
+        .mask {
+            VStack(spacing: 0) {
+                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                    .frame(height: AgentChatFeed.topFade)
+                Rectangle().fill(.black)
+            }
+            // The mask reaches under the bars, so the list shows through
+            // their glass instead of stopping at their edge.
+            .ignoresSafeArea(edges: .bottom)
+        }
         .opacity(dimmed ? 0.3 : 1)
+        .animation(RelayMotion.enter, value: dimmed)
         .accessibilityElement(children: .contain)
     }
 }
@@ -178,7 +234,10 @@ private struct WorkspaceList: View {
 /// A row that can be tapped: plain, and a little dimmer while pressed.
 private struct TicketRowButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.opacity(configuration.isPressed ? 0.7 : 1).contentShape(Rectangle())
+        configuration.label
+            .opacity(configuration.isPressed ? 0.85 : 1)
+            .contentShape(Rectangle())
+            .relayPressed(configuration.isPressed)
     }
 }
 
@@ -200,45 +259,77 @@ private struct TicketRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(RelayColor.neutral3))
+        // Panel glass, so the state glow behind the list shows faintly
+        // through it (user, 2026-11-28).
+        .background {
+            RelayGlassBackground(glass: .panel, shape: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        }
         .accessibilityElement(children: .combine)
     }
 }
 
 /// "All" then one tab per project, in the style of the agent tabs: plain
-/// labels with a count, the selected one on an outlined pill.
-private struct ProjectTabStrip: View {
+/// labels with a count, the selected one on an outlined pill. They sit in
+/// their own glass container, the tab bar's glass with 4 pt padding and
+/// radius 20 (RR-553, Figma Final 26), which `MainTabView` draws so the
+/// Agents dock can reshape into it.
+struct ProjectTabStrip: View {
     let tabs: [WorkspaceListing.ProjectTab]
     @Binding var selection: String?
+    /// False when `MainTabView` draws the container's glass (`HostedPanel`).
+    var drawsGlass = true
+    @Namespace private var pill
+
+    /// The dock's padding around the agent tabs (user, 2026-11-27).
+    static let padding: CGFloat = AgentDock.padding
+    static let cornerRadius: CGFloat = 20
+    /// How far the container sits above the tab bar.
+    static let bottomGap: CGFloat = 12
+    /// The room the container takes at the bottom of the list, and a little
+    /// more for the fade above it.
+    static let reserved: CGFloat = AgentTabStrip.height + 2 * padding + bottomGap + 24
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: 4) {
                 ForEach(tabs, id: \.id) { tab in
                     let selected = tab.id == selection
-                    Button { selection = tab.id } label: {
+                    Button { withAnimation(RelayMotion.move) { selection = tab.id } } label: {
+                        // Sized like the agent tabs (`AgentTabStrip`).
                         (Text(tab.name).foregroundStyle(selected ? RelayColor.neutral10 : RelayColor.neutral7)
                             + Text("  \(tab.count)").foregroundStyle(RelayColor.neutral7))
-                            .font(RelayTextStyle.control.font)
+                            .relayTextStyle(AgentTabStrip.label)
                             .lineLimit(1)
-                            .padding(.horizontal, 16)
-                            .frame(height: 48)
+                            .padding(.horizontal, 14)
+                            .frame(height: AgentTabStrip.height)
                             .background {
                                 if selected {
-                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                        .fill(RelayColor.neutral3)
-                                        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                            .stroke(RelayColor.neutral5, lineWidth: 1))
+                                    // One pill that slides to the selection: the
+                                    // selected fill with the glass's lit rim, as the
+                                    // agent tabs (user, 2026-11-28).
+                                    Color.clear
+                                        .modifier(RelayGlassSurface(glass: .selected,
+                                                                    shape: RoundedRectangle(cornerRadius: 12, style: .continuous)))
+                                        .matchedGeometryEffect(id: "pill", in: pill)
                                 }
                             }
+                            .animation(RelayMotion.enter, value: selected)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.relayPlain)
                     .accessibilityAddTraits(selected ? [.isSelected, .isButton] : .isButton)
                 }
             }
-            .padding(.horizontal, RelayMetrics.screenMargin)
         }
-        .padding(.vertical, 12)
+        // The tabs scroll to the container's edges, under its padding.
+        .contentMargins(.horizontal, Self.padding, for: .scrollContent)
+        .horizontalEdgeFade()
+        .padding(.vertical, Self.padding)
+        .frame(maxWidth: .infinity)
+        .clipShape(shape)
+        .background {
+            if drawsGlass { RelayGlassBackground(glass: .bar, shape: shape) }
+        }
     }
 }
 
@@ -265,6 +356,7 @@ extension WorkspaceFeed {
         case "error":
             return WorkspaceFeed(sample: WorkspaceState(projects: [], tickets: [],
                                                          error: "The Workspace is not available from the phone on this Mac yet."))
+        case "loading": return WorkspaceFeed(sample: nil)
         case "unreachable": return WorkspaceFeed(sample: WorkspaceState(projects: projects, tickets: tickets), isUnreachable: true)
         case "truncated": return WorkspaceFeed(sample: WorkspaceState(projects: projects, tickets: tickets, truncated: true))
         default: return WorkspaceFeed(sample: WorkspaceState(projects: projects, tickets: tickets))
@@ -272,5 +364,39 @@ extension WorkspaceFeed {
         #else
         return nil
         #endif
+    }
+}
+
+/// The list's skeleton: lane headings and ticket cards, each card an outline
+/// with its id, title and owner lines, laid out like the list.
+private struct WorkspaceSkeleton: View {
+    private static let lanes: [(heading: CGFloat, cards: Int)] = [(96, 2), (72, 1), (84, 2)]
+
+    var body: some View {
+        SkeletonField(label: "Loading tickets") {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(Self.lanes.enumerated()), id: \.offset) { _, lane in
+                    SkeletonLine(width: lane.heading, height: 14)
+                    VStack(spacing: 8) {
+                        ForEach(0..<lane.cards, id: \.self) { card in
+                            VStack(alignment: .leading, spacing: 10) {
+                                SkeletonLine(width: 110, height: 8)
+                                SkeletonLine(fraction: card == 0 ? 0.78 : 0.6, height: 12)
+                                SkeletonLine(width: 56, height: 8)
+                            }
+                            .padding(16)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .skeletonOutline(radius: 20)
+                        }
+                    }
+                    .padding(.top, 12)
+                    .padding(.bottom, 28)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, RelayMetrics.screenMargin)
+            .padding(.top, 72)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
     }
 }

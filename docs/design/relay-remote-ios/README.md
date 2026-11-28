@@ -48,7 +48,7 @@ First launch: splash (01–05) → permissions (06–11) → pairing (12–14) �
 
 - Black background. Typeface Bai Jamjuree (the desktop app's typeface; bundle it in the app).
 - Panels: `#0c0f13` at 50% with a glass effect, corner radius 16.
-- Buttons: one primary (white) button per screen at most. Secondary buttons are glass (`#171a1e` at 75%). A danger button is the secondary surface with a red (`#f41509`) label and icon, never a red fill.
+- Buttons: one primary (white) button per screen at most. Secondary buttons are glass (`#171a1e` at 50%; the clearer glass of RR-553: panels `#0c0f13` at 30%, the tab bar at 45%, selected pills `#212529` at 50%, solid cards and the selected project tab `#171a1e` at 60%, black fields at 50%, other `#212529` fills at 65%). A danger button is the secondary surface with a red (`#f41509`) label and icon, never a red fill.
 - Icons are outline (stroke) Lucide icons everywhere, including the chips in the tutorial text. Never filled shapes.
 - No coloured status lights or pills anywhere. Agent status is shown only by the four-dot status glyph and the header blob.
 - Copy is brief: subtitles are one short line or absent.
@@ -102,13 +102,14 @@ Each step advances only when the user does the action; there are no Next buttons
 ## Agents tab (21–25)
 
 - The tab opens straight into the selected agent's chat. There is no nested chat view and no project picker; agents infer the project from the conversation.
-- Bottom to top: tab bar; the dock (text box, then a row of Replay, a wide "Hold to talk", and Stop; Replay and Stop are slim 44 pt squares); a horizontally scrollable strip of agent tabs (Puck, Isabella, George, Sky) styled like the desktop terminal tabs.
+- Bottom to top: tab bar; the dock, one glass message panel (10 pt padding, 8 pt gaps, radius 20, RR-553) holding a horizontally scrollable strip of agent tabs (Puck, Isabella, George, Sky) styled like the desktop terminal tabs, the text box with the white talk/Send button, and labelled Replay and Stop sharing a row. While the Mac is unreachable the panel's contents dim once, the agent tabs with them.
+- **Tab transitions (RR-553):** the tab bar stays put; the glass above it is one liquid glass in the tab bar's `GlassEffectContainer`. Agents to Workspace: the dock reshapes straight into the project tabs container, and back. Agents or Workspace to Settings: the panel melts down into the tab bar, and rises back out. Its contents fade, so only the glass morphs. The pages swap without overlapping: the old page is gone in 100 ms, then the new one fades in over 200 ms drifting 8 pt. Reduce Motion crossfades the panels and drops the drift.
 - The dock is pinned just above the tab bar. As the text box fills while the user speaks it grows upward; it never overlaps the tab bar.
 - **Header:** just the agent's blob over the agent's name. No Mac subtitle.
 - **Blob:** a port of the desktop Settings agent-card orb, `buildOrbGrid` in `Sources/relay-runner/Overlay/ParticleFieldRenderer.swift`: three Gaussian lobes on a halftone dot grid with a white core (168 × 112 pt, 7 pt grid in the design). Its edge colour follows the agent's state: orange when listening, blue-purple when playing back, navy `#11161D` when idle. It is never dimmed, even when the agent is not running. No blob and no glow inside the agent tabs.
 - **Status glyph** next to each agent name in the tab strip: the desktop four-dot glyph from `NotchStatusController.swift`. Static white when ready, spinning when working, orange `#f2700c` when listening, purple `#2b11e8` when playing back. A stopped agent shows one grey (`#596069`) 3 pt dot; when the agent comes online the dot splits into the four.
 - **Speech input:** while the user holds, the transcript fills the text box. Releasing sends it as a normal message. "Hold to talk" has a plain pressed state, not purple.
-- **Replies:** in Queue mode a new reply shows "New reply from <agent>" with a secondary Play; in Auto-play mode it plays at once.
+- **Replies:** in Queue mode a new reply shows in the chat as a normal bubble and the dock's Replay control reads Play until it has played (RR-554; this replaces the "New reply" card on screens 18 and 21); in Auto-play mode it plays at once.
 - **Chat feed:** fades out at its top and bottom edges with an alpha mask on the feed itself (not a black overlay), so the glows show through.
 - **Agent not running (24):** "<Agent> isn't running", a secondary "Start <Agent>" button and "Message <Agent> to start it." Sending a message also starts the agent.
 - **Mac unreachable (25):** a floating banner at the top with Retry. The chat and controls dim until the Mac is back.
@@ -123,7 +124,7 @@ A port of `buildDotGrid` in `ParticleFieldRenderer.swift` on an 8 pt grid, sligh
 
 ## Workspace tab (26)
 
-Tickets grouped by status: In progress, Queued, Backlog. Each row shows the ticket and the agent that owns it. Above the tab bar is a scrollable strip of project tabs: All, then one per project, styled like the agent tabs. These are tabs, not filter chips. There is no page title.
+Tickets grouped by status: In progress, Queued, Backlog. Each row shows the ticket and the agent that owns it. Above the tab bar is a scrollable strip of project tabs: All, then one per project, styled like the agent tabs, in their own glass container (the tab bar's glass, 4 pt padding, radius 20, 12 pt above the tab bar, RR-553); the list scrolls on under it and fades as it passes behind. These are tabs, not filter chips. There is no page title.
 
 ## Ticket modal (opens from a Workspace row)
 
@@ -145,7 +146,7 @@ There is no Figma screen for this; it is built from the styles above and the scr
 
 No page title.
 
-- **Voice:** Remote mode; Talk: Hold / Toggle (there is no hands-free mode); Replies: Auto-play / Queue; Reply notifications toggle; Speech speed slider, 0.5–2.0x in 0.1 steps, mirroring the desktop TTS rate.
+- **Voice:** Remote mode; Talk: Hold / Toggle (there is no hands-free mode); Replies: Auto-play / Queue; Reply notifications toggle; Speech speed slider, 0.5–2.0x in 0.1 steps, mirroring the desktop TTS rate; it copies the Mac's `SettingsSlider` (a 44 pt track with a white value fill up to an upright thumb and the value as a caption inside the track, RR-553).
 - **Orchestrator:** Model, Effort and Sub-agent sizing, with the same options as the desktop's General settings (`GeneralSettingsTab.swift`, `Config.swift`). Model options depend on the provider (Claude: Fable, Opus, Sonnet, Haiku; Codex: Astra, Sol, Terra, Luna). Effort options depend on the model. Sizing is "Orchestrator decides" or "Use my defaults".
 - **Mac** and **Pairing:** session and paired-Mac details, with "Stop all" and "Forget this Mac" as danger buttons.
 
@@ -153,7 +154,20 @@ No page title.
 
 Local notifications only: no APNs and no cloud service. While the app is alive in the background with its audio session active, it keeps its connection to the Mac. Each agent reply posts a local notification titled with the agent's name; the body is the reply's short spoken text. Tapping it opens that agent's chat. If the connection drops, the app posts "Lost connection to your Mac. Open to reconnect."
 
-Accepted trade-offs: nothing arrives if the app is swiped away or killed, or after a reboot; the orange microphone dot shows while audio is held; battery use is higher.
+Accepted trade-offs: nothing arrives if the app is swiped away or killed, or after a reboot; battery use is higher. The silent hold opens no input, so the orange microphone dot should show only while the phone is recording or playing a reply; a device has to confirm that.
+
+## Where the build differs from this design (RR-546)
+
+The finished app was compared screen by screen on the iOS 26.2 simulator (iPhone 17 Pro). What differs, and why:
+
+- **Screen 08 (speech recognition) is not built.** `SpeechTranscriber` runs on device and needs only the microphone permission, so there is nothing to ask. The Info.plist has no speech-recognition string. To be confirmed once on a device, since the simulator reports `SpeechTranscriber` as unsupported.
+- **Workspace rows (26) show the ticket and its owning agent only.** The reference also shows a "Running" or "Review" chip, a line such as "Worker running · 6 min" or "Waits on RR-532", and an agent on every row. Those contradict the rule above against status pills, and the Mac's feed carries no run state or dependency (`workspace_state` sends id, title, lane, project and owner only, which is also a privacy decision). The lane heading already says In progress, Queued or Backlog.
+- **Project tabs show counts in a larger type size** than the reference and their sample data differs (the reference's All is 6, the sample's 4). The counts are live in the app.
+- **Primary buttons are white**, as the Style section says. The reference images 06–12 show a light grey fill, which looks like a pressed or in-transition frame; the styles board and screens 21 to 25 show white.
+- **Agents screens (21–25) have no textured background.** The reference shows a faint dark wave behind the chat; the build is flat black under the state glows.
+- **Pairing check (14)** uses a slightly larger size for the full host key and the "Waiting for your Mac" lines than the reference.
+- **Agents samples (22, 23) draw no state glow.** The glow is driven by the live voice layer (`AppGlowLayer` reads `AppModel.voice`), and the sample screens build screen state without it. The glows are on the gallery's Listening and Playback pages (`--gallery=listening`, `--gallery=playback`).
+- **Screens 07 and 28** (the iOS permission prompt and the lock-screen notification) are drawn by iOS and were not captured on the simulator.
 
 ## Not in scope
 

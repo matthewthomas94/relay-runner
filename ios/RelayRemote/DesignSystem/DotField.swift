@@ -23,11 +23,20 @@ struct DotFieldStyle: Hashable {
 /// Dots grow toward the bottom centre and ripple with diagonal waves. It
 /// fills its frame and draws only in the bottom `style.coverage` of it; it
 /// holds still with Reduce Motion on.
-struct DotField: View {
+struct DotField: View, Animatable {
     let style: DotFieldStyle
     /// 0 hides the field and 1 shows all of it. In between, the field rises
     /// from the bottom, so animating this fades it up.
     var reveal: Double = 1
+    /// The dots' size, 0 to their own: as the field pushes up from the
+    /// bottom edge its dots grow from nothing, and shrink as it sinks
+    /// (user, 2026-11-28).
+    var growth: Double = 1
+
+    var animatableData: Double {
+        get { growth }
+        set { growth = newValue }
+    }
 
     @State private var cache = DotFieldCache()
     @State private var start = Date.now
@@ -36,11 +45,12 @@ struct DotField: View {
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || reveal <= 0)) { timeline in
             Canvas { context, size in
-                guard reveal > 0 else { return }
+                guard reveal > 0, growth > 0 else { return }
+                let grown = CGFloat(min(1, growth))
                 let elapsed = reduceMotion ? 0 : timeline.date.timeIntervalSince(start)
                 for dot in cache.grid(style: style, size: size) {
                     let wave = DotFieldCache.wave(x: dot.x, y: dot.fieldY, elapsed: elapsed)
-                    let radius = dot.radius * (1 + wave * 0.2)
+                    let radius = dot.radius * (1 + wave * 0.2) * grown
                     let alpha = dot.alpha * (1 + Double(wave) * 0.1) * Self.revealFactor(reveal, verticalT: dot.verticalT)
                     guard radius > 0.1, alpha > 0.002 else { continue }
                     context.fill(

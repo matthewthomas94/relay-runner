@@ -651,8 +651,17 @@ fn handle_entry(
     };
     let target_orchestrator =
         targets::voice_target_orchestrator(voice_target.as_ref(), bridge.orchestrator());
+    let target_key = voice_target
+        .as_ref()
+        .map(|target| target.session_key.as_str());
     let mut relay_command = match &entry.remote {
-        None => commands::begin_relay_command(&text, &settings.command_state_file, None, None),
+        None => commands::begin_relay_command(
+            &text,
+            &settings.command_state_file,
+            None,
+            None,
+            target_key,
+        ),
         Some(item) => {
             let device_id = Value::from(item.device_id.as_str());
             let command = commands::begin_relay_command(
@@ -660,6 +669,7 @@ fn handle_entry(
                 &settings.command_state_file,
                 Some(super::remote_link::INPUT_SOURCE),
                 Some(&device_id),
+                target_key,
             );
             if let Some(remote) = remote {
                 remote.accept(
@@ -687,6 +697,12 @@ fn handle_entry(
     let should_submit = !*suppress_next_messenger_user_reply;
     *suppress_next_messenger_user_reply = false;
     if should_submit {
+        // The messenger answers in the context of the session the turn is
+        // for. A Relay Remote turn for George while Puck has focus on the Mac
+        // otherwise went to Puck's messenger, which replied as Puck.
+        if let (Some(messenger), Some(key)) = (bridge.messenger(), target_key) {
+            messenger.focus(key);
+        }
         let submitted = bridge
             .messenger()
             .is_some_and(|messenger| messenger.submit_user(&text, &relay_command));

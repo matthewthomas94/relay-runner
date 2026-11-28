@@ -1,12 +1,13 @@
 import SwiftUI
 
-/// The horizontally scrollable agent tabs above the dock, styled like the
-/// desktop terminal tabs: the name, then the agent's status glyph. The
+/// The horizontally scrollable agent tabs, the top row of the dock's message
+/// panel (RR-553), styled like the desktop terminal tabs: the name, then the agent's status glyph. The
 /// selected tab sits on a glass panel. No blob or glow inside the tabs.
 struct AgentTabStrip: View {
     let tabs: [AgentsScreenState.Tab]
     let selected: String
     let onSelect: (String) -> Void
+    @Namespace private var pill
 
     static let height: CGFloat = 36
     /// The desktop terminal tabs' label size.
@@ -18,8 +19,10 @@ struct AgentTabStrip: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
                     ForEach(tabs) { tab in
-                        Button { onSelect(tab.slug) } label: { item(tab) }
-                            .buttonStyle(.plain)
+                        Button {
+                            withAnimation(RelayMotion.move) { onSelect(tab.slug) }
+                        } label: { item(tab) }
+                            .buttonStyle(.relayPlain)
                             .id(tab.slug)
                             .accessibilityElement(children: .ignore)
                             .accessibilityLabel("\(tab.name), \(StatusGlyph.accessibilityLabel(tab.glyph))"
@@ -27,10 +30,13 @@ struct AgentTabStrip: View {
                             .accessibilityAddTraits(tab.slug == selected ? [.isButton, .isSelected] : .isButton)
                     }
                 }
-                .padding(.horizontal, 12)
             }
+            .horizontalEdgeFade()
+            // Only as far as brings the picked tab into view, and not at all
+            // when it already shows: centring it shoved the whole row
+            // sideways on every switch (user, 2026-11-28).
             .onChange(of: selected) { _, slug in
-                withAnimation(RelayMotion.change) { proxy.scrollTo(slug, anchor: .center) }
+                withAnimation(RelayMotion.move) { proxy.scrollTo(slug) }
             }
         }
         .frame(height: Self.height)
@@ -42,16 +48,66 @@ struct AgentTabStrip: View {
             Text(tab.name)
                 .relayTextStyle(tab.marked && !isSelected ? Self.markedLabel : Self.label)
                 .foregroundStyle(isSelected || tab.marked ? RelayColor.neutral10 : RelayColor.neutral7)
+                .animation(RelayMotion.enter, value: isSelected)
             StatusGlyph(state: tab.glyph)
         }
         .padding(.leading, 15)
         .padding(.trailing, 12)
         .frame(height: Self.height)
         .background {
+            // One glass tab that slides to the selection: the selected fill
+            // with the glass's lit rim, as the dock's buttons (user,
+            // 2026-11-28). Drawn, since inside the dock's glass a flat
+            // background showed no glass at all.
             if isSelected {
-                RelayGlassBackground(glass: .panel, shape: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                Color.clear
+                    .modifier(RelayGlassSurface(glass: .selected,
+                                                shape: RoundedRectangle(cornerRadius: 12, style: .continuous)))
+                    .matchedGeometryEffect(id: "pill", in: pill)
             }
         }
         .contentShape(Rectangle())
+    }
+}
+
+extension View {
+    /// For a horizontal scroll view: its left and right edges fade out over
+    /// `width` points, each only while there is more content past it, so
+    /// tabs soften into the edge instead of being cut off by it (user,
+    /// 2026-11-27). The vertical `EdgeFade` in `RelayModal`, turned sideways.
+    func horizontalEdgeFade(_ width: CGFloat = 24) -> some View {
+        modifier(HorizontalEdgeFade(width: width))
+    }
+}
+
+private struct HorizontalEdgeFade: ViewModifier {
+    let width: CGFloat
+    @State private var fade = Fade()
+
+    struct Fade: Equatable {
+        var leading: CGFloat = 0
+        var trailing: CGFloat = 0
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .onScrollGeometryChange(for: Fade.self) { geometry in
+                let overflow = geometry.contentSize.width + geometry.contentInsets.leading
+                    + geometry.contentInsets.trailing - geometry.containerSize.width
+                guard overflow > 1 else { return Fade() }
+                let offset = min(max(geometry.contentOffset.x + geometry.contentInsets.leading, 0), overflow)
+                return Fade(leading: min(width, offset), trailing: min(width, overflow - offset))
+            } action: { _, new in
+                fade = new
+            }
+            .mask {
+                HStack(spacing: 0) {
+                    LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: fade.leading)
+                    Color.black
+                    LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: fade.trailing)
+                }
+            }
     }
 }

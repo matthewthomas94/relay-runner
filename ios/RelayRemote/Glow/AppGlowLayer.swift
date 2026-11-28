@@ -23,36 +23,166 @@ enum AppGlowState: Equatable {
 /// The app-wide state glows, behind every screen including the tab bar,
 /// dock and text box: the listening field while the user talks and the
 /// playback field while a reply plays (`DotField`). One view at the app root,
-/// driven by the voice state; fades in and out over 0.3 s.
+/// driven by the voice state.
+///
+/// A field pushes up from below the bottom edge to its full height as it
+/// arrives (550 ms, strong ease-out) and pushes back down off the screen as
+/// it leaves (340 ms, ease-in), fading out as it goes (user, 2026-11-27).
+/// Switching between listening and playback pushes the old field down and
+/// then the new one up; Reduce Motion crossfades them instead and keeps only
+/// the fades.
 struct AppGlowLayer: View {
     let model: AppModel
-
-    @State private var shown = AppGlowState.none
-    @State private var reveal = 0.0
+    /// Debug only: the glow `--sample-glow` shows (`LaunchOptions`).
+    @State private var sample: AppGlowState?
 
     private var target: AppGlowState {
+        if let sample { return sample }
         guard let voice = model.voice else { return .none }
         let listening = voice.isListening || voice.activity == .listening || voice.activity == .hearing
         return .resolve(listening: listening, playing: voice.isSpeaking)
     }
 
     var body: some View {
+        StateGlowLayer(target: target)
+        #if DEBUG
+            .task { await playSample() }
+        #endif
+    }
+
+    #if DEBUG
+    /// `--sample-glow=listening|playing` holds that glow; `cycle` raises
+    /// listening, sinks it, raises playback and sinks it, over and over.
+    private func playSample() async {
+        switch LaunchOptions.current.sampleGlow {
+        case "listening": sample = .listening
+        case "playing": sample = .playing
+        case "cycle":
+            sample = AppGlowState.none
+            while !Task.isCancelled {
+                for (state, hold) in [(AppGlowState.listening, 2.0), (.none, 1.5), (.playing, 2.0), (.none, 1.5)] {
+                    sample = state
+                    try? await Task.sleep(for: .seconds(hold))
+                }
+            }
+        default: break
+        }
+    }
+    #endif
+}
+
+/// The glow for a given state; `AppGlowLayer` feeds it the live voice state.
+struct StateGlowLayer: View {
+    let target: AppGlowState
+
+    /// The field showing, or leaving when `departure` heads to 1.
+    @State private var current = AppGlowState.none
+    /// The field fading out under `current` during a switch.
+    @State private var previous = AppGlowState.none
+    /// 0 shown, 1 gone.
+    @State private var departure = 1.0
+    /// 0 still showing `previous`, 1 fully `current`.
+    @State private var arrival = 1.0
+    /// How far up the field has risen: 0 sunk into the bottom edge, 1 full.
+    @State private var reveal = 0.0
+    /// The newest target, so a swap that finishes late knows it still applies.
+    @State private var wanted = AppGlowState.none
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// The desktop's surface motion (fade, blur, 96% scale) over its
+    /// `VoiceOverlayMotion.travelDuration` smoothstep on the way in.
+    static let enter = Animation.timingCurve(0.45, 0, 0.55, 1, duration: 0.2)
+    /// Leaving takes as long as the sink, so the falling edge stays visible.
+    static let exit = Animation.timingCurve(0.4, 0, 1, 1, duration: 0.24)
+    /// The field rises from the bottom edge to its full height, pushing up;
+    /// quicker than at first, on the same strong ease-out (user, 2026-11-28).
+    static let rise = Animation.timingCurve(0.33, 1, 0.68, 1, duration: 0.36)
+    /// And pulls back down into the bottom edge as it leaves.
+    static let sink = Animation.timingCurve(0.4, 0, 1, 1, duration: 0.24)
+    static let crossfade = Animation.timingCurve(0.16, 1, 0.3, 1, duration: 0.45)
+    /// Extra travel past the field's height, so its soft top edge clears the
+    /// screen's bottom edge too.
+    static let edge: CGFloat = 120
+
+    /// The tallest field showing, so a crossfade never clips the taller one.
+    private var coverage: CGFloat {
+        max(current.style?.coverage ?? 0, previous.style?.coverage ?? 0)
+    }
+
+    var body: some View {
         ZStack {
-            if let style = shown.style {
-                DotField(style: style, reveal: reveal)
+            if let style = previous.style {
+                DotField(style: style, growth: reveal).opacity(1 - arrival)
+            }
+            if let style = current.style {
+                DotField(style: style, growth: reveal).opacity(arrival)
             }
         }
+        // The field pushes up from below the screen's bottom edge as it
+        // arrives and pushes back down off it as it leaves (user,
+        // 2026-11-27): the whole field moves, rather than a mask wiping it.
+        // Only the offset animates, on the GPU, so the dots keep their own
+        // frame rate.
+        .visualEffect { [reveal, coverage] content, proxy in
+            content.offset(y: (1 - reveal) * (proxy.size.height * coverage + Self.edge))
+        }
+        .opacity(1 - departure)
         .ignoresSafeArea()
         .allowsHitTesting(false)
+        .onAppear { transition(to: target) }
         .onChange(of: target) { _, new in transition(to: new) }
     }
 
     private func transition(to new: AppGlowState) {
+        wanted = new
         if new == .none {
-            withAnimation(.easeOut(duration: 0.3)) { reveal = 0 }
+            guard current != .none else { return }
+            withAnimation(reduceMotion ? nil : Self.sink) { reveal = 0 }
+            withAnimation(Self.exit) { departure = 1 } completion: {
+                // Only clear if nothing new arrived meanwhile.
+                if departure == 1 { current = .none; previous = .none }
+            }
             return
         }
-        if shown != new { shown = new; reveal = 0 }
-        withAnimation(.easeOut(duration: 0.3)) { reveal = 1 }
+        if current == .none || departure > 0.5 {
+            // Arriving from nothing, or taking over a field that was leaving.
+            let wasHidden = current == .none
+            previous = .none
+            current = new
+            arrival = 1
+            if wasHidden {
+                departure = 1
+                reveal = reduceMotion ? 1 : 0
+            }
+            withAnimation(Self.enter) { departure = 0 }
+            withAnimation(Self.rise) { reveal = 1 }
+            return
+        }
+        guard new != current else {
+            withAnimation(Self.enter) { departure = 0 }
+            withAnimation(Self.rise) { reveal = 1 }
+            return
+        }
+        guard !reduceMotion else {
+            // Listening <-> playback: crossfade the fields.
+            previous = current
+            current = new
+            arrival = 0
+            withAnimation(Self.crossfade) { arrival = 1 }
+            withAnimation(Self.enter) { departure = 0 }
+            return
+        }
+        // Listening <-> playback: as on the desktop, nothing overlaps. The
+        // old field sinks away, then the new one rises from the bottom edge.
+        withAnimation(Self.sink) { reveal = 0 }
+        withAnimation(Self.exit) { departure = 1 } completion: {
+            guard wanted == new else { return }
+            previous = .none
+            current = new
+            arrival = 1
+            reveal = 0
+            withAnimation(Self.enter) { departure = 0 }
+            withAnimation(Self.rise) { reveal = 1 }
+        }
     }
 }

@@ -27,6 +27,8 @@ struct RelayTextStyle: Equatable {
     static let cardTitle = RelayTextStyle(weight: .semiBold, size: 18, lineHeight: 24)
     static let section = RelayTextStyle(weight: .semiBold, size: 16, lineHeight: 20)
     static let body = RelayTextStyle(weight: .regular, size: 16, lineHeight: 20)
+    /// The line under the agent's name in the Agents header (Figma Final 21).
+    static let subtitle = RelayTextStyle(weight: .regular, size: 14, lineHeight: 18)
     /// Button and control labels.
     static let control = RelayTextStyle(weight: .regular, size: 16, lineHeight: 20)
     /// Tab bar labels.

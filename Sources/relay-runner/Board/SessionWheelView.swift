@@ -258,13 +258,14 @@ struct SessionWheelView: View {
     /// RR-521: an agent segment shows the agent's name then its plus or X.
     private func agentItemButton(_ item: SessionWheelAgent, index: Int, slot: Int) -> some View {
         let action = item.labelAction
+        let layout = geometry.sessionAgentLayout(index, label: item.label)
         return submenuButton(index: index, slot: slot, title: action.title, help: model.caption(for: action),
                              symbol: nil, enabled: true,
                              hovered: model.hoveredSessionItem == item && model.hoveredGlyph == nil,
                              destructive: false,
-                             labelGlyphs: geometry.sessionAgentLayout(index, label: item.label).glyphs,
+                             labelGlyphs: layout.glyphs,
                              selected: item.isActive, labelColor: Self.agentLabelColor(item),
-                             attention: item.needsAttention,
+                             attentionDot: item.needsAttention ? layout.attentionDot : nil,
                              arc: geometry.sessionItemArc(index)) {
             guard model.isHoveringSession else { return }
             performAgentAction(action)
@@ -428,7 +429,7 @@ struct SessionWheelView: View {
                                isOn: Bool? = nil, subdivisions: Int = 3,
                                labelGlyphs: [SessionWheelGeometry.Glyph]? = nil,
                                selected: Bool = false, labelColor: Color? = nil,
-                               attention: Bool? = nil,
+                               attentionDot: CGPoint? = nil,
                                arc: (start: CGFloat, width: CGFloat)? = nil,
                                perform: @escaping () -> Void) -> some View {
         let presentation = ProgramBoardInteractionPresentation.resolve(
@@ -449,12 +450,6 @@ struct SessionWheelView: View {
         return Button(action: perform) {
             ZStack {
                 controlBackground(shape, presentation: presentation)
-                if let attention {
-                    // An agent that wants attention shimmers, as its Workspace
-                    // tab does, until it is switched to.
-                    FluxDotsBackground(cornerRadius: 0, style: .standard, isVisible: attention)
-                        .clipShape(shape)
-                }
                 if let labelGlyphs {
                     // The label curves with its cell: one shape of its letters'
                     // outlines, so no letter snaps to the pixel grid off the arc.
@@ -475,6 +470,17 @@ struct SessionWheelView: View {
                     .animation(RelayMotion.change(reduceMotion: reduceMotion), value: isOn)
                     .rotationEffect(.radians(geometry.labelRotation(slot: slot, offset: offset)))
                     .position(geometry.position(slot: slot, radius: geometry.actionRadius, offset: offset))
+                }
+                if let attentionDot {
+                    // An agent that wants attention carries a white dot after
+                    // its name, as its Workspace tab does, until it is
+                    // switched to (user, 2026-11-28).
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: geometry.agentAttentionDotDiameter, height: geometry.agentAttentionDotDiameter)
+                        .position(attentionDot)
+                        .transition(.opacity)
+                        .accessibilityHidden(true)
                 }
             }
             .contentShape(shape)

@@ -13,8 +13,9 @@ enum RelayRemoteAgents {
     /// The `agents` entries for one `session_state`, in table order.
     /// `sessionReady` is the session-level `ready` (the bridge accepts
     /// commands); until then every live agent is still `starting`.
+    /// `agents` is the app's per-agent config, for each agent's work style.
     static func states(_ snapshot: RelaySessionControlHost.Snapshot, sessionReady: Bool,
-                       stopping: Bool = false) -> [AgentStatus] {
+                       stopping: Bool = false, agents: AgentsConfig = AgentsConfig()) -> [AgentStatus] {
         let live = stopping ? [] : snapshot.live
         let activity = snapshot.activity
         return SessionAgent.allCases.map { agent in
@@ -36,7 +37,8 @@ enum RelayRemoteAgents {
                 state = !stopping && activity.launching == agent ? .starting : .off
             }
             let workingOn = session == nil ? nil : activity.workingOn[agent]
-            return AgentStatus(agent: agent.slug, running: session != nil, state: state, workingOn: workingOn)
+            return AgentStatus(agent: agent.slug, running: session != nil, state: state, workingOn: workingOn,
+                               workStyle: agents[agent].workStyle.rawValue)
         }
     }
 

@@ -8,10 +8,12 @@ import XCTest
 final class AppTests: XCTestCase {
     func testInfoPlistDeclaresUsageStringsAndBonjourServices() {
         let info = Bundle.main.infoDictionary ?? [:]
-        for key in ["NSMicrophoneUsageDescription", "NSSpeechRecognitionUsageDescription",
+        for key in ["NSMicrophoneUsageDescription",
                     "NSLocalNetworkUsageDescription", "NSCameraUsageDescription"] {
             XCTAssertFalse((info[key] as? String ?? "").isEmpty, key)
         }
+        XCTAssertNil(info["NSSpeechRecognitionUsageDescription"],
+                     "SpeechTranscriber needs only the microphone; nothing uses SFSpeechRecognizer")
         XCTAssertEqual(info["NSBonjourServices"] as? [String], ["_ssh._tcp"])
         XCTAssertEqual(info["UIBackgroundModes"] as? [String], ["audio"],
                        "audio keeps a reply playing with the screen locked; the session is active only while recording or playing")
@@ -37,25 +39,6 @@ final class AppTests: XCTestCase {
         XCTAssertEqual(pairing.load(), mac)
     }
 
-    func testDebugSummariesShowFrameContent() {
-        XCTAssertEqual(DebugView.summary(.error(.init(code: "no_session", message: "Relay Runner is not running a session"))),
-                       "no_session: Relay Runner is not running a session")
-        XCTAssertEqual(DebugView.summary(.control(.init(clientId: "c0ffee", action: .replay))), "replay")
-        XCTAssertEqual(DebugView.activityLabel(.hearing), "Hearing you")
-        XCTAssertEqual(DebugView.summary(.remoteMode(.init(clientId: "c0ffee", enabled: false))), "off")
-        XCTAssertEqual(DebugView.summary(.speech(.init(seq: 3, kind: .final, source: .orchestrator, text: "Hi",
-                                                       spokenBy: .mac))), "#3 final (Mac) · Hi")
-        XCTAssertEqual(DebugView.summary(.sessionCommand(.init(clientId: "c0ffee", action: .start, projectId: "p1"))),
-                       "start p1")
-        XCTAssertEqual(DebugView.summary(.sessionState(.init(appRunning: true, session: .failed, projectName: "notes",
-                                                             error: "No."))), "failed · notes · No.")
-        XCTAssertEqual(DebugView.summary(.sessionState(.init(appRunning: false, session: .noSession))),
-                       "Relay Runner not running")
-        XCTAssertEqual(MacSessionSection.title(MacSessionStatus(
-            connection: .connectedToApp, appUnavailable: false,
-            mac: .init(appRunning: true, session: .starting, projectName: "notes"), error: nil)), "Starting notes")
-    }
-
     @MainActor
     func testRemoteModeSwitchDefaultsOnAndPersists() throws {
         let suite = "com.relayrunner.remote.tests.\(UUID().uuidString)"
@@ -79,8 +62,6 @@ final class AppTests: XCTestCase {
         model.playbackMode = .onDemand
         XCTAssertEqual(AppModel(remoteModePreference: RemoteModePreference(defaults: defaults),
                                 playbackModePreference: preference).playbackMode, .onDemand)
-        XCTAssertEqual(DebugView.playbackLabel(.onDemand), "Play on demand")
-        XCTAssertEqual(DebugView.activityLabel(.buffering), "Buffering")
     }
 
     @MainActor

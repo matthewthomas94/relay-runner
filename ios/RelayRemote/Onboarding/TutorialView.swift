@@ -16,7 +16,8 @@ struct TutorialView: View {
         #if DEBUG
         if let sample = sample.flatMap(TutorialSample.init(rawValue:)) {
             TutorialScreen(step: sample.step, problem: nil, agentName: "George", isTalking: sample.isTalking,
-                           transcript: sample.transcript, waiting: sample.waiting, onSkip: onFinished,
+                           transcript: sample.transcript, waiting: sample.waiting,
+                           isPlaying: sample.step == .stopPlayback, onSkip: onFinished,
                            sampleGlow: sample.glow)
         } else {
             live
@@ -38,21 +39,27 @@ struct TutorialView: View {
 }
 
 extension TutorialStep {
-    /// The hero text, with its line breaks as in the reference images.
-    var hero: HeroText {
+    /// The hero text, with its line breaks as in the reference images, in
+    /// the words of the user's Talk setting.
+    func hero(talkMode: TalkMode) -> HeroText {
         switch self {
         case .basics:
             return "Now let’s learn the basics"
+        // Each chip is drawn like the control it names: the white talk
+        // button, the dock's labelled Play and Stop (one control).
         case .holdToTalk:
-            return HeroText(lines: [[.chip(icon: .mic, label: "Hold to talk", style: .primary), .text(" & say hi")]])
+            return HeroText(lines: [[.text(talkMode == .hold ? "Hold " : "Tap "),
+                                     .chip(icon: .mic, label: nil, style: .primary), .text(" & say hi")]])
         case .releaseToSend:
-            return "Now release to send"
+            guard talkMode == .toggle else { return "Now release to send" }
+            return HeroText(lines: [[.text("Tap "), .chip(icon: .audioLines, label: nil, style: .primary),
+                                     .text(" to send")]])
         case .playReply:
             return HeroText(lines: [[.text("Wait for a reply,")],
                                     [.text("then tap "), .chip(icon: .play, label: "Play", style: .secondary)]])
         case .stopPlayback:
-            return HeroText(lines: [[.text("Tap "), .chip(icon: .square, label: nil, style: .secondary),
-                                     .text(" to stop playback")]])
+            return HeroText(lines: [[.text("Tap "), .chip(icon: .square, label: "Stop", style: .secondary)],
+                                    [.text("to stop playback")]])
         case .allDone:
             return "You’re all done"
         }
@@ -76,9 +83,12 @@ struct TutorialScreen: View {
     let step: TutorialStep
     let problem: TutorialProblem?
     let agentName: String
+    var talkMode = TalkMode.hold
     var isTalking = false
     var transcript = ""
     var waiting: AgentsScreenState.WaitingReply?
+    /// A reply is playing: the dock's playback control reads Stop.
+    var isPlaying = false
     var onSkip: (() -> Void)?
     var actions = TutorialActions()
     /// Debug only: draws a glow here, where the app root has no voice to follow.
@@ -94,7 +104,7 @@ struct TutorialScreen: View {
             if let sampleGlow {
                 DotField(style: sampleGlow).ignoresSafeArea().allowsHitTesting(false)
             }
-            OnboardingHeroLayout(hero: step.hero, onSkip: step == .allDone ? nil : onSkip,
+            OnboardingHeroLayout(hero: step.hero(talkMode: talkMode), onSkip: step == .allDone ? nil : onSkip,
                                  drawsBackground: false,
                                  accessory: {
                 RelaySwap(subtitle) { text in
@@ -109,32 +119,34 @@ struct TutorialScreen: View {
             VStack(spacing: 12) {
                 Spacer(minLength: 0)
                 if step.showsDock {
-                    if step == .playReply, let waiting {
-                        WaitingReplyPanel(name: agentName, receivedAt: waiting.receivedAt) { actions.play(waiting) }
-                            .padding(.horizontal, RelayMetrics.screenMargin)
-                            .transition(.relaySurface)
-                    }
                     dock
+                        .padding(.horizontal, AgentDock.sideInset)
                         .padding(.bottom, AgentsScreen.dockBottomGap)
                         .transition(.relaySurface)
                 }
             }
             .animation(RelayMotion.change, value: step.showsDock)
-            .animation(RelayMotion.change, value: waiting)
         }
         .glassTabBar {
             GlassTabBar(selection: .constant(.agents), dimmed: true)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
                 .opacity(step == .basics || step == .allDone ? 0 : 1)
+                // It arrives and leaves with the dock instead of popping.
+                .animation(RelayMotion.change, value: step.showsDock)
         }
     }
 
     private var dock: some View {
-        let dimmed = Set(DockControl.allCases).subtracting(step.litControls)
-        return AgentDock(text: .constant(""), placeholder: "Message \(agentName)", talkMode: .hold,
-                         isTalking: isTalking, transcript: transcript, dimmed: dimmed, inert: dimmed,
-                         onTalk: actions.talk, onStop: actions.stop)
+        var dimmed = Set(DockControl.allCases).subtracting(step.litControls)
+        // Play lights up once the reply is there to play; Stop is the same
+        // control, lit while the reply plays.
+        if step == .playReply, waiting == nil { dimmed.insert(.replay) }
+        return AgentDock(text: .constant(""), placeholder: "Message \(agentName)", talkMode: talkMode,
+                         isTalking: isTalking, transcript: transcript, canPlay: waiting != nil,
+                         isPlaying: isPlaying, dimmed: dimmed, inert: dimmed,
+                         onTalk: actions.talk, onPlay: { if let waiting { actions.play(waiting) } },
+                         onStop: actions.stop)
     }
 }
 
@@ -149,6 +161,8 @@ private struct LiveTutorial: View {
     @State private var tutorial: TutorialModel
     @State private var speech = TutorialSignals.Speech.preparing
     @State private var agent: String?
+    /// The user's Talk setting: Hold, or tap to start and tap to send.
+    private let talkMode = TalkModePreference().mode
 
     init(model: AppModel, session: RemoteSession, voice: VoiceController, onFinished: @escaping () -> Void) {
         self.model = model
@@ -169,7 +183,7 @@ private struct LiveTutorial: View {
             voice: VoiceSnapshot(isTalking: voice.isListening, transcript: voice.transcript,
                                  playingSeq: voice.isSpeaking ? voice.currentSeq : nil,
                                  waitingSeqs: voice.waitingSeqs),
-            talkMode: .hold)
+            talkMode: talkMode)
         let signals = TutorialSignals(
             speech: speech,
             agentAvailable: TutorialAgent.isAvailable(agent.flatMap { agents.activities[$0] }),
@@ -180,7 +194,8 @@ private struct LiveTutorial: View {
             replyWaiting: state.waiting != nil,
             isPlaying: voice.isSpeaking)
         TutorialScreen(step: tutorial.machine.step, problem: tutorial.machine.problem, agentName: state.name,
-                       isTalking: state.isTalking, transcript: state.transcript, waiting: state.waiting,
+                       talkMode: talkMode, isTalking: state.isTalking, transcript: state.transcript, waiting: state.waiting,
+                       isPlaying: state.isPlaying,
                        onSkip: { tutorial.skip() },
                        actions: actions(agents: agents))
             .onChange(of: MacSessionStatus(session), initial: true) { _, status in
@@ -257,7 +272,7 @@ enum TutorialSample: String, CaseIterable {
     var transcript: String { self == .release ? "Hi" : "" }
 
     var waiting: AgentsScreenState.WaitingReply? {
-        self == .play ? .init(seq: 1, skipping: [], receivedAt: .now.addingTimeInterval(-2)) : nil
+        self == .play ? .init(seq: 1, skipping: []) : nil
     }
 
     var glow: DotFieldStyle? {

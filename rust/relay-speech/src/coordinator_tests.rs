@@ -2443,6 +2443,27 @@ fn remote_stop_and_skip_send_one_control_while_frames_are_unacknowledged() {
     assert_eq!(device.controls(), sent);
 }
 
+/// A frame the Mac has stopped is no longer waiting, so `queue_depth` stops
+/// counting it even though the device never acknowledged it.
+#[test]
+fn remote_frames_stopped_unacknowledged_leave_the_queue_depth() {
+    let h = Harness::new();
+    let _device = sink(&h, "device-1");
+    h.speak_in("Puck's reply.", "session-a");
+    h.speak_in("George's reply.", "session-b");
+    assert_eq!(h.depth(), 2);
+
+    h.coordinator
+        .stop_playback("recording_barge_in", Some("session-b"));
+    assert_eq!(h.depth(), 1);
+
+    h.coordinator.stop_playback("interrupt", None);
+    assert_eq!(h.depth(), 0);
+
+    h.speak("A newer reply.");
+    assert_eq!(h.depth(), 1);
+}
+
 /// "`new_turn` sends `stop` with the reason `superseded` when the sink holds
 /// status speech of an older command, unless a reply it has not acknowledged
 /// would be dropped with it."

@@ -53,10 +53,12 @@ struct RelayBannerView: View {
     }
 }
 
-/// Where a floating banner sits: just below the status bar, 12 pt in from
-/// each side, as in `25-agents-mac-unreachable.jpg`.
+/// Where a floating banner sits: in the Agents header's place, just below the
+/// status bar (the safe area's top, plus the header's 2 pt), 12 pt in from
+/// each side. 47 pt from the screen's top, as in `25-agents-mac-unreachable.jpg`,
+/// crowded the status bar on the phone (user, 2026-11-28).
 enum RelayBannerMetrics {
-    static let top: CGFloat = 47
+    static let top: CGFloat = 2
     static let sideMargin: CGFloat = 12
 }
 
@@ -86,11 +88,13 @@ extension View {
                     RelayBannerView(banner: banner)
                         .padding(.horizontal, RelayBannerMetrics.sideMargin)
                         .padding(.top, RelayBannerMetrics.top)
-                        .transition(.relaySurface)
+                        // Drops in from the top and leaves the way it came, faster.
+                        .transition(.asymmetric(
+                            insertion: .offset(y: -16).combined(with: .opacity).combined(with: .scale(scale: 0.97, anchor: .top)),
+                            removal: .offset(y: -12).combined(with: .opacity).animation(.easeOut(duration: 0.18))))
                 }
             }
-            .animation(RelayMotion.change, value: banner)
-            .ignoresSafeArea(edges: .top)
+            .animation(RelayMotion.enter, value: banner)
         }
     }
 }

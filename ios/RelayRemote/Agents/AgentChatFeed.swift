@@ -1,50 +1,81 @@
 import SwiftUI
 
 /// The selected agent's chat, newest at the bottom. It fades out at its top
-/// and bottom edges with an alpha mask on the feed itself, and has no
-/// background, so the glows behind the screen show through.
+/// edge with an alpha mask on the feed itself, and has no background; the
+/// state glows draw over it (`MainTabView`).
 struct AgentChatFeed: View {
     let name: String
     let messages: [ChatMessage]
     var speakingSeq: Int?
-    var waiting: AgentsScreenState.WaitingReply?
-    var onPlay: () -> Void = {}
+    /// The reply the dock's Play will play (Queue mode): a Border Beam in
+    /// the playback purple runs round its edge (user, 2026-11-28).
+    var waitingSeq: Int?
 
     static let topFade: CGFloat = 32
+    /// The chat's own top fade: long and eased into the black behind, so
+    /// messages dissolve under the header instead of looking cropped (user,
+    /// 2026-11-28).
+    static let headerFade: CGFloat = 170
     static let bottomFade: CGFloat = 24
 
     var body: some View {
         ScrollView {
-            LazyVStack(spacing: 20) {
+            // Not lazy: a LazyVStack estimates the height of rows it has not
+            // laid out, and with the bottom anchor the feed jumped past its
+            // last message and could not scroll back up when long replies
+            // came into view. A chat holds at most `ChatStore.limit` rows.
+            VStack(spacing: 20) {
+                // Only the newest reply with the playing seq: an older one may
+                // share it from before the Mac restarted.
+                let speakingID = speakingSeq.flatMap { seq in messages.last(where: { $0.seq == seq })?.id }
+                let waitingID = waitingSeq.flatMap { seq in messages.last(where: { $0.seq == seq })?.id }
                 ForEach(messages) { message in
-                    row(message)
-                }
-                if let waiting {
-                    WaitingReplyPanel(name: name, receivedAt: waiting.receivedAt, onPlay: onPlay)
-                        .id("waiting")
-                        .transition(.relaySurface)
+                    row(message, speaking: message.id == speakingID,
+                        waiting: message.id == waitingID && message.id != speakingID)
+                        // New rows rise in from below, unblurring as they
+                        // settle, and the rows above ease up to make room
+                        // (user, 2026-11-28: they popped in too fast).
+                        .transition(.asymmetric(
+                            insertion: .modifier(active: RelayHiddenModifier(hidden: 1),
+                                                 identity: RelayHiddenModifier(hidden: 0))
+                                .combined(with: .offset(y: 32)),
+                            removal: .opacity))
                 }
             }
             .padding(.horizontal, RelayMetrics.screenMargin)
             .padding(.top, Self.topFade)
             .padding(.bottom, Self.bottomFade)
-            .animation(RelayMotion.change, value: waiting)
+            .animation(Self.feedChange, value: messages.count)
+            .animation(RelayMotion.enter, value: speakingSeq)
         }
         .scrollIndicators(.hidden)
         .defaultScrollAnchor(.bottom)
+        // Dragging the chat down pulls the keyboard away with it.
+        .scrollDismissesKeyboard(.interactively)
+        // Only the top edge fades, under the agent; the bottom scrolls straight
+        // under the dock's glass (user, 2026-11-27).
         .mask {
             VStack(spacing: 0) {
-                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
-                    .frame(height: Self.topFade)
+                LinearGradient(stops: [
+                    .init(color: .black.opacity(0), location: 0),
+                    .init(color: .black.opacity(0.04), location: 0.12),
+                    .init(color: .black.opacity(0.2), location: 0.3),
+                    .init(color: .black.opacity(0.5), location: 0.5),
+                    .init(color: .black.opacity(0.78), location: 0.7),
+                    .init(color: .black.opacity(0.94), location: 0.86),
+                    .init(color: .black, location: 1),
+                ], startPoint: .top, endPoint: .bottom)
+                    .frame(height: Self.headerFade)
                 Rectangle().fill(.black)
-                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
-                    .frame(height: Self.bottomFade)
             }
+            // The mask reaches under the bars, so the list shows through
+            // their glass instead of stopping at their edge.
+            .ignoresSafeArea(edges: .bottom)
         }
     }
 
     @ViewBuilder
-    private func row(_ message: ChatMessage) -> some View {
+    private func row(_ message: ChatMessage, speaking: Bool, waiting: Bool) -> some View {
         switch message.role {
         case .user:
             VStack(alignment: .trailing, spacing: 6) {
@@ -53,8 +84,7 @@ struct AgentChatFeed: View {
                     .foregroundStyle(RelayColor.neutral10)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
-                    .background(RelayGlassBackground(glass: .selected,
-                                                     shape: RoundedRectangle(cornerRadius: 16, style: .continuous)))
+                    .modifier(FeedGlass(glass: .raised))
                 meta("You · \(Self.time(message.date))")
             }
             .padding(.leading, 72)
@@ -66,9 +96,19 @@ struct AgentChatFeed: View {
                     .foregroundStyle(RelayColor.neutral10)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
-                    .relayGlass(.panel)
-                meta(message.seq != nil && message.seq == speakingSeq
-                     ? "\(name) · speaking" : "\(name) · \(Self.time(message.date))")
+                    .modifier(FeedGlass())
+                    // Libraries.dev's Border Beam in the playback glow's
+                    // purples only, matching the dock's Play (`playbackBeam`).
+                    .playbackBeam(active: waiting, cornerRadius: RelayMetrics.panelRadius,
+                                  lap: PlaybackBeam.replyLap, strength: 1)
+                // "speaking" swaps in and out without the two lines overlapping.
+                ZStack(alignment: .leading) {
+                    Text(speaking ? "\(name) · speaking" : "\(name) · \(Self.time(message.date))")
+                        .relayTextStyle(.caption)
+                        .foregroundStyle(RelayColor.neutral7)
+                        .id(speaking)
+                        .transition(.relayControlSwap)
+                }
             }
             .padding(.trailing, 51)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -92,40 +132,21 @@ struct AgentChatFeed: View {
     static func time(_ date: Date) -> String {
         date.formatted(.dateTime.hour(.defaultDigits(amPM: .omitted)).minute())
     }
+
+    /// No bounce: a message settles into place on the ease-out, rather than
+    /// overshooting and springing back (user, 2026-11-28).
+    static let feedChange = Animation.spring(duration: 0.7, bounce: 0)
 }
 
-/// "New reply from <agent>" in Queue mode, with a secondary Play.
-struct WaitingReplyPanel: View {
-    let name: String
-    let receivedAt: Date
-    let onPlay: () -> Void
+/// A chat surface's glass (radius 16): Liquid Glass tinted with the Figma
+/// fill, applied to the content itself so the text always draws above it.
+private struct FeedGlass: ViewModifier {
+    var glass: RelayGlass = .panel
 
-    var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("New reply from \(name)")
-                    .relayTextStyle(.body)
-                    .foregroundStyle(RelayColor.neutral10)
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    Text("Queued · \(Self.age(from: receivedAt, to: context.date))")
-                        .relayTextStyle(.caption)
-                        .foregroundStyle(RelayColor.neutral7)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Button(action: onPlay) { RelayButtonLabel("Play", icon: .play) }
-                .buttonStyle(RelayButtonStyle(role: .secondary, height: 40))
-        }
-        .padding(.leading, 14)
-        .padding(.trailing, 12)
-        .padding(.vertical, 12)
-        .relayGlass(.panel)
-    }
-
-    static func age(from start: Date, to now: Date) -> String {
-        let seconds = max(0, Int(now.timeIntervalSince(start)))
-        if seconds < 60 { return "\(seconds) s" }
-        if seconds < 3600 { return "\(seconds / 60) min" }
-        return "\(seconds / 3600) h"
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: RelayMetrics.panelRadius, style: .continuous)
+        content
+            .glassEffect(glass.liquid, in: shape)
+            .environment(\.colorScheme, .dark)
     }
 }

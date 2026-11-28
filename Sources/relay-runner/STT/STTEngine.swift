@@ -450,6 +450,7 @@ final class STTEngine: @unchecked Sendable {
         captureInterruptionEpoch &+= 1
         captureInterruptionLock.unlock()
         resetRecordingBuffer()
+        gesture.clearPendingGestures()
         if !preservingGesture { gesture.reset() }
         captureOwnershipLock.lock()
         defer { captureOwnershipLock.unlock() }
@@ -724,6 +725,13 @@ final class STTEngine: @unchecked Sendable {
                 transcript.reset()
                 mediaSettleDeadline = nil
                 checkRemoteTakeover()
+                // Double-Shift still opens the Workspace while the phone holds
+                // the microphone; only the recording gestures are suspended.
+                if gesture.takeBoardToggle() {
+                    boardToggleRequested = true
+                    boardToggleRequestedAt = CACurrentMediaTime()
+                    NSLog("[STTEngine] Workspace toggle requested (double-tap Shift) while suspended")
+                }
                 continue
             }
 

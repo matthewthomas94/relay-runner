@@ -322,6 +322,11 @@ class RemoteContract:
         self.assertEqual(metadata["input_source"], "remote")
         self.assertEqual(metadata["device_id"], DEVICE_ID)
         self.assertIsNone(self.session.pending())
+        # The command is filed under George's session only: filing it under
+        # the focused one made that session's messenger answer it as Puck.
+        commands = json.loads((self.box.runtime / "voice_command_state.json").read_text())["session_commands"]
+        self.assertEqual(commands["session-2"]["relay_command_id"], accepted["relay_command_id"])
+        self.assertNotEqual(commands.get(self.session.key, {}).get("relay_command_id"), accepted["relay_command_id"])
         # Focus did not move: the Mac microphone's next turn is the focused session's.
         self.box.say("check the build")
         prompt, local = self.session.wait_pending("the Mac turn")

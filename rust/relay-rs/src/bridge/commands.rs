@@ -29,11 +29,14 @@ use crate::support::{env_or, env_text, now};
 
 /// `_begin_relay_command`: record a new newest-intent generation as soon as
 /// voice input arrives. Relay Remote passes its input source and device.
+/// `target_key` is the session the turn is for, so it is filed under that
+/// session rather than whichever one the Mac has focused.
 pub fn begin_relay_command(
     source_text: &str,
     state_path: &str,
     input_source: Option<&str>,
     device_id: Option<&Value>,
+    target_key: Option<&str>,
 ) -> Dict {
     let metadata = {
         let _guard = store::voice_state_lock();
@@ -70,6 +73,9 @@ pub fn begin_relay_command(
         if let Some(input_source) = input_source.filter(|source| !source.is_empty()) {
             metadata.insert("input_source", input_source);
             metadata.insert("device_id", device_id.cloned().unwrap_or(Value::Null));
+        }
+        if let Some(key) = target_key.filter(|key| !key.is_empty()) {
+            metadata.insert("voice_target_session_key", key);
         }
         if let Err(error) = store::write_command_state(state_path, &metadata) {
             eprintln!("[voice_bridge] Could not write the command state: {error}");

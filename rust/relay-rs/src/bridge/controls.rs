@@ -381,7 +381,7 @@ pub fn interrupt(
     if let Some(messenger) = bridge.messenger() {
         messenger.interrupt();
     }
-    let relay_command = commands::begin_relay_command(text, state_path, None, None);
+    let relay_command = commands::begin_relay_command(text, state_path, None, None, None);
     let active = commands::active_work(&settings().provider_turns_file, None);
     let intent_id = relay_command.string("relay_command_id");
     let disposition = arbitration::resolve_intent_disposition(&DispositionRequest {
