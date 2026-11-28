@@ -176,7 +176,10 @@ struct AgentDock: View {
                         .lineLimit(Self.maxLines)
                         .truncationMode(.head)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentTransition(.opacity)
+                        // No crossfade: the words move with the box as it grows
+                        // a line; crossfaded, the old lines and the new showed
+                        // a line apart (user, 2026-11-28).
+                        .contentTransition(.identity)
                         .animation(RelayMotion.move, value: transcript)
                 } else {
                     TextField("", text: $text,

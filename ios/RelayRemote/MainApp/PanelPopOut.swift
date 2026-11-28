@@ -33,10 +33,15 @@ struct PanelPop: ViewModifier, Animatable {
         ZStack(alignment: .topLeading) {
             PanelLiquid(look: look, panel: rect, bar: bar, radius: radius)
             // Laid out in place and carried by the panel's top edge, so they
-            // rise out from behind the bar with it. Bottom-anchored, so while
-            // the dock's own height animates (the text box after talking) its
-            // buttons stay put in the panel.
+            // rise out from behind the bar with it. At their own height, not
+            // the panel's: as the text box grows (talking, a draft) the dock
+            // grows with its own animation while the panel's place catches
+            // up; squeezed into that place the transcript stayed on one line
+            // and then jumped a line at a time (user, 2026-11-28).
+            // Bottom-anchored, so its buttons stay put in the panel.
             content
+                .frame(width: place.width)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(width: place.width, height: place.height, alignment: .bottom)
                 .opacity(look.controlsOpacity)
                 .blur(radius: look.blur)
