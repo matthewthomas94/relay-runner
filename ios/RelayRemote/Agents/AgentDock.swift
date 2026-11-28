@@ -192,6 +192,14 @@ struct AgentDock: View {
                     .tint(RelayColor.neutral10)
                     .submitLabel(.send)
                     .onSubmit(sendIfPossible)
+                    // A field that grows types Return as a new line and never
+                    // submits, so the keyboard's Send key sends (user, 2026-11-28).
+                    .onChange(of: text) { old, new in
+                        guard new.count == old.count + 1,
+                              new.filter({ $0 == "\n" }).count > old.filter({ $0 == "\n" }).count else { return }
+                        text = old
+                        sendIfPossible()
+                    }
                 }
             }
             .relayTextStyle(.body)
