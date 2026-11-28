@@ -568,6 +568,24 @@ final class SessionWheelTests: XCTestCase {
     /// A segment is labelled with its agent's name. Its label and
     /// glyph sit apart like `space-between`: the same padding inside each end
     /// of the segment, the glyph after the label in reading order, never overlapping.
+    /// The attention dot sits after the name and clear of the plus or X,
+    /// even in the longest name's segment.
+    func testAttentionDotSitsBetweenTheNameAndTheGlyph() {
+        for index in 0..<geometry.sessionItemCount {
+            let text = agents[index].name
+            let layout = geometry.sessionAgentLayout(index, label: text)
+            let width = geometry.trackedLetters(text).width
+            let axis = CGPoint(x: cos(layout.label.rotation), y: sin(layout.label.rotation))
+            func along(_ point: CGPoint) -> CGFloat {
+                (point.x - layout.label.point.x) * axis.x + (point.y - layout.label.point.y) * axis.y
+            }
+            let dot = along(layout.attentionDot), radius = geometry.agentAttentionDotDiameter / 2
+            XCTAssertGreaterThanOrEqual(dot - radius, width / 2 + 1, "after the name, item \(index)")
+            XCTAssertLessThanOrEqual(dot + radius, along(layout.glyph.point) - geometry.agentGlyphDiameter / 2 + 1,
+                                     "clear of the glyph, item \(index)")
+        }
+    }
+
     func testAgentSegmentSpacesItsLabelAndGlyphApart() {
         let radius = geometry.actionRadius
         let diameter = geometry.agentGlyphDiameter

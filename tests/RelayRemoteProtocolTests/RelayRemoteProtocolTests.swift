@@ -348,4 +348,26 @@ final class RelayRemoteProtocolTests: XCTestCase {
             }
         }
     }
+
+    /// RR file uploads (user, 2026-11-28): the phone's pieces and the Mac's
+    /// answer round-trip, and a piece past its limits is refused.
+    func testFileUploadFramesRoundTripAndAreBounded() throws {
+        let id = UUID().uuidString.lowercased()
+        let piece = Frame.fileUpload(FileUpload(uploadId: id, name: "a.png", index: 0, total: 2, data: "AAAA"))
+        XCTAssertEqual(piece.direction, .phoneToMac)
+        XCTAssertEqual(try FrameCodec.decode(try FrameCodec.encode(piece)), piece)
+        let result = Frame.uploadResult(UploadResult(uploadId: id, received: 16))
+        XCTAssertEqual(result.direction, .macToPhone)
+        XCTAssertEqual(try FrameCodec.decode(try FrameCodec.encode(result)), result)
+        let bigData = String(repeating: "A", count: 33 * 1024)
+        XCTAssertThrowsError(try FrameCodec.encode(.fileUpload(FileUpload(uploadId: id, name: "a", index: 0, total: 1,
+                                                                         data: bigData))))
+        XCTAssertThrowsError(try FrameCodec.encode(.fileUpload(FileUpload(uploadId: id, name: "a", index: 2, total: 2,
+                                                                         data: ""))))
+        XCTAssertThrowsError(try FrameCodec.encode(.fileUpload(FileUpload(uploadId: "x", name: "a", index: 0, total: 1,
+                                                                         data: ""))))
+        let tooMany = RelayRemoteProtocol.maxUploadBytes / RelayRemoteProtocol.uploadChunkBytes + 2
+        XCTAssertThrowsError(try FrameCodec.encode(.fileUpload(FileUpload(uploadId: id, name: "a", index: 0,
+                                                                         total: tooMany, data: ""))))
+    }
 }

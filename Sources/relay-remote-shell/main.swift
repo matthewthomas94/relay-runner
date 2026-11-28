@@ -200,6 +200,104 @@ func route(_ line: Data) -> Bool {
     ]))
 }
 
+// MARK: - Files from the phone (user, 2026-11-28)
+
+// The helper saves each `file_upload` itself, as the user, so a file never
+// passes through the voice bridge or the app. A file arrives in order, one
+// piece per line, and lands at remote-uploads/<upload id>/<name>; the phone
+// then names that path in the message it sends the agent.
+
+let uploadChunkBytes = 24 * 1024
+let maxUploadBytes = 50 * 1024 * 1024
+/// Progress every this many pieces, which also paces the phone.
+let uploadAckPieces = 16
+let uploadsDirectory = ProcessInfo.processInfo.environment["RELAY_REMOTE_UPLOADS_DIR"]
+    .map { URL(fileURLWithPath: $0, isDirectory: true) }
+    ?? URL(fileURLWithPath: NSHomeDirectory())
+        .appendingPathComponent("Library/Application Support/relay-runner/remote-uploads", isDirectory: true)
+
+struct Upload {
+    let handle: FileHandle
+    let part: URL
+    let destination: URL
+    let total: Int
+    var next: Int
+}
+
+var uploads: [String: Upload] = [:]
+
+// A file cut off by a dropped connection leaves nothing behind.
+atexit {
+    for upload in uploads.values {
+        try? FileManager.default.removeItem(at: upload.part.deletingLastPathComponent())
+    }
+}
+
+func uploadResult(_ id: String, received: Int? = nil, path: String? = nil, error: String? = nil) -> Bool {
+    var object: [String: Any] = ["type": "upload_result", "upload_id": id]
+    if let received { object["received"] = received }
+    if let path { object["path"] = path }
+    if let error { object["error"] = error }
+    return writeAll(STDOUT_FILENO, jsonLine(object))
+}
+
+/// The file's own name, with nothing that could leave its folder.
+func safeFileName(_ name: String) -> String {
+    var cleaned = String((name as NSString).lastPathComponent
+        .map { $0 == "/" || $0 == ":" || $0.isNewline ? "-" : $0 }
+        .prefix(120))
+    while cleaned.hasPrefix(".") { cleaned.removeFirst() }
+    return cleaned.isEmpty ? "file" : cleaned
+}
+
+/// Saves one piece. False when the phone could not be told, so the session ends.
+func receiveUpload(_ line: Data) -> Bool {
+    guard let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
+          let id = (object["upload_id"] as? String)?.lowercased(), UUID(uuidString: id) != nil else {
+        return writeAll(STDOUT_FILENO, jsonLine(["type": "error", "code": "invalid_field", "message": "upload_id"]))
+    }
+    func refuse(_ message: String) -> Bool {
+        if let upload = uploads.removeValue(forKey: id) {
+            try? upload.handle.close()
+            try? FileManager.default.removeItem(at: upload.part.deletingLastPathComponent())
+        }
+        return uploadResult(id, error: message)
+    }
+    guard let name = object["name"] as? String, let index = object["index"] as? Int,
+          let total = object["total"] as? Int, let encoded = object["data"] as? String,
+          let data = Data(base64Encoded: encoded), data.count <= uploadChunkBytes,
+          total > 0, total * uploadChunkBytes < maxUploadBytes + uploadChunkBytes, (0..<total).contains(index) else {
+        return refuse("The file arrived damaged")
+    }
+    if index == 0, uploads[id] == nil {
+        let folder = uploadsDirectory.appendingPathComponent(id, isDirectory: true)
+        let destination = folder.appendingPathComponent(safeFileName(name))
+        let part = folder.appendingPathComponent(".upload.part")
+        guard (try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)) != nil,
+              FileManager.default.createFile(atPath: part.path, contents: nil),
+              let handle = try? FileHandle(forWritingTo: part) else {
+            return uploadResult(id, error: "The Mac could not save the file")
+        }
+        uploads[id] = Upload(handle: handle, part: part, destination: destination, total: total, next: 0)
+    }
+    guard var upload = uploads[id], upload.next == index, upload.total == total else {
+        return refuse("The file arrived out of order")
+    }
+    guard (try? upload.handle.write(contentsOf: data)) != nil else { return refuse("The Mac could not save the file") }
+    upload.next += 1
+    guard upload.next == total else {
+        uploads[id] = upload
+        return upload.next % uploadAckPieces == 0 ? uploadResult(id, received: upload.next) : true
+    }
+    uploads[id] = nil
+    try? upload.handle.close()
+    guard (try? FileManager.default.moveItem(at: upload.part, to: upload.destination)) != nil else {
+        try? FileManager.default.removeItem(at: upload.part.deletingLastPathComponent())
+        return uploadResult(id, error: "The Mac could not save the file")
+    }
+    return uploadResult(id, path: upload.destination.path)
+}
+
 // MARK: - Copy loop
 
 func readChunk(_ fd: Int32) -> Data? {
@@ -246,6 +344,10 @@ while true {
         guard let chunk = readChunk(STDIN_FILENO) else { exit(0) }
         let (lines, violation) = fromClient.feed(chunk)
         for line in lines {
+            if frameType(line) == "file_upload" {
+                if !receiveUpload(line) { exit(0) }
+                continue
+            }
             var out = line
             out.append(0x0A)
             if !route(out) { exit(0) }

@@ -8,6 +8,25 @@ enum DockControl: Hashable, CaseIterable {
     case textBox, replay, talk
 }
 
+/// A file or photo picked to send with the next message (user, 2026-11-28).
+/// It uploads to the Mac as soon as it is picked; `path` is where the Mac
+/// saved it.
+struct DockAttachment: Identifiable, Equatable {
+    let id = UUID()
+    let name: String
+    /// A small thumbnail when the file is an image.
+    let preview: UIImage?
+    var progress: Double = 0
+    var path: String?
+    /// Why it could not be sent; it stays in the box until removed.
+    var failure: String?
+
+    var isUploading: Bool { path == nil && failure == nil }
+}
+
+/// Where the attach button picks from.
+enum AttachSource { case photos, files }
+
 /// The dock from screens 21–25 (Figma Final, user 2026-11-27): one glass
 /// message panel holding the agent tabs, a text box whose Send button is the
 /// old secondary up arrow, then a row of two buttons sharing its width. On
@@ -47,6 +66,10 @@ struct AgentDock: View {
     /// False when `MainTabView` draws the dock in the tab bar's glass
     /// container, so its glass can melt into the tab bar (`HostedPanel`).
     var drawsGlass = true
+    /// Files picked for the next message, shown above the text.
+    var attachments: [DockAttachment] = []
+    var onAttach: (AttachSource) -> Void = { _ in }
+    var onRemoveAttachment: (DockAttachment.ID) -> Void = { _ in }
     var onSend: () -> Void = {}
     var onTalk: (TalkGesture.Command) -> Void = { _ in }
     var onCancel: () -> Void = {}
@@ -164,9 +187,50 @@ struct AgentDock: View {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var canSend: Bool { hasText && !isTalking && canMessage }
+    private var canSend: Bool {
+        let hasFiles = attachments.contains { $0.path != nil }
+        let uploading = attachments.contains(where: \.isUploading)
+        return (hasText || hasFiles) && !uploading && !isTalking && canMessage
+    }
+
+    /// With nothing typed, said or picked, Send is the attach button; it
+    /// turns back into the up arrow as soon as there is something to send
+    /// (user, 2026-11-28).
+    private var showsAttach: Bool {
+        !hasText && attachments.isEmpty && !showsTranscript
+    }
 
     private var textBox: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if !attachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(attachments) { attachment in
+                            AttachmentChip(attachment: attachment, fill: Self.sendFill) {
+                                onRemoveAttachment(attachment.id)
+                            }
+                            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                    .padding(.top, 4)
+                }
+                .transition(.opacity)
+            }
+            textRow
+        }
+        .animation(RelayMotion.dockSwap, value: attachments.map(\.id))
+        .frame(minHeight: 44)
+        // The box's edge is the Send button's colour (user, 2026-11-28).
+        .modifier(FieldSurface(stroke: Self.sendFill))
+        .opacity(dimmed.contains(.textBox) || !canMessage ? 0.3 : 1)
+        .allowsHitTesting(!inert.contains(.textBox) && canMessage)
+        .disabled(!canMessage)
+        .animation(RelayMotion.enter, value: canMessage)
+        .animation(RelayMotion.move, value: showsTranscript)
+    }
+
+    private var textRow: some View {
         // Send sits in the bottom-right corner, 4 pt in from the edges, so on
         // one line it is centred and as the box grows it stays at the bottom.
         HStack(alignment: .bottom, spacing: 8) {
@@ -192,6 +256,17 @@ struct AgentDock: View {
                     .tint(RelayColor.neutral10)
                     .submitLabel(.send)
                     .onSubmit(sendIfPossible)
+                    // A field that grows types Return as a new line and never
+                    // submits, so the keyboard's Send key sends (user, 2026-11-28).
+                    // The dock is drawn twice when the tab bar hosts its
+                    // glass (`hostedPanel`), so this runs twice per Return:
+                    // only the first, while the newline is still there, sends.
+                    .onChange(of: text) { old, new in
+                        guard text == new, new.count == old.count + 1,
+                              new.filter({ $0 == "\n" }).count > old.filter({ $0 == "\n" }).count else { return }
+                        text = old
+                        sendIfPossible()
+                    }
                 }
             }
             .relayTextStyle(.body)
@@ -200,37 +275,53 @@ struct AgentDock: View {
             .frame(minHeight: 44, alignment: .leading)
             // The old secondary Send: grey until there is text to send, then
             // the selected fill with the glass's lit rim, as the selected
-            // tabs (user, 2026-11-28).
-            Button(action: sendIfPossible) {
-                let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
-                LucideImage(.arrowUp, size: 18)
-                    .foregroundStyle(canSend ? RelayColor.neutral10 : RelayColor.neutral7)
-                    .frame(width: 36, height: 36)
-                    .background {
-                        if canSend {
-                            shape.fill(RelayGlass.selected.tint)
-                                .overlay(RelayGlassRim(shape: shape, light: RelayGlass.selected.rimLight))
-                        } else {
-                            shape.fill(Self.sendFill)
-                        }
+            // tabs (user, 2026-11-28). With nothing to send it attaches.
+            ZStack {
+                if showsAttach {
+                    Menu {
+                        Button { onAttach(.photos) } label: { Label("Photo Library", systemImage: "photo.on.rectangle") }
+                        Button { onAttach(.files) } label: { Label("Choose File", systemImage: "folder") }
+                    } label: {
+                        // Lit like Send with something to send, since it
+                        // always does something; the paperclip's close
+                        // curves read heavier, so its line is a little finer
+                        // to match the arrow (user, 2026-11-28).
+                        sendFace(.paperclip, lit: true, iconColor: RelayColor.neutral10, strokeWidth: 1.25)
                     }
+                    .accessibilityLabel("Attach a photo or file")
+                    .transition(.relayDockSwap)
+                } else {
+                    Button(action: sendIfPossible) {
+                        sendFace(.arrowUp, lit: canSend, iconColor: canSend ? RelayColor.neutral10 : RelayColor.neutral7)
+                    }
+                    .buttonStyle(.relayPlain)
+                    .disabled(!canSend)
+                    .accessibilityLabel("Send")
+                    .transition(.relayDockSwap)
+                }
             }
-            .buttonStyle(.relayPlain)
-            .disabled(!canSend)
             .animation(RelayMotion.dockSwap, value: canSend)
+            .animation(RelayMotion.dockSwap, value: showsAttach)
             .padding(.trailing, 4)
             .padding(.bottom, 4)
             .padding(.top, 4)
-            .accessibilityLabel("Send")
         }
-        .frame(minHeight: 44)
-        // The box's edge is the Send button's colour (user, 2026-11-28).
-        .modifier(FieldSurface(stroke: Self.sendFill))
-        .opacity(dimmed.contains(.textBox) || !canMessage ? 0.3 : 1)
-        .allowsHitTesting(!inert.contains(.textBox) && canMessage)
-        .disabled(!canMessage)
-        .animation(RelayMotion.enter, value: canMessage)
-        .animation(RelayMotion.move, value: showsTranscript)
+    }
+
+    private func sendFace(_ icon: LucideIcon, lit: Bool, iconColor: Color, strokeWidth: CGFloat = 1.5) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        return LucideImage(icon, size: 18, strokeWidth: strokeWidth)
+            .foregroundStyle(iconColor)
+            .frame(width: 36, height: 36)
+            .background {
+                if lit {
+                    shape.fill(RelayGlass.selected.tint)
+                        .overlay(RelayGlassRim(shape: shape, light: RelayGlass.selected.rimLight))
+                } else {
+                    shape.fill(Self.sendFill)
+                }
+            }
+            .contentShape(shape)
     }
 
     /// The transcript stays in the text box after the talk button is released
@@ -392,5 +483,58 @@ struct TalkingWave: View {
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
+    }
+}
+
+/// A picked file in the text box: its thumbnail or a file icon, its name,
+/// a ring while it uploads or a warning if it could not, and a remove button.
+private struct AttachmentChip: View {
+    let attachment: DockAttachment
+    let fill: Color
+    let remove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Group {
+                if let preview = attachment.preview {
+                    Image(uiImage: preview).resizable().scaledToFill()
+                } else {
+                    LucideImage(.file, size: 16).foregroundStyle(RelayColor.neutral7)
+                }
+            }
+            .frame(width: 28, height: 28)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            Text(attachment.name)
+                .relayTextStyle(.caption)
+                .foregroundStyle(attachment.failure == nil ? RelayColor.neutral10 : RelayColor.neutral7)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 140, alignment: .leading)
+            if attachment.isUploading {
+                Circle()
+                    .trim(from: 0, to: max(0.05, attachment.progress))
+                    .stroke(RelayColor.neutral10, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .background(Circle().stroke(RelayColor.neutral7.opacity(0.4), lineWidth: 2))
+                    .frame(width: 14, height: 14)
+                    .animation(RelayMotion.move, value: attachment.progress)
+            } else if attachment.failure != nil {
+                LucideImage(.triangleExclamationPoint, size: 14).foregroundStyle(RelayColor.neutral7)
+            }
+            Button(action: remove) {
+                LucideImage(.x, size: 14)
+                    .foregroundStyle(RelayColor.neutral7)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.relayPlain)
+            .accessibilityLabel("Remove \(attachment.name)")
+        }
+        .padding(.leading, 6)
+        .padding(.trailing, 4)
+        .frame(height: 40)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(fill))
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(attachment.failure ?? (attachment.isUploading ? "Uploading" : "Ready"))
     }
 }

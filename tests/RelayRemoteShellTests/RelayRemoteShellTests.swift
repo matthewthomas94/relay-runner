@@ -65,6 +65,7 @@ final class RelayRemoteShellTests: XCTestCase {
             "RELAY_REMOTE_SOCKET_PATH": dir + "/d.sock",
             "RELAY_REMOTE_PAIR_SOCKET_PATH": dir + "/p.sock",
             "RELAY_SESSION_CONTROL_SOCKET_PATH": dir + "/c.sock",
+            "RELAY_REMOTE_UPLOADS_DIR": dir + "/uploads",
         ]
         environment.merge(env) { $1 }
         p.environment = environment
@@ -100,6 +101,63 @@ final class RelayRemoteShellTests: XCTestCase {
         XCTAssertEqual(server.readLine(), #"{"type":"ping","t":1}"#)
         server.send(#"{"type":"pong","t":1}"# + "\n")
         XCTAssertEqual(readLine(stdout), #"{"type":"pong","t":1}"#)
+        try stdin.close()
+        XCTAssertEqual(waitExit(p), 0)
+    }
+
+    /// A file from the phone is saved by the helper, never reaches the
+    /// bridge, reports progress every 16 pieces and answers with its path
+    /// (user, 2026-11-28).
+    func testFileUploadIsSavedAndNeverForwarded() throws {
+        let server = try FakeServer(path: dir + "/d.sock")
+        defer { server.shutdown() }
+        let (p, stdin, stdout) = try spawn(["--device", "dev-1"])
+        server.accept()
+        _ = server.readLine()
+        let id = UUID().uuidString.lowercased()
+        let chunk = 24 * 1024
+        let payload = Data((0..<(chunk * 17 + 5)).map { UInt8($0 % 251) })
+        let total = (payload.count + chunk - 1) / chunk
+        for index in 0..<total {
+            let piece = payload.subdata(in: index * chunk..<min((index + 1) * chunk, payload.count))
+            let line = try JSONSerialization.data(withJSONObject: [
+                "type": "file_upload", "upload_id": id, "name": "../notes/plan.pdf",
+                "index": index, "total": total, "data": piece.base64EncodedString(),
+            ])
+            try stdin.write(contentsOf: line + [0x0A])
+        }
+        try stdin.write(contentsOf: Data(#"{"type":"ping","t":1}"#.utf8 + [0x0A]))
+        let progress = try XCTUnwrap(readLine(stdout))
+        XCTAssertEqual(progress, #"{"received":16,"type":"upload_result","upload_id":"\#(id)"}"#)
+        let result = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try XCTUnwrap(readLine(stdout)).utf8))
+            as? [String: Any])
+        let path = try XCTUnwrap(result["path"] as? String)
+        XCTAssertEqual(path, dir + "/uploads/\(id)/plan.pdf")
+        XCTAssertEqual(FileManager.default.contents(atPath: path), payload)
+        // The bridge sees only the ping after the identify line.
+        XCTAssertEqual(server.readLine(), #"{"type":"ping","t":1}"#)
+        try stdin.close()
+        XCTAssertEqual(waitExit(p), 0)
+    }
+
+    func testFileUploadOutOfOrderIsRefusedAndRemoved() throws {
+        let server = try FakeServer(path: dir + "/d.sock")
+        defer { server.shutdown() }
+        let (p, stdin, stdout) = try spawn(["--device", "dev-1"])
+        server.accept()
+        _ = server.readLine()
+        let id = UUID().uuidString.lowercased()
+        for index in [0, 2] {
+            let line = try JSONSerialization.data(withJSONObject: [
+                "type": "file_upload", "upload_id": id, "name": "a.txt", "index": index, "total": 3,
+                "data": Data("x".utf8).base64EncodedString(),
+            ])
+            try stdin.write(contentsOf: line + [0x0A])
+        }
+        let result = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try XCTUnwrap(readLine(stdout)).utf8))
+            as? [String: Any])
+        XCTAssertEqual(result["error"] as? String, "The file arrived out of order")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir + "/uploads/\(id)"))
         try stdin.close()
         XCTAssertEqual(waitExit(p), 0)
     }

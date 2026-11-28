@@ -79,21 +79,37 @@ struct AgentChatFeed: View {
         switch message.role {
         case .user:
             VStack(alignment: .trailing, spacing: 6) {
-                Text(message.text)
-                    .relayTextStyle(.body)
-                    .foregroundStyle(RelayColor.neutral10)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .modifier(FeedGlass(glass: .raised))
+                VStack(alignment: .leading, spacing: 8) {
+                    if !message.text.isEmpty {
+                        Text(message.text)
+                            .relayTextStyle(.body)
+                            .foregroundStyle(RelayColor.neutral10)
+                    }
+                    // The files sent with it, by name (user, 2026-11-28).
+                    ForEach(Array((message.files ?? []).enumerated()), id: \.offset) { _, name in
+                        HStack(spacing: 6) {
+                            LucideImage(.paperclip, size: 14)
+                            Text(name).relayTextStyle(.caption).lineLimit(1).truncationMode(.middle)
+                        }
+                        .foregroundStyle(RelayColor.neutral7)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .modifier(FeedGlass(glass: .raised))
                 meta("You · \(Self.time(message.date))")
             }
             .padding(.leading, 72)
             .frame(maxWidth: .infinity, alignment: .trailing)
         case .agent:
             VStack(alignment: .leading, spacing: 6) {
-                Text(message.text)
+                // Web and mail addresses open when tapped, and a long press
+                // copies the reply (user, 2026-11-28).
+                Text(Self.linked(message.text))
                     .relayTextStyle(.body)
                     .foregroundStyle(RelayColor.neutral10)
+                    .tint(RelayColor.neutral10)
+                    .textSelection(.enabled)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .modifier(FeedGlass())
@@ -127,6 +143,22 @@ struct AgentChatFeed: View {
         Text(text)
             .relayTextStyle(.caption)
             .foregroundStyle(RelayColor.neutral7)
+    }
+
+    private static let linkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+
+    /// The message with its web and mail addresses as underlined links.
+    static func linked(_ text: String) -> AttributedString {
+        var result = AttributedString(text)
+        for match in linkDetector?.matches(in: text, range: NSRange(text.startIndex..., in: text)) ?? [] {
+            guard let url = match.url, MarkdownView.opensInTheBrowser(url),
+                  let range = Range(match.range, in: text),
+                  let lower = AttributedString.Index(range.lowerBound, within: result),
+                  let upper = AttributedString.Index(range.upperBound, within: result) else { continue }
+            result[lower..<upper].link = url
+            result[lower..<upper].underlineStyle = .single
+        }
+        return result
     }
 
     static func time(_ date: Date) -> String {

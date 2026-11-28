@@ -1,12 +1,19 @@
+import PhotosUI
+import RelayRemoteProtocol
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// What the Agents screen's controls do.
 struct AgentsScreenActions {
     var select: (String) -> Void = { _ in }
     /// Changes the selected agent's work style.
     var setWorkStyle: (String) -> Void = { _ in }
-    /// Sends the text box; false leaves the text in place.
-    var send: (String) -> Bool = { _ in false }
+    /// Sends the text box and its uploaded files; false leaves them in place.
+    var send: (String, [SentFile]) -> Bool = { _, _ in false }
+    /// Uploads a picked file to the Mac and returns where it was saved.
+    var upload: (Data, String, @escaping @MainActor (Double) -> Void) async throws -> String = { _, _, _ in
+        throw CancellationError()
+    }
     var talk: (TalkGesture.Command) -> Void = { _ in }
     var cancelTalk: () -> Void = {}
     var play: (AgentsScreenState.WaitingReply) -> Void = { _ in }
@@ -29,6 +36,10 @@ struct AgentsScreen: View {
     @State private var draft: String
     /// The agent whose chat is showing, to tell which way a switch goes.
     @State private var shownAgent: String
+    @State private var attachments: [DockAttachment] = []
+    @State private var pickingFiles = false
+    @State private var pickingPhotos = false
+    @State private var photoItems: [PhotosPickerItem] = []
     @Environment(\.hostsPanels) private var hostsPanels
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -106,7 +117,8 @@ struct AgentsScreen: View {
     /// What the dock's text box shows: the transcript from the moment talking
     /// starts until the message is sent, otherwise the draft.
     private var dockTextKey: String {
-        state.isTalking || !state.transcript.isEmpty ? "t" + state.transcript : "d" + draft
+        let text = state.isTalking || !state.transcript.isEmpty ? "t" + state.transcript : "d" + draft
+        return text + attachments.map(\.id.uuidString).joined()
     }
 
     private var isOffline: Bool { state.reachability != .reachable }
@@ -150,10 +162,23 @@ struct AgentsScreen: View {
                   // running until it has started (user, 2026-11-28).
                   canMessage: !state.isStarting && !state.notRunning,
                   drawsGlass: !hostsPanels,
+                  attachments: attachments,
+                  onAttach: { source in
+                      switch source {
+                      case .photos: pickingPhotos = true
+                      case .files: pickingFiles = true
+                      }
+                  },
+                  onRemoveAttachment: { id in attachments.removeAll { $0.id == id } },
                   onSend: send, onTalk: actions.talk, onCancel: actions.cancelTalk,
                   onReplay: actions.replay, onPlay: play, onStop: actions.stop)
             .modifier(Dimmed(isDimmed: isOffline))
             .hostedPanel(.agents, hosted: hostsPanels, textKey: dockTextKey)
+            .fileImporter(isPresented: $pickingFiles, allowedContentTypes: [.item],
+                          allowsMultipleSelection: true, onCompletion: importFiles)
+            .photosPicker(isPresented: $pickingPhotos, selection: $photoItems, maxSelectionCount: 10,
+                          matching: .images)
+            .onChange(of: photoItems) { _, items in importPhotos(items) }
     }
 
     private var header: some View {
@@ -230,7 +255,81 @@ struct AgentsScreen: View {
     }
 
     private func send() {
-        if actions.send(draft) { draft = "" }
+        let files = attachments.compactMap { attachment in
+            attachment.path.map { SentFile(name: attachment.name, path: $0) }
+        }
+        guard actions.send(draft, files) else { return }
+        draft = ""
+        attachments = []
+    }
+
+    // MARK: - Attachments (user, 2026-11-28)
+
+    private func importFiles(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result else { return }
+        for url in urls {
+            Task {
+                let read = await Task.detached { Self.read(url) }.value
+                switch read {
+                case .success(let data): add(data, name: url.lastPathComponent)
+                case .failure(let reason): attachments.append(DockAttachment(name: url.lastPathComponent, preview: nil,
+                                                                             failure: reason.message))
+                }
+            }
+        }
+    }
+
+    private struct ReadFailure: Error { let message: String }
+
+    /// The file's bytes, refusing one over the upload limit before reading it.
+    nonisolated private static func read(_ url: URL) -> Result<Data, ReadFailure> {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+           size > RelayRemoteProtocol.maxUploadBytes {
+            return .failure(ReadFailure(message: "Larger than 50 MB"))
+        }
+        guard let data = try? Data(contentsOf: url) else { return .failure(ReadFailure(message: "Could not be read")) }
+        return .success(data)
+    }
+
+    private func importPhotos(_ items: [PhotosPickerItem]) {
+        guard !items.isEmpty else { return }
+        photoItems = []
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let stamp = formatter.string(from: .now)
+        for (offset, item) in items.enumerated() {
+            Task {
+                guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+                // A photo goes as a JPEG, which every agent can read; HEIC is not.
+                let jpeg = await Task.detached { UIImage(data: data)?.jpegData(compressionQuality: 0.85) }.value
+                add(jpeg ?? data, name: "photo-\(stamp)-\(offset + 1).jpg")
+            }
+        }
+    }
+
+    private func add(_ data: Data, name: String) {
+        guard data.count <= RelayRemoteProtocol.maxUploadBytes else {
+            attachments.append(DockAttachment(name: name, preview: nil, failure: "Larger than 50 MB"))
+            return
+        }
+        let attachment = DockAttachment(name: name, preview: UIImage(data: data)?.preparingThumbnail(of: CGSize(width: 84, height: 84)))
+        attachments.append(attachment)
+        let id = attachment.id
+        Task {
+            do {
+                let path = try await actions.upload(data, name) { progress in update(id) { $0.progress = progress } }
+                update(id) { $0.path = path }
+            } catch {
+                update(id) { $0.failure = "Not sent" }
+            }
+        }
+    }
+
+    private func update(_ id: DockAttachment.ID, _ change: (inout DockAttachment) -> Void) {
+        guard let index = attachments.firstIndex(where: { $0.id == id }) else { return }
+        change(&attachments[index])
     }
 
     private func dismissKeyboard() {

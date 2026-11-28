@@ -309,6 +309,29 @@ final class CapsLockGestureTests: XCTestCase {
         XCTAssertNil(gesture.poll(currentSegment: ""))
     }
 
+    /// While Relay Remote holds the mic the loop only takes these, so the
+    /// agent switch must be takeable without a full poll, and only once.
+    func testAgentSwitchCanBeTakenWithoutPolling() {
+        var localHandler: ((NSEvent) -> NSEvent?)?
+        let gesture = CapsLockGesture(
+            globalMonitorInstaller: { _, _ in NSObject() },
+            localMonitorInstaller: { _, handler in
+                localHandler = handler
+                return NSObject()
+            },
+            monitorRemover: { _ in }
+        )
+
+        _ = localHandler?(modifierEvent(flags: [.shift], keyCode: 56))
+        _ = localHandler?(modifierEvent(flags: [.shift, .option], keyCode: 58))
+        _ = localHandler?(modifierEvent(flags: [.shift], keyCode: 58))
+        _ = localHandler?(modifierEvent(flags: [], keyCode: 56))
+
+        XCTAssertEqual(gesture.takeAgentCycle(), .forward)
+        XCTAssertNil(gesture.takeAgentCycle())
+        XCTAssertNil(gesture.poll(currentSegment: ""))
+    }
+
     private func sendDoubleTap(
         _ modifier: NSEvent.ModifierFlags,
         keyCode: UInt16,

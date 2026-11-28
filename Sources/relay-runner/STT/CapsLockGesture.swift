@@ -238,6 +238,13 @@ final class CapsLockGesture {
         return true
     }
 
+    /// Takes a pending Shift-Option or Shift-Control agent switch the same way,
+    /// so switching agents still works while Relay Remote holds the microphone.
+    func takeAgentCycle() -> AgentCycleGesture.Direction? {
+        defer { pendingAgentCycle = nil }
+        return pendingAgentCycle
+    }
+
     /// Drops modifier shortcuts (play, cancel, Workspace, agent switch) pressed
     /// while Relay Remote held the mic, so none replays when the Mac takes it back.
     func clearPendingGestures() {
