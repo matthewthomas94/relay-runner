@@ -79,6 +79,10 @@ struct MainTabView: View {
             swipe(from: old, to: tab)
             movePanel(to: tab)
         }
+        // The project tabs come up once the Workspace has loaded.
+        .onChange(of: workspaceReady) {
+            if selection == .workspace { movePanel(to: .workspace) }
+        }
         .animation(RelayMotion.enter, value: keyboardShown)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             keyboardShown = true
@@ -108,7 +112,7 @@ struct MainTabView: View {
     /// panel, the panel sinks into the tab bar, or pushes out of it, as the
     /// desktop wheel's submenus do (`PanelPop`).
     private func movePanel(to tab: MainTab) {
-        let hasPanel = Self.panelTabs.contains(tab)
+        let hasPanel = hasPanel(tab)
         if reduceMotion {
             panelTab = hasPanel ? tab : nil
             panelOut = hasPanel ? 1 : 0
@@ -134,6 +138,22 @@ struct MainTabView: View {
     private static let morph = Animation.spring(duration: 0.44, bounce: 0)
     /// The tabs with a panel above the tab bar.
     private static let panelTabs: Set<MainTab> = [.agents, .workspace]
+
+    /// Whether `tab` has its panel up now. The Workspace has its project
+    /// tabs only once its list has loaded; until then the dock sinks into
+    /// the tab bar, as on the way to Settings, rather than vanishing, and
+    /// the project tabs push out when the list arrives (user, 2026-11-28).
+    private func hasPanel(_ tab: MainTab) -> Bool {
+        Self.panelTabs.contains(tab) && (tab != .workspace || workspaceReady)
+    }
+
+    /// The Workspace's list has loaded, so it shows its project tabs
+    /// (`WorkspaceTabView`).
+    private var workspaceReady: Bool {
+        let feed = WorkspaceFeed.debugSample(workspaceSample) ?? WorkspaceFeed(session: model.session)
+        guard let workspace = feed.workspace else { return false }
+        return workspace.error == nil
+    }
 
     /// The tabs' panels and the tab bar in one `GlassEffectContainer`
     /// (RR-552, RR-553), so the panel's glass and the bar's merge as the

@@ -36,10 +36,16 @@ extension HostedPanel {
     /// Where the panel sits with its page at rest: the page's swipe offset
     /// taken back out, so the dock and the project tabs hold still and keep
     /// morphing while the pages slide (user, 2026-11-28).
+    /// Rounded to the half point: the swipe redraws the tab view every
+    /// frame, and a place a hair off the last one (378.00000000000006 wide),
+    /// set without animation, cut the morph between the dock and the project
+    /// tabs short, so it snapped (user, 2026-11-28).
     func place(in proxy: GeometryProxy) -> CGRect {
-        let frame = proxy[anchor]
-        guard let page else { return frame }
-        return frame.offsetBy(dx: -proxy[page].minX, dy: 0)
+        var frame = proxy[anchor]
+        if let page { frame.origin.x -= proxy[page].minX }
+        func round(_ value: CGFloat) -> CGFloat { (value * 2).rounded() / 2 }
+        return CGRect(x: round(frame.minX), y: round(frame.minY),
+                      width: round(frame.width), height: round(frame.height))
     }
 }
 
