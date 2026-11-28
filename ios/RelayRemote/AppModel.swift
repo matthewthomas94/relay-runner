@@ -215,6 +215,7 @@ final class AppModel {
         case .background:
             isForeground = false
             saveResumePoint()
+            voice?.pauseAutoPlay()
             // RR-545: Reply notifications hold the audio session and keep the
             // channel open. Otherwise a reply still playing, or an utterance
             // still recording, keeps it open and `audioBecameIdle` closes it afterwards.

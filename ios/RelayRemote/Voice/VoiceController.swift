@@ -30,7 +30,14 @@ final class VoiceController {
     }
     /// Auto-play, or wait for `play()` (RR-458).
     var playbackMode = PlaybackMode.autoPlay {
-        didSet { queue.mode = playbackMode }
+        didSet { syncQueueMode() }
+    }
+    /// Auto-play waits once the user leaves the app: nothing plays while
+    /// they are away, and when they come back replies wait for Play until
+    /// they play one themselves, so none starts before they are ready (user,
+    /// 2026-11-28). Queue mode is unaffected.
+    private(set) var autoPlayPaused = false {
+        didSet { syncQueueMode() }
     }
     /// The newest reply waiting for Play in play-on-demand mode.
     private(set) var waitingReply: String?
@@ -183,16 +190,25 @@ final class VoiceController {
     /// The Play control in play-on-demand mode.
     func play() {
         queue.play()
+        autoPlayPaused = false
     }
 
     /// RR-540: plays one agent's waiting reply, skipping its older ones.
     func play(seq: Int, skipping: Set<Int>) {
         queue.play(seq: seq, skipping: skipping)
+        autoPlayPaused = false
+    }
+
+    /// The user left the app: auto-play waits (`autoPlayPaused`). A reply
+    /// already playing finishes.
+    func pauseAutoPlay() {
+        autoPlayPaused = true
     }
 
     /// The replayed reply plays at once in either playback mode.
     func replay(agent: String? = nil) {
         queue.playNextReply()
+        autoPlayPaused = false
         session.send(control: .replay, agent: agent)
         // With Remote mode off the Mac plays the replay itself.
         guard remoteMode else { return }
@@ -365,6 +381,10 @@ final class VoiceController {
         guard utteranceOpen else { return }
         isListening = false
         Task { await closeUtterance(send: false) }
+    }
+
+    private func syncQueueMode() {
+        queue.mode = autoPlayPaused ? .onDemand : playbackMode
     }
 
     private func queueChanged() {

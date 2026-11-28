@@ -478,6 +478,23 @@ final class AgentsTests: XCTestCase {
         XCTAssertEqual(controls.map(\.agent), ["sky", "sky"])
     }
 
+    func testAutoPlayWaitsAfterLeavingUntilAReplyIsPlayedByHand() async throws {
+        let agents = model()
+        let (session, _) = try await connect(agents)
+        let voice = VoiceController(session: session)
+        voice.playbackMode = .autoPlay
+        voice.pauseAutoPlay()
+        voice.receive(.speech(Speech(seq: 1, kind: .final, source: .orchestrator, text: "First", agent: "sky")))
+        XCTAssertEqual(voice.waitingSeqs, [1], "after leaving, a reply waits for Play")
+        voice.play(seq: 1, skipping: [])
+        XCTAssertFalse(voice.autoPlayPaused)
+        voice.receive(.speech(Speech(seq: 2, kind: .final, source: .orchestrator, text: "Second", agent: "sky")))
+        XCTAssertEqual(voice.waitingSeqs, [], "once one is played by hand, auto-play is back")
+        voice.playbackMode = .onDemand
+        voice.receive(.speech(Speech(seq: 3, kind: .final, source: .orchestrator, text: "Third", agent: "sky")))
+        XCTAssertEqual(voice.waitingSeqs, [3], "Queue mode still waits")
+    }
+
     func testSampleScreensBuild() {
         for sample in AgentsSample.allCases {
             let state = sample.state
