@@ -155,6 +155,10 @@ public final class RemoteSession {
     /// feeds these to its speech playback queue.
     public var onInbound: ((Frame) -> Void)?
     private var ackOutbox: [Ack] = []
+    /// Files on their way to the Mac, by upload id.
+    @ObservationIgnored private var uploads: [String: UploadJob] = [:]
+    /// Pieces sent ahead of the Mac's last progress report.
+    public static let uploadWindow = 2 * RelayRemoteProtocol.uploadAckPieces
 
     @ObservationIgnored private let configuration: SessionConfiguration
     @ObservationIgnored private let transport: RemoteTransport
@@ -196,6 +200,7 @@ public final class RemoteSession {
     public func stop() {
         loop?.cancel()
         loop = nil
+        failUploads(.offline)
         connection?.close()
         connection = nil
         core.connectionClosed()
@@ -226,6 +231,59 @@ public final class RemoteSession {
         }
         pending = core.pending
         return true
+    }
+
+    /// Sends a file for the agent and returns the path the Mac saved it at
+    /// (user, 2026-11-28). The pieces go out a window at a time, paced by the
+    /// Mac's progress reports; `progress` runs on the main actor from 0 to 1.
+    public func upload(_ data: Data, name: String,
+                       progress: @escaping @MainActor (Double) -> Void = { _ in }) async throws -> String {
+        guard data.count <= RelayRemoteProtocol.maxUploadBytes else { throw UploadFailure.tooLarge }
+        guard connection != nil, core.isWelcomed else { throw UploadFailure.offline }
+        let id = UUID().uuidString.lowercased()
+        let size = RelayRemoteProtocol.uploadChunkBytes
+        let total = max(1, (data.count + size - 1) / size)
+        return try await withCheckedThrowingContinuation { continuation in
+            uploads[id] = UploadJob(data: data, name: name, total: total, sent: 0,
+                                    continuation: continuation, progress: progress)
+            pumpUpload(id, received: 0)
+        }
+    }
+
+    private func pumpUpload(_ id: String, received: Int) {
+        guard var job = uploads[id], let connection else { return }
+        let size = RelayRemoteProtocol.uploadChunkBytes
+        while job.sent < job.total, job.sent < received + Self.uploadWindow {
+            let start = job.sent * size
+            let piece = job.data.subdata(in: start..<min(start + size, job.data.count))
+            transmit(.fileUpload(FileUpload(uploadId: id, name: job.name, index: job.sent, total: job.total,
+                                            data: piece.base64EncodedString())), on: connection)
+            job.sent += 1
+        }
+        uploads[id] = job
+    }
+
+    private func receive(_ result: UploadResult) {
+        guard let job = uploads[result.uploadId] else { return }
+        if let path = result.path {
+            uploads[result.uploadId] = nil
+            job.progress(1)
+            job.continuation.resume(returning: path)
+        } else if let error = result.error {
+            uploads[result.uploadId] = nil
+            job.continuation.resume(throwing: UploadFailure.refused(error))
+        } else if let received = result.received {
+            job.progress(Double(received) / Double(job.total))
+            pumpUpload(result.uploadId, received: received)
+        }
+    }
+
+    /// Ends every upload in flight: the channel closed, or the Mac's helper
+    /// is too old to take files.
+    private func failUploads(_ failure: UploadFailure) {
+        let jobs = uploads.values
+        uploads.removeAll()
+        for job in jobs { job.continuation.resume(throwing: failure) }
     }
 
     /// Sends a control frame (stop, interrupt, cancel, play, replay) with a
@@ -436,6 +494,13 @@ public final class RemoteSession {
                 log("frame ignored: \((error as? FrameError)?.code ?? "decode")")
                 continue
             }
+            if case .uploadResult(let result) = frame {
+                receive(result)
+                continue
+            }
+            if case .error(let error) = frame, ["unknown_type", "unexpected_frame"].contains(error.code) {
+                failUploads(.unsupported)
+            }
             let wasEstablished = core.isEstablished
             let reaction = core.receive(frame, now: environment.now())
             if reaction.isNew { append(.received, frame) }
@@ -540,6 +605,7 @@ public final class RemoteSession {
     }
 
     private func finishConnection() {
+        failUploads(.offline)
         connection?.close()
         connection = nil
         core.connectionClosed()
@@ -576,4 +642,23 @@ public final class RemoteSession {
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.string(from: date)
     }
+}
+
+/// Why a file did not reach the Mac.
+public enum UploadFailure: Error, Equatable {
+    case offline
+    case tooLarge
+    /// The Mac's Relay Runner predates file uploads.
+    case unsupported
+    /// The Mac's reason, such as a full disk.
+    case refused(String)
+}
+
+private struct UploadJob {
+    let data: Data
+    let name: String
+    let total: Int
+    var sent: Int
+    let continuation: CheckedContinuation<String, Error>
+    let progress: @MainActor (Double) -> Void
 }

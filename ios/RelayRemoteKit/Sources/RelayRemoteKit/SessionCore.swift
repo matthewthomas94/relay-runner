@@ -251,7 +251,10 @@ public struct SessionCore: Sendable {
             // seq of its own, so it never moves the resume point.
             break
         case .hello, .utterance, .control, .remoteMode, .sessionCommand, .ack, .ping, .workspaceCommand,
-             .settingsCommand:
+             .settingsCommand, .fileUpload:
+            break
+        case .uploadResult:
+            // `RemoteSession` answers its uploads before the core sees a frame.
             break
         }
         return reaction

@@ -17,6 +17,8 @@ struct ChatMessage: Codable, Equatable, Identifiable {
     let date: Date
     /// The Mac's seq for an agent reply or status, which maps playback to its chat.
     var seq: Int?
+    /// The names of the files sent with a message of the user's.
+    var files: [String]?
 }
 
 /// Each agent's chat on disk: one JSON file per agent under Application

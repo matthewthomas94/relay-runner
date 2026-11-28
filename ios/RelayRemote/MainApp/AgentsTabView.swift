@@ -59,7 +59,8 @@ private struct LiveAgentsScreen: View {
         AgentsScreenActions(
             select: { agents.select($0) },
             setWorkStyle: { agents.setWorkStyle($0, for: agents.selected) },
-            send: { agents.send($0) },
+            send: { agents.send($0, files: $1) },
+            upload: { try await agents.upload($0, name: $1, progress: $2) },
             talk: { command in
                 switch command {
                 case .start:

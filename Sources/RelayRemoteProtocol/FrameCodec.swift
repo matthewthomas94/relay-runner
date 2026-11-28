@@ -72,6 +72,14 @@ public enum FrameCodec {
         case .workspaceCommand(let f): try requireUUID(f.clientId)
         case .settingsCommand(let f): try requireUUID(f.clientId)
         case .accepted(let f): try requireUUID(f.clientId)
+        case .fileUpload(let f):
+            guard UUID(uuidString: f.uploadId) != nil else { throw FrameError.invalidField("upload_id") }
+            guard f.total > 0, f.total * RelayRemoteProtocol.uploadChunkBytes
+                    < RelayRemoteProtocol.maxUploadBytes + RelayRemoteProtocol.uploadChunkBytes else {
+                throw FrameError.invalidField("total")
+            }
+            guard (0..<f.total).contains(f.index) else { throw FrameError.invalidField("index") }
+            guard f.data.utf8.count <= (RelayRemoteProtocol.uploadChunkBytes / 3) * 4 else { throw FrameError.invalidField("data") }
         case .speechAudio(let f):
             guard f.data.utf8.count <= RelayRemoteProtocol.maxAudioDataBytes else { throw FrameError.invalidField("data") }
         default: break

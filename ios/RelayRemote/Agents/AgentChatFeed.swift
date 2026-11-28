@@ -79,12 +79,24 @@ struct AgentChatFeed: View {
         switch message.role {
         case .user:
             VStack(alignment: .trailing, spacing: 6) {
-                Text(message.text)
-                    .relayTextStyle(.body)
-                    .foregroundStyle(RelayColor.neutral10)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .modifier(FeedGlass(glass: .raised))
+                VStack(alignment: .leading, spacing: 8) {
+                    if !message.text.isEmpty {
+                        Text(message.text)
+                            .relayTextStyle(.body)
+                            .foregroundStyle(RelayColor.neutral10)
+                    }
+                    // The files sent with it, by name (user, 2026-11-28).
+                    ForEach(Array((message.files ?? []).enumerated()), id: \.offset) { _, name in
+                        HStack(spacing: 6) {
+                            LucideImage(.paperclip, size: 14)
+                            Text(name).relayTextStyle(.caption).lineLimit(1).truncationMode(.middle)
+                        }
+                        .foregroundStyle(RelayColor.neutral7)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .modifier(FeedGlass(glass: .raised))
                 meta("You · \(Self.time(message.date))")
             }
             .padding(.leading, 72)

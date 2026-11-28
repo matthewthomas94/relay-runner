@@ -28,6 +28,48 @@ final class RemoteSessionTests: XCTestCase {
         session.stop()
     }
 
+    /// A file goes to the Mac a window of pieces at a time, each progress
+    /// report lets more go, and the Mac's path ends the upload (user, 2026-11-28).
+    func testUploadIsPacedByTheMacsProgressAndReturnsThePath() async throws {
+        let transport = FakeTransport(mac: FakeMac())
+        let session = Fixtures.session(transport: transport, clock: TestClock())
+        session.start()
+        await eventually { session.state == .connected }
+        let connection = try XCTUnwrap(transport.lastConnection)
+        func pieces() -> [FileUpload] {
+            connection.sentFrames.compactMap { if case .fileUpload(let piece) = $0 { return piece } else { return nil } }
+        }
+        let data = Data(count: RelayRemoteProtocol.uploadChunkBytes * 40)
+        var reported: [Double] = []
+        let upload = Task { try await session.upload(data, name: "clip.mov") { reported.append($0) } }
+        await eventually { pieces().count == RemoteSession.uploadWindow }
+        let id = try XCTUnwrap(pieces().first?.uploadId)
+        XCTAssertEqual(pieces().map(\.index), Array(0..<RemoteSession.uploadWindow))
+        connection.deliver(.uploadResult(UploadResult(uploadId: id, received: 16)))
+        await eventually { pieces().count == 40 }
+        connection.deliver(.uploadResult(UploadResult(uploadId: id, path: "/tmp/clip.mov")))
+        let path = try await upload.value
+        XCTAssertEqual(path, "/tmp/clip.mov")
+        XCTAssertEqual(reported, [0.4, 1])
+        session.stop()
+    }
+
+    func testUploadFailsWhenTheChannelCloses() async throws {
+        let transport = FakeTransport(mac: FakeMac())
+        let session = Fixtures.session(transport: transport, clock: TestClock())
+        session.start()
+        await eventually { session.state == .connected }
+        let upload = Task { try await session.upload(Data(count: 10), name: "a.txt") }
+        await eventually { transport.lastConnection?.sentFrames.contains { $0.typeName == "file_upload" } == true }
+        session.stop()
+        do {
+            _ = try await upload.value
+            XCTFail("the upload should fail")
+        } catch {
+            XCTAssertEqual(error as? UploadFailure, .offline)
+        }
+    }
+
     func testReconnectBackoffGrowsExponentiallyWithJitterBoundsAndCap() async throws {
         let clock = TestClock()
         let transport = FakeTransport(mac: FakeMac(), outcomes: Array(repeating: .fail(.unreachable), count: 9) + [.connect])

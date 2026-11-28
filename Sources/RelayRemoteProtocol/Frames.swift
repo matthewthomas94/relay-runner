@@ -9,6 +9,12 @@ public enum RelayRemoteProtocol {
     public static let maxLineBytes = 64 * 1024
     /// Maximum base64 bytes of Mac-voiced audio in one `speech_audio` frame (RR-457).
     public static let maxAudioDataBytes = 32 * 1024
+    /// The largest file the phone sends the agent (user, 2026-11-28).
+    public static let maxUploadBytes = 50 * 1024 * 1024
+    /// Raw bytes in one `file_upload` piece; base64 makes it 32 KiB on the wire.
+    public static let uploadChunkBytes = 24 * 1024
+    /// The Mac reports progress after this many pieces.
+    public static let uploadAckPieces = 16
     /// RR-532: the agent slugs an `agent` field names, in the Mac's table order.
     /// The codecs accept any string so a later agent does not break an older
     /// peer; the Mac refuses or ignores a slug it does not know.
@@ -81,6 +87,46 @@ public struct Utterance: Codable, Equatable, Sendable {
         self.text = text
         self.capturedAt = capturedAt
         self.agent = agent
+    }
+}
+
+/// A piece of a file the phone sends the agent (user, 2026-11-28). The Mac's
+/// `relay-remote-shell` saves the pieces in order and answers the last one,
+/// or the first it cannot save, with `upload_result`; neither frame reaches
+/// the voice bridge, so the Rust twin has no copy of them.
+public struct FileUpload: Codable, Equatable, Sendable {
+    /// A UUID naming the file; every piece carries it.
+    public var uploadId: String
+    public var name: String
+    /// From 0 to `total - 1`, sent in order.
+    public var index: Int
+    public var total: Int
+    /// Base64, at most `uploadChunkBytes` before encoding.
+    public var data: String
+
+    public init(uploadId: String, name: String, index: Int, total: Int, data: String) {
+        self.uploadId = uploadId
+        self.name = name
+        self.index = index
+        self.total = total
+        self.data = data
+    }
+}
+
+/// How far an upload has got: `received` pieces so far every
+/// `uploadAckPieces`, which paces the phone and shows progress; then where
+/// the Mac saved the file, or why it could not.
+public struct UploadResult: Codable, Equatable, Sendable {
+    public var uploadId: String
+    public var received: Int?
+    public var path: String?
+    public var error: String?
+
+    public init(uploadId: String, received: Int? = nil, path: String? = nil, error: String? = nil) {
+        self.uploadId = uploadId
+        self.received = received
+        self.path = path
+        self.error = error
     }
 }
 
@@ -614,6 +660,8 @@ public enum Frame: Equatable, Sendable {
     case workspaceTicket(WorkspaceTicketDetail)
     case settingsCommand(SettingsCommand)
     case settingsState(SettingsState)
+    case fileUpload(FileUpload)
+    case uploadResult(UploadResult)
 
     public var typeName: String {
         switch self {
@@ -638,13 +686,15 @@ public enum Frame: Equatable, Sendable {
         case .workspaceTicket: return "workspace_ticket"
         case .settingsCommand: return "settings_command"
         case .settingsState: return "settings_state"
+        case .fileUpload: return "file_upload"
+        case .uploadResult: return "upload_result"
         }
     }
 
     public var direction: FrameDirection {
         switch self {
         case .hello, .utterance, .control, .remoteMode, .sessionCommand, .ack, .ping, .workspaceCommand,
-             .settingsCommand: return .phoneToMac
+             .settingsCommand, .fileUpload: return .phoneToMac
         default: return .macToPhone
         }
     }
@@ -705,6 +755,8 @@ extension Frame: Codable {
         case .workspaceTicket(let f): try f.encode(to: encoder)
         case .settingsCommand(let f): try f.encode(to: encoder)
         case .settingsState(let f): try f.encode(to: encoder)
+        case .fileUpload(let f): try f.encode(to: encoder)
+        case .uploadResult(let f): try f.encode(to: encoder)
         }
     }
 
@@ -733,6 +785,8 @@ extension Frame: Codable {
         case "workspace_ticket": self = .workspaceTicket(try WorkspaceTicketDetail(from: decoder))
         case "settings_command": self = .settingsCommand(try SettingsCommand(from: decoder))
         case "settings_state": self = .settingsState(try SettingsState(from: decoder))
+        case "file_upload": self = .fileUpload(try FileUpload(from: decoder))
+        case "upload_result": self = .uploadResult(try UploadResult(from: decoder))
         default: throw FrameError.unknownType(type)
         }
     }

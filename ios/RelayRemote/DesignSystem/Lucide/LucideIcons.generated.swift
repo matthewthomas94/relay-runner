@@ -16,8 +16,10 @@ enum LucideIcon: String, CaseIterable {
     case chevronDown = "chevron-down"
     case chevronRight = "chevron-right"
     case clipboardPaste = "clipboard-paste"
+    case file = "file"
     case keyRound = "key-round"
     case laptop = "laptop"
+    case paperclip = "paperclip"
     case mic = "mic"
     case play = "play"
     case power = "power"
@@ -87,6 +89,11 @@ enum LucideIcon: String, CaseIterable {
                 .path("M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 1.793-1.113"),
                 .rect(x: 8, y: 2, width: 8, height: 4, rx: 1),
             ]
+        case .file:
+            return [
+                .path("M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"),
+                .path("M14 2v5a1 1 0 0 0 1 1h5"),
+            ]
         case .keyRound:
             return [
                 .path("M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"),
@@ -96,6 +103,10 @@ enum LucideIcon: String, CaseIterable {
             return [
                 .path("M18 5a2 2 0 0 1 2 2v8.526a2 2 0 0 0 .212.897l1.068 2.127a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45l1.068-2.127A2 2 0 0 0 4 15.526V7a2 2 0 0 1 2-2z"),
                 .path("M20.054 15.987H3.946"),
+            ]
+        case .paperclip:
+            return [
+                .path("m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551"),
             ]
         case .mic:
             return [

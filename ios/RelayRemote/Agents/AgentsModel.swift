@@ -137,18 +137,37 @@ final class AgentsModel {
 
     // MARK: - Sending
 
-    /// Sends `text` to `agent` (the selected one by default) and files it in
-    /// that agent's chat. A message to a stopped agent starts it first.
+    /// Sends `text` and any uploaded `files` to `agent` (the selected one by
+    /// default) and files it in that agent's chat. A message to a stopped
+    /// agent starts it first.
     @discardableResult
-    func send(_ text: String, to agent: String? = nil) -> Bool {
+    func send(_ text: String, files: [SentFile] = [], to agent: String? = nil) -> Bool {
         let agent = agent ?? selected
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         // An agent starting up takes nothing until it is ready (user, 2026-11-28).
-        guard !trimmed.isEmpty, !isStarting(agent), let session else { return false }
+        guard !trimmed.isEmpty || !files.isEmpty, !isStarting(agent), let session else { return false }
         if isStopped(agent) { start(agent) }
-        guard session.send(text: trimmed, agent: agent) else { return false }
-        file(ChatMessage(role: .user, text: trimmed, date: now()), to: agent)
+        guard session.send(text: Self.messageText(trimmed, files: files), agent: agent) else { return false }
+        file(ChatMessage(role: .user, text: trimmed, date: now(), files: files.isEmpty ? nil : files.map(\.name)),
+             to: agent)
         return true
+    }
+
+    /// What the agent reads: the message, then where the Mac saved each file
+    /// (user, 2026-11-28). The chat shows only the message and the names.
+    static func messageText(_ text: String, files: [SentFile]) -> String {
+        guard !files.isEmpty else { return text }
+        let intro = files.count == 1
+            ? "I sent a file from my phone. It is saved on this Mac at:"
+            : "I sent files from my phone. They are saved on this Mac at:"
+        let list = files.map { "- \($0.path)" }.joined(separator: "\n")
+        return text.isEmpty ? "\(intro)\n\(list)" : "\(text)\n\n\(intro)\n\(list)"
+    }
+
+    /// Uploads a picked file to the Mac and returns where it was saved.
+    func upload(_ data: Data, name: String, progress: @escaping @MainActor (Double) -> Void) async throws -> String {
+        guard let session else { throw UploadFailure.offline }
+        return try await session.upload(data, name: name, progress: progress)
     }
 
     static let workStyleWait: TimeInterval = 5
@@ -278,4 +297,10 @@ final class AgentsModel {
         }
     }
     #endif
+}
+
+/// A file uploaded to the Mac for a message: its name and where it was saved.
+struct SentFile: Equatable {
+    let name: String
+    let path: String
 }
