@@ -651,9 +651,17 @@ fn handle_entry(
     };
     let target_orchestrator =
         targets::voice_target_orchestrator(voice_target.as_ref(), bridge.orchestrator());
-    let target_key = voice_target.as_ref().map(|target| target.session_key.as_str());
+    let target_key = voice_target
+        .as_ref()
+        .map(|target| target.session_key.as_str());
     let mut relay_command = match &entry.remote {
-        None => commands::begin_relay_command(&text, &settings.command_state_file, None, None, target_key),
+        None => commands::begin_relay_command(
+            &text,
+            &settings.command_state_file,
+            None,
+            None,
+            target_key,
+        ),
         Some(item) => {
             let device_id = Value::from(item.device_id.as_str());
             let command = commands::begin_relay_command(

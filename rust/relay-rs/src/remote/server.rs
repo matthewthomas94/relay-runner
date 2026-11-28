@@ -635,7 +635,10 @@ impl Server {
             // restarted) has been told to start again by the welcome above;
             // carry on numbering above what it saw, so a new reply never
             // reuses the seq of one already in its chat.
-            if let Some(after) = hello.resume_after_seq.filter(|&after| after > state.seq.last) {
+            if let Some(after) = hello
+                .resume_after_seq
+                .filter(|&after| after > state.seq.last)
+            {
                 state.seq.last = after;
                 state.replay.server_seq = after;
             }
@@ -1176,7 +1179,15 @@ mod tests {
         // ...but the next reply does not reuse a seq already in its chat.
         let session = harness.server.session("D1").unwrap();
         assert_eq!(
-            session.speech("final", "orchestrator", "one", None, Some("phone"), None, None),
+            session.speech(
+                "final",
+                "orchestrator",
+                "one",
+                None,
+                Some("phone"),
+                None,
+                None
+            ),
             Ok(82)
         );
     }
