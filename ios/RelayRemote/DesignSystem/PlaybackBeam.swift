@@ -8,6 +8,9 @@ enum PlaybackBeam {
     static let playLap: Double = 4.6
     static let replyLap: Double = 6.4
     static let talkLap: Double = 5.4
+    /// On the dock's small buttons the beam read stronger than round the
+    /// reply, so there it runs at half strength (user, 2026-11-28).
+    static let buttonStrength: Double = 0.5
 }
 
 extension View {
@@ -17,9 +20,10 @@ extension View {
     /// Play will play and on Play itself, which fade it in and out together.
     /// `lap` is the seconds per lap: the reply's and Play's differ, so the two
     /// beams run round independently, never in step (user, 2026-11-28).
-    func playbackBeam(active: Bool, cornerRadius: CGFloat, lap: Double = PlaybackBeam.playLap) -> some View {
+    func playbackBeam(active: Bool, cornerRadius: CGFloat, lap: Double = PlaybackBeam.playLap,
+                      strength: Double = PlaybackBeam.buttonStrength) -> some View {
         borderBeam(.md, colorVariant: .playback, theme: .dark, staticColors: true, duration: lap,
-                   active: active, borderRadius: Double(cornerRadius), hueRange: 0)
+                   active: active, borderRadius: Double(cornerRadius), hueRange: 0, strength: strength)
     }
 
     /// The same beam in the listening glow's oranges: round the talk button
@@ -27,6 +31,6 @@ extension View {
     func listeningBeam(active: Bool, cornerRadius: CGFloat) -> some View {
         borderBeam(.md, colorVariant: .listening, theme: .dark, staticColors: true,
                    duration: PlaybackBeam.talkLap, active: active,
-                   borderRadius: Double(cornerRadius), hueRange: 0)
+                   borderRadius: Double(cornerRadius), hueRange: 0, strength: PlaybackBeam.buttonStrength)
     }
 }

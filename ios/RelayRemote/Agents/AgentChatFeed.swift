@@ -100,7 +100,7 @@ struct AgentChatFeed: View {
                     // Libraries.dev's Border Beam in the playback glow's
                     // purples only, matching the dock's Play (`playbackBeam`).
                     .playbackBeam(active: waiting, cornerRadius: RelayMetrics.panelRadius,
-                                  lap: PlaybackBeam.replyLap)
+                                  lap: PlaybackBeam.replyLap, strength: 1)
                 // "speaking" swaps in and out without the two lines overlapping.
                 ZStack(alignment: .leading) {
                     Text(speaking ? "\(name) · speaking" : "\(name) · \(Self.time(message.date))")
