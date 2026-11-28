@@ -282,7 +282,11 @@ struct AgentDock: View {
                         Button { onAttach(.photos) } label: { Label("Photo Library", systemImage: "photo.on.rectangle") }
                         Button { onAttach(.files) } label: { Label("Choose File", systemImage: "folder") }
                     } label: {
-                        sendFace(.paperclip, lit: false, iconColor: RelayColor.neutral10)
+                        // Lit like Send with something to send, since it
+                        // always does something; the paperclip's close
+                        // curves read heavier, so its line is a little finer
+                        // to match the arrow (user, 2026-11-28).
+                        sendFace(.paperclip, lit: true, iconColor: RelayColor.neutral10, strokeWidth: 1.25)
                     }
                     .accessibilityLabel("Attach a photo or file")
                     .transition(.relayDockSwap)
@@ -304,9 +308,9 @@ struct AgentDock: View {
         }
     }
 
-    private func sendFace(_ icon: LucideIcon, lit: Bool, iconColor: Color) -> some View {
+    private func sendFace(_ icon: LucideIcon, lit: Bool, iconColor: Color, strokeWidth: CGFloat = 1.5) -> some View {
         let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
-        return LucideImage(icon, size: 18)
+        return LucideImage(icon, size: 18, strokeWidth: strokeWidth)
             .foregroundStyle(iconColor)
             .frame(width: 36, height: 36)
             .background {
