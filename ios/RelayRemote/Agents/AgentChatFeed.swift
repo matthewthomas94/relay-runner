@@ -7,6 +7,9 @@ struct AgentChatFeed: View {
     let name: String
     let messages: [ChatMessage]
     var speakingSeq: Int?
+    /// The reply the dock's Play will play (Queue mode): a Border Beam in
+    /// the playback purple runs round its edge (user, 2026-11-28).
+    var waitingSeq: Int?
 
     static let topFade: CGFloat = 32
     /// The chat's own top fade: long and eased into the black behind, so
@@ -25,8 +28,10 @@ struct AgentChatFeed: View {
                 // Only the newest reply with the playing seq: an older one may
                 // share it from before the Mac restarted.
                 let speakingID = speakingSeq.flatMap { seq in messages.last(where: { $0.seq == seq })?.id }
+                let waitingID = waitingSeq.flatMap { seq in messages.last(where: { $0.seq == seq })?.id }
                 ForEach(messages) { message in
-                    row(message, speaking: message.id == speakingID)
+                    row(message, speaking: message.id == speakingID,
+                        waiting: message.id == waitingID && message.id != speakingID)
                         // New rows rise in from below.
                         .transition(.asymmetric(
                             insertion: .opacity.combined(with: .offset(y: 24))
@@ -67,7 +72,7 @@ struct AgentChatFeed: View {
     }
 
     @ViewBuilder
-    private func row(_ message: ChatMessage, speaking: Bool) -> some View {
+    private func row(_ message: ChatMessage, speaking: Bool, waiting: Bool) -> some View {
         switch message.role {
         case .user:
             VStack(alignment: .trailing, spacing: 6) {
@@ -89,6 +94,10 @@ struct AgentChatFeed: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .modifier(FeedGlass())
+                    // Libraries.dev's Border Beam; its "ocean" palette is the
+                    // playback glow's blue-violet. It fades in and out.
+                    .borderBeam(.md, colorVariant: .ocean, theme: .dark, active: waiting,
+                                borderRadius: Double(RelayMetrics.panelRadius))
                 // "speaking" swaps in and out without the two lines overlapping.
                 ZStack(alignment: .leading) {
                     Text(speaking ? "\(name) · speaking" : "\(name) · \(Self.time(message.date))")

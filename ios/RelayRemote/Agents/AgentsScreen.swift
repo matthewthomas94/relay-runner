@@ -64,7 +64,8 @@ struct AgentsScreen: View {
                         .id(state.selected)
                         .transition(Self.chatSwap(direction: reduceMotion ? 0 : switchDirection))
                 } else {
-                    AgentChatFeed(name: state.name, messages: state.feed, speakingSeq: state.speakingSeq)
+                    AgentChatFeed(name: state.name, messages: state.feed, speakingSeq: state.speakingSeq,
+                                  waitingSeq: state.waiting?.seq)
                     .id(state.selected)
                     .transition(Self.chatSwap(direction: reduceMotion ? 0 : switchDirection))
                 }
