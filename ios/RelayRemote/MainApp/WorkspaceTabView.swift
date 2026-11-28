@@ -305,10 +305,12 @@ struct ProjectTabStrip: View {
                             .frame(height: AgentTabStrip.height)
                             .background {
                                 if selected {
-                                    // One pill that slides to the selection: the tab
-                                    // bar's selected glass (user, 2026-11-28).
-                                    RelayGlassBackground(glass: .selected,
-                                                         shape: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                    // One pill that slides to the selection: the
+                                    // selected fill with the glass's lit rim, as the
+                                    // agent tabs (user, 2026-11-28).
+                                    Color.clear
+                                        .modifier(RelayGlassSurface(glass: .selected,
+                                                                    shape: RoundedRectangle(cornerRadius: 12, style: .continuous)))
                                         .matchedGeometryEffect(id: "pill", in: pill)
                                 }
                             }

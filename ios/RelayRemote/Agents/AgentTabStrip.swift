@@ -52,10 +52,14 @@ struct AgentTabStrip: View {
         .padding(.trailing, 12)
         .frame(height: Self.height)
         .background {
-            // One glass tab (with the Figma 8% hairline) that slides to the selection.
+            // One glass tab that slides to the selection: the selected fill
+            // with the glass's lit rim, as the dock's buttons (user,
+            // 2026-11-28). Drawn, since inside the dock's glass a flat
+            // background showed no glass at all.
             if isSelected {
-                RelayGlassBackground(glass: .panel, shape: RoundedRectangle(cornerRadius: 12, style: .continuous),
-                                     stroke: 0.08)
+                Color.clear
+                    .modifier(RelayGlassSurface(glass: .selected,
+                                                shape: RoundedRectangle(cornerRadius: 12, style: .continuous)))
                     .matchedGeometryEffect(id: "pill", in: pill)
             }
         }
