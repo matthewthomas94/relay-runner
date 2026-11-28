@@ -93,11 +93,12 @@ struct StateGlowLayer: View {
     /// `VoiceOverlayMotion.travelDuration` smoothstep on the way in.
     static let enter = Animation.timingCurve(0.45, 0, 0.55, 1, duration: 0.2)
     /// Leaving takes as long as the sink, so the falling edge stays visible.
-    static let exit = Animation.timingCurve(0.4, 0, 1, 1, duration: 0.34)
-    /// The field rises from the bottom edge to its full height, pushing up.
-    static let rise = Animation.timingCurve(0.33, 1, 0.68, 1, duration: 0.55)
+    static let exit = Animation.timingCurve(0.4, 0, 1, 1, duration: 0.24)
+    /// The field rises from the bottom edge to its full height, pushing up;
+    /// quicker than at first, on the same strong ease-out (user, 2026-11-28).
+    static let rise = Animation.timingCurve(0.33, 1, 0.68, 1, duration: 0.36)
     /// And pulls back down into the bottom edge as it leaves.
-    static let sink = Animation.timingCurve(0.4, 0, 1, 1, duration: 0.34)
+    static let sink = Animation.timingCurve(0.4, 0, 1, 1, duration: 0.24)
     static let crossfade = Animation.timingCurve(0.16, 1, 0.3, 1, duration: 0.45)
     /// Extra travel past the field's height, so its soft top edge clears the
     /// screen's bottom edge too.
@@ -111,10 +112,10 @@ struct StateGlowLayer: View {
     var body: some View {
         ZStack {
             if let style = previous.style {
-                DotField(style: style).opacity(1 - arrival)
+                DotField(style: style, growth: reveal).opacity(1 - arrival)
             }
             if let style = current.style {
-                DotField(style: style).opacity(arrival)
+                DotField(style: style, growth: reveal).opacity(arrival)
             }
         }
         // The field pushes up from below the screen's bottom edge as it
