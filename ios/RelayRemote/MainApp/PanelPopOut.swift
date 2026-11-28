@@ -31,14 +31,16 @@ struct PanelPop: ViewModifier, Animatable {
         let look = PanelPopPresentation(progress)
         let rect = look.rect(place: place, bar: bar)
         ZStack(alignment: .topLeading) {
-            PanelLiquid(look: look, panel: look.visible(place: place, bar: bar), bar: bar, radius: radius)
-            // Bottom-anchored, so while the dock's own height animates (the
-            // text box after talking) its buttons stay put in the panel.
+            PanelLiquid(look: look, panel: rect, bar: bar, radius: radius)
+            // Laid out in place and carried by the panel's top edge, so they
+            // rise out from behind the bar with it. Bottom-anchored, so while
+            // the dock's own height animates (the text box after talking) its
+            // buttons stay put in the panel.
             content
-                .frame(width: rect.width, height: rect.height, alignment: .bottom)
+                .frame(width: place.width, height: place.height, alignment: .bottom)
                 .opacity(look.controlsOpacity)
                 .blur(radius: look.blur)
-                .position(x: rect.midX, y: rect.midY)
+                .position(x: place.midX, y: rect.minY + place.height / 2)
                 // The controls emerge from behind the bar, never over it.
                 .mask(alignment: .top) {
                     Rectangle().frame(height: look.progress > 0.999 ? nil : max(0, bar.minY))
@@ -127,18 +129,20 @@ struct PanelPopPresentation {
         return reveal * reveal * (3 - 2 * reveal)
     }
 
-    /// Where the panel is: `place` moved down until its top is just inside the bar.
+    /// Where the panel is. Like the wheel's submenu, it starts wholly inside
+    /// the bar, so nothing of it ever shows past the bar's edges: a sliver
+    /// at its own width across the bar's middle, between the bar's rounded
+    /// ends' curves (`seed`). It grows from there up into its place.
     func rect(place: CGRect, bar: CGRect) -> CGRect {
-        let travel = bar.minY + 6 - place.minY
-        return place.offsetBy(dx: 0, dy: (1 - progress) * travel)
+        let seed = Self.seed(place: place, bar: bar)
+        let top = seed.minY + (place.minY - seed.minY) * progress
+        let bottom = seed.maxY + (place.maxY - seed.maxY) * progress
+        return CGRect(x: place.minX, y: top, width: place.width, height: max(0, bottom - top))
     }
 
-    /// The part of the panel out of the bar (and a little of it inside,
-    /// where its glass merges with the bar's): what is drawn.
-    func visible(place: CGRect, bar: CGRect) -> CGRect {
-        let rect = rect(place: place, bar: bar)
-        let bottom = min(rect.maxY, bar.minY + 14)
-        return CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: max(0, bottom - rect.minY))
+    static func seed(place: CGRect, bar: CGRect) -> CGRect {
+        let height = max(0, bar.height - 2 * GlassTabBar.cornerRadius)
+        return CGRect(x: place.minX, y: bar.midY - height / 2, width: place.width, height: height)
     }
 }
 
