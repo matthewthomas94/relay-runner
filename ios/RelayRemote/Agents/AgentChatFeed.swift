@@ -97,9 +97,9 @@ struct AgentChatFeed: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .modifier(FeedGlass())
-                    // The Relay Vision dot matrix in the playback glow's
-                    // purples, matching the dock's Play (`playbackDots`).
-                    .playbackDots(active: waiting, cornerRadius: RelayMetrics.panelRadius)
+                    // Libraries.dev's Border Beam in the playback glow's
+                    // purples only, matching the dock's Play (`playbackBeam`).
+                    .playbackBeam(active: waiting, cornerRadius: RelayMetrics.panelRadius)
                 // "speaking" swaps in and out without the two lines overlapping.
                 ZStack(alignment: .leading) {
                     Text(speaking ? "\(name) · speaking" : "\(name) · \(Self.time(message.date))")

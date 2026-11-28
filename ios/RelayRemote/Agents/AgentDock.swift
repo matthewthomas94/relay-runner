@@ -83,9 +83,9 @@ struct AgentDock: View {
                 }
                 .disabled(!replayEnabled)
                 .buttonStyle(RelayButtonStyle(role: .secondary, fullWidth: true))
-                // The same dots as the reply it will play, so the two read
+                // The same beam as the reply it will play, so the two read
                 // as one (user, 2026-11-28).
-                .playbackDots(active: replayFace == .play, cornerRadius: RelayMetrics.buttonRadius)
+                .playbackBeam(active: replayFace == .play, cornerRadius: RelayMetrics.buttonRadius)
                 .animation(RelayMotion.dockSwap, value: replayFace)
                 .opacity(dimmed.contains(.replay) ? 0.3 : 1)
                 .allowsHitTesting(!inert.contains(.replay))
