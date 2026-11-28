@@ -3,7 +3,7 @@ import SwiftUI
 /// The splash schedule (01–05), a port of the desktop's `OnboardingIntroTimeline`.
 /// Pure, so a test can check the beats without playing them.
 enum SplashTimeline {
-    static let phrases = ["Relay Runner", "First thing’s first", "I need a few permissions"]
+    static let phrases = ["Relay Remote", "First thing’s first", "I need a few permissions"]
     static let brandHold: TimeInterval = 0.70
     static let typingInterval: TimeInterval = 0.029
     static let dotFieldTravel: TimeInterval = 4.00
@@ -93,7 +93,7 @@ struct SplashView: View {
         .contentShape(Rectangle())
         .onTapGesture(perform: finish)
         .accessibilityAddTraits(.isButton)
-        .accessibilityLabel("Relay Runner. Continue")
+        .accessibilityLabel("Relay Remote. Continue")
         .accessibilityAction(.default, finish)
         .task {
             if reduceMotion { return finish() }
