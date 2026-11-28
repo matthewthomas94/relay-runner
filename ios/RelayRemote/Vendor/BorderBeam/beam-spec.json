@@ -2808,9 +2808,9 @@
       "alpha": 0.45,
       "monoAlpha": 0.225
     },
-    "innerEdgeMaskPx": 28,
+    "innerEdgeMaskPx": 10,
     "innerShadowBlur": {
-      "md": 9,
+      "md": 6,
       "sm": 5
     },
     "bloomBlurPx": 8,
