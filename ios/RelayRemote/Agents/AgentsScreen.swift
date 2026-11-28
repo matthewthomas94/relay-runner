@@ -111,12 +111,14 @@ struct AgentsScreen: View {
 
     private var isOffline: Bool { state.reachability != .reachable }
 
-    /// The old chat leaves where it is; the new one arrives from `direction`.
+    /// The old chat leaves where it is; the new one arrives from `direction`,
+    /// 8 pt: further, quick switches read as the chat being shoved sideways
+    /// (user, 2026-11-28).
     static func chatSwap(direction: CGFloat) -> AnyTransition {
         .asymmetric(
-            insertion: .modifier(active: ChatSwapEffect(hidden: true, travel: 24 * direction),
+            insertion: .modifier(active: ChatSwapEffect(hidden: true, travel: 8 * direction),
                                  identity: ChatSwapEffect(hidden: false, travel: 0))
-                .animation(.spring(duration: 0.34, bounce: 0.08).delay(0.12 + RelayMotion.tabGap)),
+                .animation(.spring(duration: 0.34, bounce: 0).delay(0.12 + RelayMotion.tabGap)),
             removal: .modifier(active: ChatSwapEffect(hidden: true, travel: 0),
                                identity: ChatSwapEffect(hidden: false, travel: 0))
                 .animation(.timingCurve(0.4, 0, 1, 1, duration: 0.12)))

@@ -32,8 +32,11 @@ struct AgentTabStrip: View {
                 }
             }
             .horizontalEdgeFade()
+            // Only as far as brings the picked tab into view, and not at all
+            // when it already shows: centring it shoved the whole row
+            // sideways on every switch (user, 2026-11-28).
             .onChange(of: selected) { _, slug in
-                withAnimation(RelayMotion.move) { proxy.scrollTo(slug, anchor: .center) }
+                withAnimation(RelayMotion.move) { proxy.scrollTo(slug) }
             }
         }
         .frame(height: Self.height)
