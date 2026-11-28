@@ -28,4 +28,7 @@ public enum BeamColorVariant: String, CaseIterable, Sendable {
     case mono
     case ocean
     case sunset
+    /// Relay Remote: the ocean layout recoloured to the playback glow's
+    /// purples only (hue 0.68 ± 0.04), added to beam-spec.json.
+    case playback
 }

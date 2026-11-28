@@ -97,10 +97,9 @@ struct AgentChatFeed: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .modifier(FeedGlass())
-                    // Libraries.dev's Border Beam; its "ocean" palette is the
-                    // playback glow's blue-violet. It fades in and out.
-                    .borderBeam(.md, colorVariant: .ocean, theme: .dark, active: waiting,
-                                borderRadius: Double(RelayMetrics.panelRadius))
+                    // Libraries.dev's Border Beam in the playback glow's
+                    // purples only, matching the dock's Play (`playbackBeam`).
+                    .playbackBeam(active: waiting, cornerRadius: RelayMetrics.panelRadius)
                 // "speaking" swaps in and out without the two lines overlapping.
                 ZStack(alignment: .leading) {
                     Text(speaking ? "\(name) · speaking" : "\(name) · \(Self.time(message.date))")
