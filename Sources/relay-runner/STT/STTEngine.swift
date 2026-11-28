@@ -732,6 +732,10 @@ final class STTEngine: @unchecked Sendable {
                     boardToggleRequestedAt = CACurrentMediaTime()
                     NSLog("[STTEngine] Workspace toggle requested (double-tap Shift) while suspended")
                 }
+                if let direction = gesture.takeAgentCycle() {
+                    agentCycleRequested = direction
+                    NSLog("[STTEngine] Agent switch requested (\(direction == .forward ? "Shift-Option" : "Shift-Control")) while suspended")
+                }
                 continue
             }
 
