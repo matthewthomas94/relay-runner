@@ -272,6 +272,11 @@ enum SessionWheelGeometry {
     /// The plus or X's hover circle, which is also where the glyph is hit.
     static let agentGlyphDiameter: CGFloat = 20
     static var agentGlyphHitRadius: CGFloat { agentGlyphDiameter / 2 }
+    /// An agent that wants attention carries a small white dot after its
+    /// name, as its Workspace tab does (user, 2026-11-28). Small enough to
+    /// fit before the plus or X in the longest name's segment.
+    static let agentAttentionDotDiameter: CGFloat = 5
+    static let agentAttentionDotGap: CGFloat = 3
 
     /// Extra space between an agent label's letters.
     static let agentLabelTracking: CGFloat = 1
@@ -324,7 +329,8 @@ enum SessionWheelGeometry {
     /// the same way. The label curves with the cell: `glyphs` sets each
     /// letter's outline on the arc, and `label` is the label's middle.
     static func sessionAgentLayout(_ index: Int, label: String)
-        -> (label: (point: CGPoint, rotation: CGFloat), glyphs: [Glyph], glyph: (point: CGPoint, rotation: CGFloat)) {
+        -> (label: (point: CGPoint, rotation: CGFloat), glyphs: [Glyph], glyph: (point: CGPoint, rotation: CGFloat),
+            attentionDot: CGPoint) {
         let slot = sessionSlots.first ?? 0
         let arc = sessionItemArc(index)
         let centre = arc.start + arc.width / 2
@@ -355,7 +361,9 @@ enum SessionWheelGeometry {
             return Glyph(outline: letter.outline.copy(using: &transform) ?? letter.outline,
                          point: placement.point.applying(tilt), rotation: placement.rotation + agentLabelTilt)
         }
-        return (middle, glyphs, place(half - padding - agentGlyphDiameter / 2))
+        // The attention dot sits just after the label's last letter.
+        let dot = place(start + text.width + agentAttentionDotGap + agentAttentionDotDiameter / 2).point.applying(tilt)
+        return (middle, glyphs, place(half - padding - agentGlyphDiameter / 2), dot)
     }
 
     /// Where the plus or X inside agent segment `index` is drawn and hit.
