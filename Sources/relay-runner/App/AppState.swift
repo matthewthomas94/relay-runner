@@ -1527,8 +1527,29 @@ final class AppState {
             if showsTerminal { programBoardOverlay.showTerminal() }
             return true
         }
+        if sessionRegistry.isLive(contextID), allowsAppShellAccess, !meetingNoteSnapshot.phase.ownsForeground {
+            return focusLiveContext(context, showsTerminal: showsTerminal)
+        }
         return newSession(workingDirectory: context.repositoryPath, showsWorkspaceOnLaunch: showsTerminal,
                           agent: SessionAgent(context: context))
+    }
+
+    /// Show a context whose session is already running. Nothing is launched,
+    /// so the project is not validated again: that runs git and made every
+    /// tab switch stall the Workspace for a fifth of a second.
+    private func focusLiveContext(_ context: AssistantSessionContext, showsTerminal: Bool) -> Bool {
+        do {
+            try assistantSessionStore.select(context, provider: config.general.provider.rawValue,
+                                             model: config.general.model, savingPreviousContext: true)
+            publishConversationState()
+        } catch {
+            contextSwitchMessage = "Could not save the conversation. The existing context was retained: \(error.localizedDescription)"
+            return false
+        }
+        contextSwitchMessage = nil
+        embeddedTerminal.focus()
+        if showsTerminal { programBoardOverlay.showTerminal() }
+        return true
     }
 
     /// Stop a tab's agent: its provider ends and the tab leaves the strip.
@@ -2968,18 +2989,7 @@ final class AppState {
         // RR-394: a context with a live session is focused, never replaced or
         // duplicated; other contexts' sessions keep running.
         if !preservesVoiceBridge, sessionRegistry.isLive(context.id) {
-            do {
-                try assistantSessionStore.select(context, provider: config.general.provider.rawValue,
-                                                 model: config.general.model, savingPreviousContext: true)
-                publishConversationState()
-            } catch {
-                contextSwitchMessage = "Could not save the conversation. The existing context was retained: \(error.localizedDescription)"
-                return false
-            }
-            contextSwitchMessage = nil
-            embeddedTerminal.focus()
-            if showsWorkspaceOnLaunch { programBoardOverlay.showTerminal() }
-            return true
+            return focusLiveContext(context, showsTerminal: showsWorkspaceOnLaunch)
         }
         guard pendingSessionLaunchID == nil else { return false }
         // RR-519: four agent tabs in all, live or off, however the agent is started.
