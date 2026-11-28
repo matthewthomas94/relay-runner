@@ -114,6 +114,12 @@ struct MainTabView: View {
         }
     }
 
+    /// No Liquid Glass under the jet black bars: its refracted edge and
+    /// shadow showed round them, which the Figma doesn't have (user,
+    /// 2026-11-28). They keep their place in the glass container, so the
+    /// panels still move with the bar.
+    static let barGlass = Glass.identity
+
     /// The dock reshaping into the project tabs and back: no bounce.
     private static let morph = Animation.spring(duration: 0.44, bounce: 0)
     /// The tabs with a panel above the tab bar.
@@ -180,7 +186,7 @@ struct MainTabView: View {
                     insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.2)),
                     removal: .opacity.animation(.easeOut(duration: 0.08))))
         }
-        .modifier(PanelPop(progress: panelOut, place: place, bar: bar, glass: panel.glass.liquid,
+        .modifier(PanelPop(progress: panelOut, place: place, bar: bar, glass: Self.barGlass,
                            radius: Self.panelRadius))
         .allowsHitTesting(interactive)
         // When the text box grows or shrinks (talking, the transcript, a
@@ -209,7 +215,7 @@ struct MainTabView: View {
         // Sinking into the tab bar with no panel, it is untinted: the bar's
         // tint over its own read as a dark band as the two merged.
         .background { if panel != nil { RelayJetBackground(shape: shape) } }
-        .glassEffect(panel?.glass.liquid ?? RelayGlass.material, in: shape)
+        .glassEffect(Self.barGlass, in: shape)
         .position(x: frame.midX, y: frame.midY)
         // When the text box grows or shrinks (talking, the transcript, a
         // draft, a message sent), the place the Agents screen holds jumps to
