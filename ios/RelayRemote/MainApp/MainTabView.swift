@@ -59,9 +59,12 @@ struct MainTabView: View {
         // The content ends at the tab bar's top; with the keyboard up the bar
         // steps aside and the content sits on the keyboard.
         .safeAreaPadding(.bottom, keyboardShown ? 0 : GlassTabBar.contentInset)
-        // Layering on every tab, back to front: the scrolling content, the
-        // state glow, then the tappable glass (user, 2026-11-27).
-        .overlay { AppGlowLayer(model: model) }
+        // The state glow: on Agents over the chat; on Workspace and Settings
+        // behind the tickets and the Settings panel, showing faintly through
+        // their glass (user, 2026-11-28). Both stay alive so a tab switch
+        // keeps the glow where it is.
+        .background { AppGlowLayer(model: model).opacity(selection == .agents ? 0 : 1) }
+        .overlay { AppGlowLayer(model: model).opacity(selection == .agents ? 1 : 0) }
         .overlayPreferenceValue(HostedPanelKey.self) { panels in
             glassLayer(panels)
         }
@@ -205,6 +208,7 @@ struct MainTabView: View {
         .clipShape(shape)
         // Sinking into the tab bar with no panel, it is untinted: the bar's
         // tint over its own read as a dark band as the two merged.
+        .background { if panel != nil { RelayJetBackground(shape: shape) } }
         .glassEffect(panel?.glass.liquid ?? RelayGlass.material, in: shape)
         .position(x: frame.midX, y: frame.midY)
         // When the text box grows or shrinks (talking, the transcript, a

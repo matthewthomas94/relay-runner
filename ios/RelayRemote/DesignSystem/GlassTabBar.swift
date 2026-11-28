@@ -119,6 +119,7 @@ extension GlassTabBar {
         var body: some View {
             Color.clear
                 .frame(height: GlassTabBar.height)
+                .background(RelayJetBackground(shape: GlassTabBar.shape))
                 .glassEffect(RelayGlass.bar.liquid, in: GlassTabBar.shape)
                 .glassEffectID(GlassTabBar.morphID, in: morph)
                 .glassEffectTransition(.materialize)

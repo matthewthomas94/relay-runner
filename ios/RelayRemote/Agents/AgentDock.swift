@@ -260,13 +260,14 @@ struct DockTalkButton: View {
         }
             .animation(RelayMotion.enter, value: face)
             .relayTextStyle(.control)
-            .foregroundStyle(RelayColor.neutral1)
+            .foregroundStyle(RelayColor.neutral10)
             // "Release to send" stays on one line in half the row.
             .lineLimit(1)
             .minimumScaleFactor(0.8)
             .padding(.horizontal, 12)
             .frame(maxWidth: .infinity, minHeight: RelayMetrics.controlHeight)
-            .modifier(RelayGlassSurface(glass: touching ? .primaryPressed : .primary, shape: shape))
+            // A secondary glass button, like Play beside it (user, 2026-11-28).
+            .modifier(RelayGlassSurface(glass: touching ? .selected : .control, shape: shape))
             .contentShape(shape)
             .scaleEffect(touching ? RelayMotion.pressedScale : 1)
             .animation(RelayMotion.press, value: touching)

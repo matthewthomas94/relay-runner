@@ -40,6 +40,9 @@ struct PanelPop: ViewModifier, Animatable {
         .frame(width: visible.width, height: visible.height, alignment: .top)
         // The controls emerge from behind the bar, inside the glass.
         .clipShape(shape)
+        // Jet black over the glass: the glass still merges with the bar's as
+        // the panel pushes out or sinks, the black is what shows (user, 2026-11-28).
+        .background(RelayJetBackground(shape: shape))
         .glassEffect(glass, in: shape)
         .opacity(look.progress > 0.001 ? 1 : 0)
         .position(x: visible.midX, y: visible.midY)

@@ -259,14 +259,10 @@ private struct TicketRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        // Drawn, not Liquid Glass: live glass ignored the page's fade and
-        // blur and showed a beat after the cards' text when Workspace arrived
-        // (user, 2026-11-28). Neutral-3 is the colour the card glass renders
-        // on the black backdrop, with the card glass's lit rim.
+        // Panel glass, so the state glow behind the list shows faintly
+        // through it (user, 2026-11-28).
         .background {
-            let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
-            shape.fill(RelayColor.neutral3)
-                .overlay(RelayGlassRim(shape: shape, light: RelayGlass.card.rimLight))
+            RelayGlassBackground(glass: .panel, shape: RoundedRectangle(cornerRadius: 20, style: .continuous))
         }
         .accessibilityElement(children: .combine)
     }
@@ -309,10 +305,10 @@ struct ProjectTabStrip: View {
                             .frame(height: AgentTabStrip.height)
                             .background {
                                 if selected {
-                                    // One outlined pill (#171a1e at 60%) that slides to the selection.
-                                    RelayGlassBackground(glass: .card,
-                                                         shape: RoundedRectangle(cornerRadius: 12, style: .continuous),
-                                                         stroke: 0.08)
+                                    // One pill that slides to the selection: the tab
+                                    // bar's selected glass (user, 2026-11-28).
+                                    RelayGlassBackground(glass: .selected,
+                                                         shape: RoundedRectangle(cornerRadius: 12, style: .continuous))
                                         .matchedGeometryEffect(id: "pill", in: pill)
                                 }
                             }

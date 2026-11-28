@@ -194,3 +194,24 @@ enum RelayMetrics {
     /// Workspace project tabs and the tab bar.
     static let barMargin: CGFloat = 12
 }
+
+/// The bottom bars' surface (the dock, the project tabs, the tab bar): jet
+/// black, edged like the desktop session wheel's tiles with a 1 pt rim, white
+/// 9% at the top left, 2% across the middle and 5% at the bottom right
+/// (Figma "Jet black", user 2026-11-28). The controls inside keep their glass.
+struct RelayJetBackground<S: InsettableShape>: View {
+    let shape: S
+
+    static var rim: LinearGradient {
+        LinearGradient(stops: [.init(color: .white.opacity(0.09), location: 0),
+                               .init(color: .white.opacity(0.02), location: 0.5),
+                               .init(color: .white.opacity(0.05), location: 1)],
+                       startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+
+    var body: some View {
+        shape.fill(Color.black)
+            .overlay(shape.strokeBorder(Self.rim, lineWidth: 1))
+            .allowsHitTesting(false)
+    }
+}
