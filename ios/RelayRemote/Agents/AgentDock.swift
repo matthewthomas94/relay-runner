@@ -197,8 +197,7 @@ struct AgentDock: View {
                 LucideImage(.arrowUp, size: 18)
                     .foregroundStyle(canSend ? RelayColor.neutral10 : RelayColor.neutral7)
                     .frame(width: 36, height: 36)
-                    .background(RelayGlassBackground(glass: .selected,
-                                                     shape: RoundedRectangle(cornerRadius: 10, style: .continuous)))
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Self.sendFill))
             }
             .buttonStyle(.relayPlain)
             .disabled(!canSend)
@@ -209,7 +208,8 @@ struct AgentDock: View {
             .accessibilityLabel("Send")
         }
         .frame(minHeight: 44)
-        .modifier(FieldSurface())
+        // The box's edge is the Send button's colour (user, 2026-11-28).
+        .modifier(FieldSurface(stroke: Self.sendFill))
         .opacity(dimmed.contains(.textBox) || !canMessage ? 0.3 : 1)
         .allowsHitTesting(!inert.contains(.textBox) && canMessage)
         .disabled(!canMessage)
@@ -222,6 +222,10 @@ struct AgentDock: View {
     /// lands in the chat, rather than shrinking and then the chat jumping
     /// when the message arrives (user, 2026-11-28).
     private var showsTranscript: Bool { isTalking || !transcript.isEmpty }
+
+    /// The Send button's fill and the text box's edge: #212529 at 65%, as
+    /// in the Figma dock.
+    static let sendFill = RelayColor.neutral4.opacity(0.65)
 
     private func sendIfPossible() {
         guard canSend else { return }

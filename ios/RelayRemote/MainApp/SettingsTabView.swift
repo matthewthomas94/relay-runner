@@ -520,10 +520,12 @@ private struct ChoiceRow: View {
 /// The Figma's fields (select, segmented control, text box): black at 50%
 /// with a hairline of #212529 at 50%, radius 12.
 struct FieldSurface: ViewModifier {
+    var stroke: Color = RelayColor.neutral4.opacity(0.5)
+
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: RelayMetrics.buttonRadius, style: .continuous)
         content.background(shape.fill(RelayColor.neutral1.opacity(0.5))
-            .overlay(shape.strokeBorder(RelayColor.neutral4.opacity(0.5), lineWidth: 1)))
+            .overlay(shape.strokeBorder(stroke, lineWidth: 1)))
     }
 }
 
