@@ -4,22 +4,24 @@ import SwiftUI
 /// Agents dock or the Workspace project tabs) pushes out of the tab bar the
 /// way the desktop's session wheel pushes its submenus out of the disc, and
 /// sinks back into it (user, 2026-11-28; `SessionWheelSubmenuMotion.swift`
-/// in the Mac app): it starts wholly inside the bar and pulls out of it on the
-/// wheel's spring, blurring most halfway, its controls fading in once it is
-/// 30% out; its glass and the bar's merge as one until it pulls clear. Its
-/// width never changes (user, 2026-11-28). Between Agents and Workspace the
-/// panel stays out and morphs from one tab's panel into the other's.
+/// in the Mac app). It starts wholly inside the bar and pulls out of it on the
+/// wheel's spring; while it moves, the bar and the panel are one black liquid
+/// silhouette (blurred, then cut at an alpha threshold, as the wheel's
+/// `SessionWheelLiquidBackdrop`), so the panel flows out of the bar rather
+/// than sliding over it. Its controls emerge from behind the bar, blurring
+/// most halfway and fading in once the panel is 30% out. Its width never
+/// changes (user, 2026-11-28). Between Agents and Workspace the panel stays
+/// out and morphs from one tab's panel into the other's: `place` animates too.
 struct PanelPop: ViewModifier, Animatable {
     /// 0 inside the bar, 1 in place.
     var progress: Double
-    let place: CGRect
+    var place: CGRect
     let bar: CGRect
-    let glass: Glass
     let radius: CGFloat
 
-    var animatableData: Double {
-        get { progress }
-        set { progress = newValue }
+    var animatableData: AnimatablePair<Double, CGRect.AnimatableData> {
+        get { AnimatablePair(progress, place.animatableData) }
+        set { progress = newValue.first; place.animatableData = newValue.second }
     }
 
     /// The desktop wheel's submenu spring (`SessionWheelSubmenuPresentation.animation`).
@@ -27,24 +29,86 @@ struct PanelPop: ViewModifier, Animatable {
 
     func body(content: Content) -> some View {
         let look = PanelPopPresentation(progress)
-        let visible = look.visible(place: place, bar: bar)
-        let shape = RoundedRectangle(cornerRadius: min(radius, visible.height / 2), style: .continuous)
-        ZStack(alignment: .top) {
+        let rect = look.rect(place: place, bar: bar)
+        ZStack(alignment: .topLeading) {
+            PanelLiquid(look: look, panel: look.visible(place: place, bar: bar), bar: bar, radius: radius)
             // Bottom-anchored, so while the dock's own height animates (the
-            // text box after talking) its buttons stay put inside the glass.
+            // text box after talking) its buttons stay put in the panel.
             content
-                .frame(width: place.width, height: place.height, alignment: .bottom)
+                .frame(width: rect.width, height: rect.height, alignment: .bottom)
                 .opacity(look.controlsOpacity)
                 .blur(radius: look.blur)
+                .position(x: rect.midX, y: rect.midY)
+                // The controls emerge from behind the bar, never over it.
+                .mask(alignment: .top) {
+                    Rectangle().frame(height: look.progress > 0.999 ? nil : max(0, bar.minY))
+                }
+                .opacity(look.progress > 0.001 ? 1 : 0)
         }
-        .frame(width: visible.width, height: visible.height, alignment: .top)
-        // The controls emerge from behind the bar, inside the glass.
-        .clipShape(shape)
-        // Jet black, edged like the desktop wheel (user, 2026-11-28).
-        .background(RelayJetBackground(shape: shape))
-        .glassEffect(glass, in: shape)
-        .opacity(look.progress > 0.001 ? 1 : 0)
-        .position(x: visible.midX, y: visible.midY)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// The panel's black surface, and while it moves the bar's too, as one
+/// liquid silhouette (`PanelPop`). At rest the panel is the jet black
+/// surface with its rim (`RelayJetBackground`); while it moves the rims fade
+/// out, so no edge cuts across the join.
+private struct PanelLiquid: View {
+    let look: PanelPopPresentation
+    let panel: CGRect
+    let bar: CGRect
+    let radius: CGFloat
+
+    var body: some View {
+        let blur = look.blur
+        let moving = blur > 0.001
+        // The rims show only once the motion has all but settled.
+        let rims = 1 - min(blur / 1.5, 1)
+        Canvas { context, _ in
+            let panelPath = Path(roundedRect: panel, cornerRadius: min(radius, panel.height / 2), style: .continuous)
+            let barPath = Path(roundedRect: bar, cornerRadius: GlassTabBar.cornerRadius, style: .continuous)
+            guard look.progress > 0.001 else { return }
+            context.drawLayer { liquid in
+                if moving {
+                    // Blur first, then sharpen its alpha into one joined surface.
+                    liquid.addFilter(.alphaThreshold(min: 5.0 / 12.0, color: .black))
+                    liquid.addFilter(.blur(radius: blur))
+                }
+                liquid.drawLayer { shapes in
+                    if moving { shapes.fill(barPath, with: .color(.black)) }
+                    shapes.fill(panelPath, with: .color(.black))
+                }
+            }
+            guard rims > 0 else { return }
+            context.opacity = rims
+            if moving { context.stroke(barPath.rim, with: Self.rim(in: bar), lineWidth: 1) }
+            context.opacity = rims * look.controlsOpacity
+            context.stroke(panelPath.rim, with: Self.rim(in: panel), lineWidth: 1)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    /// `RelayJetBackground.rim` across `rect`.
+    private static func rim(in rect: CGRect) -> GraphicsContext.Shading {
+        .linearGradient(Gradient(stops: [.init(color: .white.opacity(0.09), location: 0),
+                                         .init(color: .white.opacity(0.02), location: 0.5),
+                                         .init(color: .white.opacity(0.05), location: 1)]),
+                        startPoint: CGPoint(x: rect.minX, y: rect.minY),
+                        endPoint: CGPoint(x: rect.maxX, y: rect.maxY))
+    }
+}
+
+private extension Path {
+    /// A 1 pt stroke along this path lies half outside it; inset it by half
+    /// a point, as `strokeBorder` does.
+    var rim: Path {
+        let box = boundingRect
+        guard box.width > 1, box.height > 1 else { return self }
+        let scale = CGAffineTransform(translationX: box.midX, y: box.midY)
+            .scaledBy(x: (box.width - 1) / box.width, y: (box.height - 1) / box.height)
+            .translatedBy(x: -box.midX, y: -box.midY)
+        return applying(scale)
     }
 }
 

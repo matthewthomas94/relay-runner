@@ -146,16 +146,18 @@ struct MainTabView: View {
                                 .id(panel.tab)
                                 .transition(.opacity)
                         }
-                    } else if let panelTab, let entry = panels[panelTab].map({
-                        PanelPopCache.Entry(panel: $0, frame: proxy[$0.anchor])
-                    }) ?? popCache.entries[panelTab] {
-                        poppingPanel(entry.panel, place: entry.frame, bar: bar,
-                                     interactive: panelTab == selection)
                     }
                     if !keyboardShown {
                         GlassTabBar.MorphGlass(morph: glassMorph)
                             .padding(.bottom, GlassTabBar.bottomOffset)
                             .transition(.opacity.combined(with: .offset(y: 16)))
+                    }
+                    // Over the bar's black, so the two can flow together as one.
+                    if !reduceMotion, let panelTab, let entry = panels[panelTab].map({
+                        PanelPopCache.Entry(panel: $0, frame: proxy[$0.anchor])
+                    }) ?? popCache.entries[panelTab] {
+                        poppingPanel(entry.panel, place: entry.frame, bar: bar,
+                                     interactive: panelTab == selection)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -186,8 +188,7 @@ struct MainTabView: View {
                     insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.2)),
                     removal: .opacity.animation(.easeOut(duration: 0.08))))
         }
-        .modifier(PanelPop(progress: panelOut, place: place, bar: bar, glass: Self.barGlass,
-                           radius: Self.panelRadius))
+        .modifier(PanelPop(progress: panelOut, place: place, bar: bar, radius: Self.panelRadius))
         .allowsHitTesting(interactive)
         // When the text box grows or shrinks (talking, the transcript, a
         // draft, a message sent), the place the Agents screen holds jumps to
