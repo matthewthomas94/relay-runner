@@ -147,12 +147,12 @@ struct MainTabView: View {
                              y: proxy.size.height - GlassTabBar.bottomOffset - GlassTabBar.height,
                              width: proxy.size.width - 2 * RelayMetrics.barMargin,
                              height: GlassTabBar.height)
-            let _ = panels.values.forEach { popCache.remember($0, at: proxy[$0.anchor]) }
+            let _ = panels.values.forEach { popCache.remember($0, at: $0.place(in: proxy)) }
             GlassEffectContainer(spacing: Self.morphSpacing) {
                 ZStack(alignment: .bottom) {
                     if reduceMotion {
                         if let panel = panels[selection] {
-                            panelGlass(panel, frame: proxy[panel.anchor])
+                            panelGlass(panel, frame: panel.place(in: proxy))
                                 .id(panel.tab)
                                 .transition(.opacity)
                         }
@@ -164,7 +164,7 @@ struct MainTabView: View {
                     }
                     // Over the bar's black, so the two can flow together as one.
                     if !reduceMotion, let panelTab, let entry = panels[panelTab].map({
-                        PanelPopCache.Entry(panel: $0, frame: proxy[$0.anchor])
+                        PanelPopCache.Entry(panel: $0, frame: $0.place(in: proxy))
                     }) ?? popCache.entries[panelTab] {
                         poppingPanel(entry.panel, place: entry.frame, bar: bar,
                                      interactive: panelTab == selection)
@@ -335,6 +335,11 @@ private struct PageSwipe: ViewModifier, Animatable {
     func body(content: Content) -> some View {
         let shift = index - position
         content
+            // The page's bounds, inside the offset as the panel's place is,
+            // so the tab view can take the offset back out of the panel's.
+            .transformAnchorPreference(key: HostedPanelKey.self, value: .bounds) { panels, page in
+                for tab in panels.keys { panels[tab]?.page = page }
+            }
             .visualEffect { page, geometry in page.offset(x: shift * geometry.size.width) }
     }
 }

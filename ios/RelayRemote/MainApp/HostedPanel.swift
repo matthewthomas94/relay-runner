@@ -10,6 +10,9 @@ struct HostedPanel {
     let tab: MainTab
     /// The place the panel takes in its tab.
     let anchor: Anchor<CGRect>
+    /// Its page's bounds, set by the tab view's swipe (`PageSwipe`): the
+    /// panel stays put while its page slides away under it.
+    var page: Anchor<CGRect>? = nil
     /// The panel's contents, without its glass.
     let content: AnyView
     /// The fill over the glass.
@@ -26,6 +29,17 @@ struct HostedPanelKey: PreferenceKey {
 
     static func reduce(value: inout [MainTab: HostedPanel], nextValue: () -> [MainTab: HostedPanel]) {
         value.merge(nextValue()) { current, _ in current }
+    }
+}
+
+extension HostedPanel {
+    /// Where the panel sits with its page at rest: the page's swipe offset
+    /// taken back out, so the dock and the project tabs hold still and keep
+    /// morphing while the pages slide (user, 2026-11-28).
+    func place(in proxy: GeometryProxy) -> CGRect {
+        let frame = proxy[anchor]
+        guard let page else { return frame }
+        return frame.offsetBy(dx: -proxy[page].minX, dy: 0)
     }
 }
 
