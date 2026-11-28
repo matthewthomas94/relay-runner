@@ -252,53 +252,10 @@ struct RelayStageEffect: ViewModifier {
 
 // MARK: - Tab switches
 
-extension AnyTransition {
-    /// Switching tabs happens tens of times a day, so it must feel instant
-    /// (Emil Kowalski: frequent actions get little or no motion), and like
-    /// every swap the two pages never share the screen (RR-553: crossing
-    /// over, both pages showed through each other mid-switch). The old page
-    /// is gone in 100 ms on the exit curve; the new one then fades in over
-    /// 200 ms on the strong ease-out while drifting 8 pt from the side it came
-    /// from, so the switch is over in 300 ms. No blur, no gap. Reduce Motion
-    /// keeps only the fades.
-    /// A tab's page replacing another, as the Mac replaces whole pages
-    /// (`relayReplacing(.surface)`, user 2026-11-28): the old page contracts
-    /// to 96%, blurs to 12 pt and fades out in 160 ms, accelerating away;
-    /// after a 75 ms beat the new one expands from 96% and sharpens in over
-    /// 340 ms on the strong ease-out, with no rebound: the panels above the tab
-    /// bar follow the page, and a bounce made them overshoot and settle back
-    /// (user, 2026-11-28). They never share the screen.
-    /// Reduce Motion keeps the crossfade.
-    static var relayTab: AnyTransition {
-        .asymmetric(
-            insertion: .modifier(active: RelayTabEffect(hidden: true), identity: RelayTabEffect(hidden: false))
-                .animation(.timingCurve(0.23, 1, 0.32, 1, duration: 0.34).delay(RelayMotion.tabExitDuration + RelayMotion.tabGap)),
-            removal: .modifier(active: RelayTabEffect(hidden: true), identity: RelayTabEffect(hidden: false))
-                .animation(.timingCurve(0.4, 0, 1, 1, duration: RelayMotion.tabExitDuration))
-        )
-    }
-}
-
 extension RelayMotion {
-    /// How long the old page takes to leave on a tab switch, as the Mac's exits.
-    static let tabExitDuration: TimeInterval = 0.16
-    /// The beat between the old page leaving and the new one arriving.
+    /// A beat between one thing leaving and the next arriving (an agent's
+    /// chat swapping, a panel pushing out of the tab bar).
     static let tabGap: TimeInterval = 0.075
-}
-
-/// A tab page's hidden state: contracted, blurred and faded, as the Mac's
-/// surfaces; Reduce Motion keeps only the fade.
-struct RelayTabEffect: ViewModifier {
-    let hidden: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    func body(content: Content) -> some View {
-        let moves = hidden && !reduceMotion
-        content
-            .opacity(hidden ? 0 : 1)
-            .blur(radius: moves ? 12 : 0)
-            .scaleEffect(moves ? RelayMotion.hiddenScale : 1)
-    }
 }
 
 struct RelayArrivingModifier: ViewModifier {
