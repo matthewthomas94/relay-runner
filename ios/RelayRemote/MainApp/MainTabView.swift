@@ -11,8 +11,6 @@ struct MainTabView: View {
     @State private var pages: [MainTab]
     /// Where the pages are, in pages: the selected page's index at rest.
     @State private var pagePosition: Double
-    /// Where the running swipe started, for its blur.
-    @State private var swipeFrom: Double
     /// The tab bar steps aside while the keyboard is up (user, 2026-11-27).
     @State private var keyboardShown = false
     /// The tab whose panel is out above the tab bar, or sinking into it on
@@ -42,7 +40,6 @@ struct MainTabView: View {
         _selection = State(initialValue: initialTab)
         _pages = State(initialValue: [initialTab])
         _pagePosition = State(initialValue: Self.index(initialTab))
-        _swipeFrom = State(initialValue: Self.index(initialTab))
         let hasPanel = Self.panelTabs.contains(initialTab)
         _panelTab = State(initialValue: hasPanel ? initialTab : nil)
         _panelOut = State(initialValue: hasPanel ? 1 : 0)
@@ -52,12 +49,11 @@ struct MainTabView: View {
         ZStack {
             // The pages swipe through in the direction the tab bar's pill
             // moves, with every page between the two (Agents to Settings
-            // passes Workspace), at the pill's speed, motion-blurred while
-            // they move so none reads (user, 2026-11-28).
+            // passes Workspace), at the pill's speed (user, 2026-11-28).
+            // No blur: the pages read as they pass (user, 2026-11-28).
             ForEach(pages, id: \.self) { tab in
                 page(tab)
-                    .modifier(PageSwipe(position: pagePosition, index: Self.index(tab),
-                                        from: swipeFrom, to: Self.index(selection)))
+                    .modifier(PageSwipe(position: pagePosition, index: Self.index(tab)))
                     .allowsHitTesting(tab == selection)
                     .transition(reduceMotion ? .opacity : .identity)
             }
@@ -308,11 +304,10 @@ struct MainTabView: View {
         guard !reduceMotion else {
             withAnimation(RelayMotion.enter) { pages = [new] }
             pagePosition = target
-            swipeFrom = target
             return
         }
-        swipeFrom = Self.index(old)
-        let range = min(swipeFrom, target)...max(swipeFrom, target)
+        let start = Self.index(old)
+        let range = min(start, target)...max(start, target)
         pages = MainTab.allCases.filter { pages.contains($0) || range.contains(Self.index($0)) }
         withAnimation(RelayMotion.move) {
             pagePosition = target
@@ -327,29 +322,19 @@ struct MainTabView: View {
     }
 }
 
-/// One page of the tab swipe: `index - position` page widths from centre,
-/// blurred while it moves so its contents smear past rather than read.
+/// One page of the tab swipe: `index - position` page widths from centre.
 private struct PageSwipe: ViewModifier, Animatable {
     var position: Double
     let index: Double
-    let from: Double
-    let to: Double
 
     var animatableData: Double {
         get { position }
         set { position = newValue }
     }
 
-    /// The blur at full speed.
-    static let blur: CGFloat = 48
-
     func body(content: Content) -> some View {
-        let span = abs(to - from)
-        let progress = span > 0 ? min(max(abs(position - from) / span, 0), 1) : 1
-        let blur = Self.blur * CGFloat(min(1, 4 * sin(.pi * progress)))
         let shift = index - position
         content
             .visualEffect { page, geometry in page.offset(x: shift * geometry.size.width) }
-            .blur(radius: blur)
     }
 }
