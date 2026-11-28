@@ -63,8 +63,8 @@ private struct LiveAgentsScreen: View {
             talk: { command in
                 switch command {
                 case .start:
-                    // The talk button is disabled while the agent starts up; this backs it up.
-                    guard !agents.isStarting(agents.selected) else { return }
+                    // The talk button is disabled until the agent is running; this backs it up.
+                    guard !agents.isStarting(agents.selected), !agents.isStopped(agents.selected) else { return }
                     voice.pressToTalkBegan(agent: agents.selected)
                 case .send: voice.pressToTalkEnded()
                 case .none: break

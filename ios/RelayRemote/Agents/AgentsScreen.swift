@@ -144,9 +144,11 @@ struct AgentsScreen: View {
                   tabs: AgentTabStrip(tabs: state.tabs, selected: state.selected, onSelect: actions.select),
                   talkMode: state.talkMode,
                   isTalking: state.isTalking, transcript: state.transcript,
-                  canReplay: !state.notRunning, canPlay: state.waiting != nil,
+                  canReplay: !state.notRunning, canPlay: state.waiting != nil && !state.notRunning,
                   isPlaying: state.isPlaying, isPreparing: state.isPreparing, canStop: !state.notRunning,
-                  canMessage: !state.isStarting,
+                  // Nothing in the dock works for an agent that is not
+                  // running until it has started (user, 2026-11-28).
+                  canMessage: !state.isStarting && !state.notRunning,
                   drawsGlass: !hostsPanels,
                   onSend: send, onTalk: actions.talk, onCancel: actions.cancelTalk,
                   onReplay: actions.replay, onPlay: play, onStop: actions.stop)
@@ -198,7 +200,7 @@ struct AgentsScreen: View {
             Text("\(state.name) isn’t running")
                 .relayTextStyle(.cardTitle)
                 .foregroundStyle(RelayColor.neutral10)
-            Text("Message \(state.name) to start it.")
+            Text("Start \(state.name) to message it.")
                 .relayTextStyle(.caption)
                 .foregroundStyle(RelayColor.neutral7)
                 .padding(.top, 12)
