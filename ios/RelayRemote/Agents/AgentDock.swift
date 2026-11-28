@@ -288,6 +288,8 @@ struct DockTalkButton: View {
             .frame(maxWidth: .infinity, minHeight: RelayMetrics.controlHeight)
             // A secondary glass button, like Play beside it (user, 2026-11-28).
             .modifier(RelayGlassSurface(glass: touching ? .selected : .control, shape: shape))
+            // An orange beam runs round it while it reads Tap (or Release) to send.
+            .listeningBeam(active: face == .send, cornerRadius: RelayMetrics.buttonRadius)
             .contentShape(shape)
             .scaleEffect(touching ? RelayMotion.pressedScale : 1)
             .animation(RelayMotion.press, value: touching)
